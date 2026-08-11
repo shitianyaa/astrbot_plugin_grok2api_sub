@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "astrbot_plugin_grok2api_sub"
+version = "0.1.0"
+description = "Grok2API Sub 助手：联网搜索、生图、改图、生视频，双平台发送"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "shitianyaa" }]
+dependencies = [
+    "aiohttp>=3.9.0",
+    "Pillow>=10.0.0",
+]
+
+[tool.setuptools]
+packages = ["core"]
+
+[tool.ruff]
+target-version = "py310"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]

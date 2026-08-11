@@ -1,0 +1,231 @@
+{
+  "enabled": {
+    "description": "总开关。关闭后插件不响应任何命令，也不注册/暴露搜索 Tool。",
+    "type": "bool",
+    "default": true,
+    "hint": "关闭后命令与自动搜索均不可用。"
+  },
+  "api_base_url": {
+    "description": "grok2api 基础地址。只允许 http/https，结尾斜杠会被自动去除。",
+    "type": "string",
+    "default": "http://127.0.0.1:8000",
+    "hint": "只填写基础 URL，如 https://grok.example.com，插件会自动拼接 /v1/... 路径。"
+  },
+  "client_api_key": {
+    "description": "grok2api Client Key。仅用于鉴权，绝不写入日志。",
+    "type": "string",
+    "default": "",
+    "hint": "只使用 Client Key，不要填写管理员 JWT、账号 SSO/OAuth 或 QQ AppID/AppSecret。"
+  },
+  "verify_tls": {
+    "description": "是否校验证书。生产环境请保持开启。",
+    "type": "bool",
+    "default": true,
+    "hint": "仅本地自签名或内部 CA 场景可考虑关闭。"
+  },
+  "client_proxy_url": {
+    "description": "AstrBot 到 grok2api 的 HTTP(S) 代理。首版只允许 http/https。",
+    "type": "string",
+    "default": "http://127.0.0.1:3067",
+    "hint": "需要认证时可写 http://user:pass@host:port；日志与状态页只显示协议/主机/端口。"
+  },
+  "search_model": {
+    "description": "联网搜索模型。留空则搜索能力不可用。",
+    "type": "string",
+    "default": "",
+    "hint": "建议使用 Build/<model> 锁定 Provider；例如 grok-4.5。"
+  },
+  "image_model": {
+    "description": "文生图模型。留空则生图不可用。",
+    "type": "string",
+    "default": "",
+    "hint": "例如 grok-imagine-image。"
+  },
+  "image_edit_model": {
+    "description": "改图模型。留空则改图不可用。",
+    "type": "string",
+    "default": "",
+    "hint": "例如 grok-imagine-image。"
+  },
+  "video_model": {
+    "description": "生视频模型。留空则视频不可用。",
+    "type": "string",
+    "default": "",
+    "hint": "例如 grok-imagine-video。"
+  },
+  "enable_llm_search_tool": {
+    "description": "会话级注册联网搜索 Tool。",
+    "type": "bool",
+    "default": true,
+    "hint": "主模型按 Tool 描述决定是否自动搜索。关闭后仅手动 /g2搜索 可用。"
+  },
+  "show_search_sources": {
+    "description": "搜索结果是否展示结构化来源。",
+    "type": "bool",
+    "default": true,
+    "hint": "手动命令与 Tool 均保留来源，此开关只控制格式化时是否展示。"
+  },
+  "max_search_sources": {
+    "description": "单个搜索结果最多展示的来源数。",
+    "type": "int",
+    "default": 5,
+    "slider": { "min": 0, "max": 10, "step": 1 },
+    "hint": "0 表示不展示来源。"
+  },
+  "max_search_output_chars": {
+    "description": "搜索结果正文按 Unicode 字符截断的上限。",
+    "type": "int",
+    "default": 6000,
+    "slider": { "min": 500, "max": 20000, "step": 100 },
+    "hint": "超出后追加 [内容已截断] 标记。"
+  },
+  "connect_timeout_seconds": {
+    "description": "TCP 连接超时（秒）。",
+    "type": "int",
+    "default": 10,
+    "slider": { "min": 1, "max": 60, "step": 1 }
+  },
+  "search_timeout_seconds": {
+    "description": "搜索请求整体超时（秒）。",
+    "type": "int",
+    "default": 180,
+    "slider": { "min": 10, "max": 600, "step": 10 }
+  },
+  "image_timeout_seconds": {
+    "description": "生图/改图请求整体超时（秒）。",
+    "type": "int",
+    "default": 300,
+    "slider": { "min": 30, "max": 900, "step": 30 }
+  },
+  "video_create_timeout_seconds": {
+    "description": "视频创建请求整体超时（秒）。",
+    "type": "int",
+    "default": 120,
+    "slider": { "min": 10, "max": 600, "step": 10 }
+  },
+  "video_poll_interval_seconds": {
+    "description": "视频状态轮询间隔（秒）。",
+    "type": "int",
+    "default": 3,
+    "slider": { "min": 1, "max": 30, "step": 1 }
+  },
+  "video_max_wait_seconds": {
+    "description": "视频从创建到完成的最长等待（秒）。",
+    "type": "int",
+    "default": 1800,
+    "slider": { "min": 30, "max": 7200, "step": 30 }
+  },
+  "download_timeout_seconds": {
+    "description": "媒体下载整体超时（秒）。",
+    "type": "int",
+    "default": 300,
+    "slider": { "min": 30, "max": 1800, "step": 30 }
+  },
+  "max_input_image_mb": {
+    "description": "改图输入图片最大体积（MiB）。",
+    "type": "int",
+    "default": 12,
+    "slider": { "min": 1, "max": 24, "step": 1 },
+    "hint": "为默认 32 MiB JSON 请求体预留 Base64 膨胀空间。"
+  },
+  "max_image_download_mb": {
+    "description": "生图结果下载最大体积（MiB）。",
+    "type": "int",
+    "default": 25,
+    "slider": { "min": 1, "max": 100, "step": 1 }
+  },
+  "max_video_download_mb": {
+    "description": "视频下载最大体积（MiB）。",
+    "type": "int",
+    "default": 190,
+    "slider": { "min": 1, "max": 200, "step": 1 },
+    "hint": "低于 QQ Official 200 MiB 硬上限。"
+  },
+  "max_images_per_request": {
+    "description": "单次生图最多张数。QQ Official 运行时仍固定上限 4。",
+    "type": "int",
+    "default": 4,
+    "slider": { "min": 1, "max": 10, "step": 1 }
+  },
+  "max_concurrent_searches": {
+    "description": "全局并发搜索上限。",
+    "type": "int",
+    "default": 4,
+    "slider": { "min": 1, "max": 16, "step": 1 }
+  },
+  "max_concurrent_media_jobs": {
+    "description": "全局并发生图/改图/视频任务上限。",
+    "type": "int",
+    "default": 2,
+    "slider": { "min": 1, "max": 8, "step": 1 }
+  },
+  "video_resolution": {
+    "description": "视频分辨率。留空使用上游默认。",
+    "type": "string",
+    "default": "",
+    "options": ["", "480p", "720p"],
+    "hint": "仅 480p / 720p。"
+  },
+  "image_response_format": {
+    "description": "生图/改图响应格式。",
+    "type": "string",
+    "default": "b64_json",
+    "options": ["b64_json", "url"],
+    "hint": "无论哪种都会先落盘再发送。"
+  },
+  "get_retry_attempts": {
+    "description": "允许重试的 GET 操作（列表/状态/下载）最大尝试次数。",
+    "type": "int",
+    "default": 3,
+    "slider": { "min": 1, "max": 5, "step": 1 }
+  },
+  "retry_base_delay_seconds": {
+    "description": "重试退避基准延迟（秒）。",
+    "type": "float",
+    "default": 0.5,
+    "slider": { "min": 0.1, "max": 5.0, "step": 0.1 }
+  },
+  "save_media": {
+    "description": "是否在发送后保留生成媒体。",
+    "type": "bool",
+    "default": false,
+    "hint": "false 发送后删除；true 保留到工作区 archive/。"
+  },
+  "temp_retention_hours": {
+    "description": "启动时清理超过该时长的未归档临时媒体。",
+    "type": "int",
+    "default": 24,
+    "slider": { "min": 1, "max": 168, "step": 1 }
+  },
+  "send_video_progress": {
+    "description": "视频生成前发送一次进度提示。",
+    "type": "bool",
+    "default": true,
+    "hint": "QQ Official 建议开启且只发一次。"
+  },
+  "user_whitelist": {
+    "description": "允许使用本插件能力的用户 ID 白名单，空表示不限制。",
+    "type": "list",
+    "default": []
+  },
+  "user_blacklist": {
+    "description": "禁止使用本插件能力的用户 ID 黑名单，优先于白名单。",
+    "type": "list",
+    "default": []
+  },
+  "group_whitelist": {
+    "description": "允许使用本插件能力的群聊 ID 白名单，仅群聊生效，空表示不限制。",
+    "type": "list",
+    "default": []
+  },
+  "group_blacklist": {
+    "description": "禁止使用本插件能力的群聊 ID 黑名单，优先于白名单。",
+    "type": "list",
+    "default": []
+  },
+  "debug_mode": {
+    "description": "调试模式。只增加状态码、耗时、request id 日志，不记录密钥/正文/媒体。",
+    "type": "bool",
+    "default": false
+  }
+}

@@ -1,0 +1,12 @@
+__pycache__/
+.pytest_cache/
+.ruff_cache/
+.venv/
+*.pyc
+coverage.xml
+htmlcov/
+.grok_test_*.json
+# AstrBot runtime data dir (created by StarTools.get_data_dir)
+data/
+# implementation plan document (not part of the published plugin)
+2026-08-11-astrbot-plugin-grok2api-sub.md
