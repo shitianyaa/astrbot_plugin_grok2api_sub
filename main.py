@@ -5,8 +5,14 @@
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 from typing import Any
+
+# Ensure core/ package is importable when AstrBot loads the plugin
+_THIS_DIR = Path(__file__).resolve().parent
+if str(_THIS_DIR) not in sys.path:
+    sys.path.insert(0, str(_THIS_DIR))
 
 from astrbot.api import AstrBotConfig, logger
 from astrbot.api.event import AstrMessageEvent, filter
