@@ -27,6 +27,8 @@ class SearchToolPolicy:
     enable_tool: bool
     has_key: bool
     has_model: bool
+    show_sources: bool = True
+    max_sources: int = 5
 
     def allow(self) -> bool:
         return self.enabled and self.enable_tool and self.has_key and self.has_model
@@ -86,7 +88,12 @@ class Grok2APISearchTool(FunctionTool[AstrAgentContext]):
             return self._result(False, "", [], False, exc.code)
         except Exception:  # noqa: BLE001
             return self._result(False, "", [], False, "search_error")
-        sources = [{"url": s.url, "title": s.title} for s in result.sources]
+        sources = []
+        if self.policy.show_sources and self.policy.max_sources > 0:
+            sources = [
+                {"url": source.url, "title": source.title}
+                for source in result.sources[: self.policy.max_sources]
+            ]
         return self._result(True, result.text, sources, result.incomplete, "")
 
     def _extract_event(self, context) -> Any:

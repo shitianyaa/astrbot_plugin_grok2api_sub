@@ -22,7 +22,7 @@ ruff format --check .
 | `tests/test_search.py` | Responses Web/X 搜索工具组合、`reasoning` 请求契约与 parser |
 | `tests/test_search_models.py` | `catalog_model_id` Provider 前缀归一、`partition_visible_models` 保序分区、模型思考强度映射、大小写敏感 |
 | `tests/test_client_models.py` | 目录缓存 300s TTL、并发单 GET、force_refresh、过期失败抛原错、去重排序 |
-| `tests/test_client_images.py` | 生图/改图路径、b64/url 格式、模糊失败 |
+| `tests/test_client_images.py` | 生图/改图路径、b64/url 格式、可配置重试与协议校验 |
 | `tests/test_client_video.py` | 视频创建/轮询/鉴权下载、request_id 校验 |
 | `tests/test_media.py` | 路径安全、图片归一化、解压炸弹、清理、archive/ 归档 |
 | `tests/test_access.py` / `test_platform.py` | 黑白名单、平台识别 |
@@ -59,10 +59,10 @@ ruff format --check .
 
 - 401/403：提示 Client Key/权限错误，不打印 Key。
 - 404：区分 base URL/endpoint 和 video job 不存在。
-- 429/503：允许重试的 GET 遵循退避；生成 POST 不重放。
-- 生成 POST read timeout：提示状态未知和未重试。
-- Responses 无完成态 `web_search_call` 或 `x_search_call`：明确提示未执行联网搜索。
-- 视频 failed、等待超时、下载超限：各有单一、可理解回复，临时文件清理。
+- 429/503：所有远端请求按所属重试组退避；`Retry-After` 优先，排除列表可禁止重试。
+- 生成 POST read timeout：按所属重试组重试；可能重复生成或扣费，配置排除项可停止重试。
+- Responses 无完成态 `web_search_call` 或 `x_search_call`：当前模型按 `model_retry_count` 耗尽后，再继续候选回退。
+- 视频 failed、单次状态查询超时、下载超限：各有单一、可理解回复，临时文件清理。
 - 输入图片损坏、超限、解压炸弹：在调用 API 前拒绝。
 - QQ Official 5 图请求：在调用 API 前拒绝。
 - QQ 发送异常：不重发，日志标记 `delivery_unknown`。

@@ -5,7 +5,6 @@ from __future__ import annotations
 import base64
 
 from core.errors import (
-    AmbiguousSubmissionError,
     APIError,
     ConfigurationError,
     MediaLimitError,
@@ -39,11 +38,10 @@ def test_error_message_stable_and_short():
     assert e.status == 401
 
 
-def test_ambiguous_submission_includes_no_retry_note():
-    e = AmbiguousSubmissionError("生成超时")
-    assert e.ambiguous is True
-    assert "未自动重试" in str(e)
-    assert "重复生" in str(e)
+def test_api_error_can_be_marked_retryable():
+    e = APIError(503, "upstream_503", "上游暂时失败", retryable=True)
+    assert e.retryable is True
+    assert e.status == 503
 
 
 def test_subclass_hierarchy():

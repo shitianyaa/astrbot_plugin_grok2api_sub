@@ -1,9 +1,9 @@
 """Grok2APIClient — the single facade over grok2api /v1 endpoints.
 
 All requests go through :class:`HTTPTransport` which enforces same-origin
-relative paths, the retry matrix and safe downloads. Timeouts and retry counts
-are injected from :class:`PluginConfig` via the constructor (no hardcoded
-values remain). The client owns the business-oriented wire contract.
+relative paths, configurable retry groups and safe downloads. Timeouts and
+retry counts are injected from :class:`PluginConfig` via the constructor. The
+client owns the business-oriented wire contract.
 """
 
 from __future__ import annotations
@@ -25,19 +25,28 @@ from .parsers import (
 from .transport import HTTPTransport, RetryPolicy
 
 
-def _get_retry(operation: str, attempts: int, base_delay: float) -> RetryPolicy:
-    """Idempotent GET retry policy (models/status/download)."""
+def _retry(
+    operation: str,
+    retries: int,
+    base_delay: float,
+    excluded_errors: frozenset[str],
+) -> RetryPolicy:
+    """Build one remote-call policy from a configured retry group."""
     return RetryPolicy(
         operation=operation,
-        attempts=attempts,
+        retries=retries,
         base_delay=base_delay,
-        allow_retry=True,
+        excluded_errors=excluded_errors,
     )
 
 
-def _post_retry(operation: str) -> RetryPolicy:
-    """Generation POST: never auto-replayed."""
-    return RetryPolicy(operation=operation, attempts=1, allow_retry=False)
+def _parse_created_video_request(data: dict) -> str:
+    """Validate the remote creation response as a retryable wire failure."""
+    request_id = str(data.get("request_id") or "")
+    try:
+        return validate_request_id(request_id)
+    except ProtocolError as exc:
+        raise ProtocolError(exc.user_message, code=exc.code, retryable=True) from exc
 
 
 class Grok2APIClient:
@@ -50,10 +59,11 @@ class Grok2APIClient:
         video_create_timeout: float = 120,
         video_poll_timeout: float = 30,
         video_poll_interval: float = 3.0,
-        video_max_wait: float = 1800.0,
         download_timeout: float = 300,
-        retry_attempts: int = 3,
+        model_retry_count: int = 2,
+        video_retry_count: int = 2,
         retry_base_delay: float = 0.5,
+        retry_excluded_errors: frozenset[str] = frozenset(),
         sleep=None,
         monotonic=None,
     ) -> None:
@@ -63,10 +73,11 @@ class Grok2APIClient:
         self._video_create_timeout = video_create_timeout
         self._video_poll_timeout = video_poll_timeout
         self._video_poll_interval = video_poll_interval
-        self._video_max_wait = video_max_wait
         self._download_timeout = download_timeout
-        self._retry_attempts = retry_attempts
+        self._model_retry_count = model_retry_count
+        self._video_retry_count = video_retry_count
         self._retry_base_delay = retry_base_delay
+        self._retry_excluded_errors = retry_excluded_errors
         self._sleep = sleep or asyncio.sleep
         self._monotonic = monotonic or time.monotonic
         self._models_cache: tuple[str, ...] = ()
@@ -91,7 +102,12 @@ class Grok2APIClient:
                 "/v1/models",
                 json_body=None,
                 timeout_seconds=self._search_timeout,
-                retry_policy=_get_retry("models", self._retry_attempts, self._retry_base_delay),
+                retry_policy=_retry(
+                    "models",
+                    self._model_retry_count,
+                    self._retry_base_delay,
+                    self._retry_excluded_errors,
+                ),
                 operation="models",
             )
             items = data.get("data", [])
@@ -129,10 +145,16 @@ class Grok2APIClient:
             "/v1/responses",
             json_body=payload,
             timeout_seconds=self._search_timeout,
-            retry_policy=_post_retry("search"),
+            retry_policy=_retry(
+                "search",
+                self._model_retry_count,
+                self._retry_base_delay,
+                self._retry_excluded_errors,
+            ),
             operation="搜索",
+            response_parser=parse_search_response,
         )
-        return parse_search_response(data)
+        return data
 
     # -- images ------------------------------------------------------------
     async def generate_images(
@@ -157,10 +179,20 @@ class Grok2APIClient:
             "/v1/images/generations",
             json_body=payload,
             timeout_seconds=self._image_timeout,
-            retry_policy=_post_retry("image"),
+            retry_policy=_retry(
+                "image",
+                self._model_retry_count,
+                self._retry_base_delay,
+                self._retry_excluded_errors,
+            ),
             operation="生图",
+            response_parser=lambda data: parse_image_response(
+                data,
+                max_bytes=max_download_bytes,
+                api_base_url=api_base_url,
+            ),
         )
-        return parse_image_response(data, max_bytes=max_download_bytes, api_base_url=api_base_url)
+        return data
 
     async def edit_image(
         self,
@@ -185,10 +217,20 @@ class Grok2APIClient:
             "/v1/images/edits",
             json_body=payload,
             timeout_seconds=self._image_timeout,
-            retry_policy=_post_retry("image_edit"),
+            retry_policy=_retry(
+                "image_edit",
+                self._model_retry_count,
+                self._retry_base_delay,
+                self._retry_excluded_errors,
+            ),
             operation="改图",
+            response_parser=lambda data: parse_image_response(
+                data,
+                max_bytes=max_download_bytes,
+                api_base_url=api_base_url,
+            ),
         )
-        return parse_image_response(data, max_bytes=max_download_bytes, api_base_url=api_base_url)
+        return data
 
     # -- video -------------------------------------------------------------
     async def create_video(
@@ -215,11 +257,16 @@ class Grok2APIClient:
             "/v1/videos/generations",
             json_body=payload,
             timeout_seconds=self._video_create_timeout,
-            retry_policy=_post_retry("video_create"),
+            retry_policy=_retry(
+                "video_create",
+                self._video_retry_count,
+                self._retry_base_delay,
+                self._retry_excluded_errors,
+            ),
             operation="创建视频",
+            response_parser=_parse_created_video_request,
         )
-        request_id = str(data.get("request_id") or "")
-        return validate_request_id(request_id)
+        return data
 
     async def get_video(self, request_id: str) -> VideoJob:
         vid = validate_request_id(request_id)
@@ -228,23 +275,23 @@ class Grok2APIClient:
             f"/v1/videos/{vid}",
             json_body=None,
             timeout_seconds=self._video_poll_timeout,
-            retry_policy=_get_retry("video_poll", self._retry_attempts, self._retry_base_delay),
+            retry_policy=_retry(
+                "video_poll",
+                self._video_retry_count,
+                self._retry_base_delay,
+                self._retry_excluded_errors,
+            ),
             operation="查询视频",
+            response_parser=lambda data: parse_video_response(data, request_id=vid),
         )
-        return parse_video_response(data, request_id=vid)
+        return data
 
     async def wait_for_video(self, request_id: str) -> VideoJob:
         vid = validate_request_id(request_id)
-        start = time.monotonic()
         while True:
             job = await self.get_video(vid)
             if job.status in ("done", "failed"):
                 return job
-            if time.monotonic() - start >= self._video_max_wait:
-                raise ProtocolError(
-                    "视频等待超时，可稍后由管理员在 grok2api 查看",
-                    code="video_timeout",
-                )
             try:
                 await self._sleep(self._video_poll_interval)
             except asyncio.CancelledError:
@@ -257,7 +304,12 @@ class Grok2APIClient:
             destination,
             max_bytes=max_bytes,
             timeout_seconds=self._download_timeout,
-            retry_policy=_get_retry("video_download", self._retry_attempts, self._retry_base_delay),
+            retry_policy=_retry(
+                "video_download",
+                self._video_retry_count,
+                self._retry_base_delay,
+                self._retry_excluded_errors,
+            ),
         )
 
     async def download_media(self, source_url: str, destination: Path, *, max_bytes: int) -> Path:
@@ -274,5 +326,10 @@ class Grok2APIClient:
             destination,
             max_bytes=max_bytes,
             timeout_seconds=self._download_timeout,
-            retry_policy=_get_retry("media_download", self._retry_attempts, self._retry_base_delay),
+            retry_policy=_retry(
+                "media_download",
+                self._model_retry_count,
+                self._retry_base_delay,
+                self._retry_excluded_errors,
+            ),
         )

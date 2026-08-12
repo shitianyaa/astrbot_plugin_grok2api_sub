@@ -219,6 +219,12 @@ def test_format_max_sources():
     assert "https://e.com/2" not in out
 
 
+def test_format_zero_max_sources_hides_source_section():
+    out = format_search_result(parse_search_response(_payload()), max_sources=0)
+    assert "来源" not in out
+    assert "https://example.com/a" not in out
+
+
 def test_format_source_without_title_shows_url():
     r = parse_search_response(
         _payload(

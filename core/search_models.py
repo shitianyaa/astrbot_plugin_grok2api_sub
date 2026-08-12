@@ -31,11 +31,29 @@ def reasoning_effort_for_model(configured_model: str, configured_effort: str) ->
 
     Model IDs can include a provider prefix. Unknown models intentionally omit
     ``reasoning`` so a user-defined candidate remains eligible for search.
+    ``auto`` likewise omits the field, allowing the upstream service to choose.
     """
+    if configured_effort == "auto":
+        return ""
     supported = _REASONING_EFFORTS_BY_MODEL.get(catalog_model_id(configured_model))
     if supported and configured_effort in supported:
         return configured_effort
     return ""
+
+
+def search_tools_for_model(
+    configured_model: str,
+    *,
+    enable_web_search: bool,
+    enable_x_search: bool,
+) -> tuple[bool, bool]:
+    """Return enabled Web/X tools after applying model-specific restrictions.
+
+    The grok2api chat family does not support X search. Keep Web search enabled
+    for that family when configured, rather than discarding the candidate.
+    """
+    is_chat_model = catalog_model_id(configured_model).startswith("grok-chat-")
+    return enable_web_search, enable_x_search and not is_chat_model
 
 
 def partition_visible_models(

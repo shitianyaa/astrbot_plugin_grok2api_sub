@@ -89,6 +89,48 @@ class GrokService:
         else:
             await self._workspace.finalize_delivery(paths, success=True, keep=True)
 
+    async def _send_media_progress(self, event: Any, operation: str, text: str) -> None:
+        """Send a non-essential progress notice without cancelling an accepted job."""
+        if not self._config.send_media_progress:
+            return
+        try:
+            await self._sender.send_text(event, text)
+        except asyncio.CancelledError:
+            raise
+        except PluginError as exc:
+            safe_log(
+                logging.WARNING,
+                "media_progress_delivery_failed",
+                operation=operation,
+                error_code=exc.code,
+                exception_type=type(exc).__name__,
+            )
+        except Exception as exc:  # noqa: BLE001
+            safe_log(
+                logging.WARNING,
+                "media_progress_delivery_failed",
+                operation=operation,
+                error_code="progress_delivery_failed",
+                exception_type=type(exc).__name__,
+            )
+
+    @staticmethod
+    def _elapsed_ms(started_at: float) -> int:
+        return int((time.monotonic() - started_at) * 1000)
+
+    def _log_media_failure(self, operation: str, started_at: float, exc: Exception) -> None:
+        fields: dict[str, object] = {
+            "operation": operation,
+            "elapsed_ms": self._elapsed_ms(started_at),
+            "exception_type": type(exc).__name__,
+        }
+        if isinstance(exc, PluginError):
+            fields["error_code"] = exc.code
+            fields["ambiguous"] = exc.ambiguous
+        else:
+            fields["error_code"] = "media_job_failed"
+        safe_log(logging.WARNING, "media_job_failed", **fields)
+
     # -- search ------------------------------------------------------------
     async def search(self, event: Any, query: str, *, required: bool = True) -> SearchResult:
         with operation_scope("search"):
@@ -99,11 +141,11 @@ class GrokService:
     async def _search_with_fallback(self, query: str, *, required: bool) -> SearchResult:
         """Try configured search models in user order with strict fallback.
 
-        Only ``model_not_found`` / ``model_not_allowed`` / ``search_not_performed``
-        advance to the next candidate. Everything else (auth, rate limit, 5xx,
-        ambiguous, protocol, network, timeout) propagates immediately. The
-        catalog only filters visibility; a catalog fetch failure falls back to
-        the original configured order.
+        Every remote result first uses the current model's retry policy. After
+        those attempts are exhausted, only ``model_not_found``,
+        ``model_not_allowed`` and ``search_not_performed`` advance to the next
+        candidate; all other failures propagate. The catalog only filters
+        visibility; a catalog fetch failure falls back to the original order.
         """
         configured = self._config.search_models
         try:
@@ -131,15 +173,23 @@ class GrokService:
                 code="search_models_exhausted",
             )
 
-        from .search_models import reasoning_effort_for_model
+        from .search_models import reasoning_effort_for_model, search_tools_for_model
 
         for index, model in enumerate(candidates):
+            enable_web_search, enable_x_search = search_tools_for_model(
+                model,
+                enable_web_search=self._config.enable_web_search,
+                enable_x_search=self._config.enable_x_search,
+            )
+            if not enable_web_search and not enable_x_search:
+                self._log_model_skipped(model, index, "search_tool_unsupported")
+                continue
             try:
                 result = await self._client.search(
                     query,
                     model=model,
-                    enable_web_search=self._config.enable_web_search,
-                    enable_x_search=self._config.enable_x_search,
+                    enable_web_search=enable_web_search,
+                    enable_x_search=enable_x_search,
                     reasoning_effort=reasoning_effort_for_model(
                         model,
                         self._config.search_reasoning_effort,
@@ -209,79 +259,126 @@ class GrokService:
 
     # -- images ------------------------------------------------------------
     async def deliver_generated_images(self, event: Any, prompt: str, count: int) -> None:
-        self._preflight(event, "image")
-        kind = resolve_platform(event)
-        if kind == PlatformKind.QQ_OFFICIAL and count > 4:
-            raise PluginError("QQ Official 单次最多生成 4 张图片", code="qq_image_limit")
-        async with self._media_sem:
-            lock = self._session_guard(event)
-            await lock.acquire()
-            try:
-                results = await self._client.generate_images(
-                    prompt,
-                    model=self._config.image_model,
-                    count=count,
-                    response_format=self._config.image_response_format,
-                    api_base_url=self._config.api_base_url,
-                    max_download_bytes=self._config.max_image_download_mb * 1024 * 1024,
-                )
+        operation = "image_generate"
+        with operation_scope(operation):
+            self._preflight(event, "image")
+            kind = resolve_platform(event)
+            if kind == PlatformKind.QQ_OFFICIAL and count > 4:
+                raise PluginError("QQ Official 单次最多生成 4 张图片", code="qq_image_limit")
+            async with self._media_sem:
+                lock = self._session_guard(event)
+                await lock.acquire()
                 paths: list[Path] = []
+                started_at = time.monotonic()
                 try:
-                    for r in results:
-                        if r.content:
-                            paths.append(await self._workspace.save_image(r))
+                    safe_log(
+                        logging.INFO,
+                        "media_job_started",
+                        operation=operation,
+                        model=self._config.image_model,
+                        media_count=count,
+                    )
+                    await self._send_media_progress(
+                        event,
+                        operation,
+                        f"正在生成 {count} 张图片，请稍候…",
+                    )
+                    results = await self._client.generate_images(
+                        prompt,
+                        model=self._config.image_model,
+                        count=count,
+                        response_format=self._config.image_response_format,
+                        api_base_url=self._config.api_base_url,
+                        max_download_bytes=self._config.max_image_download_mb * 1024 * 1024,
+                    )
+                    for result in results:
+                        if result.content:
+                            paths.append(await self._workspace.save_image(result))
                         else:
-                            # url-mode: download to workspace
                             dest = self._new_media_path("img")
                             await self._client.download_media(
-                                r.source_url,
+                                result.source_url,
                                 dest,
                                 max_bytes=self._config.max_image_download_mb * 1024 * 1024,
                             )
                             paths.append(dest)
                     await self._sender.send_images(event, paths)
                     await self._finish(paths, success=True)
-                except Exception:
+                    safe_log(
+                        logging.INFO,
+                        "media_job_completed",
+                        operation=operation,
+                        model=self._config.image_model,
+                        media_count=len(paths),
+                        elapsed_ms=self._elapsed_ms(started_at),
+                    )
+                except asyncio.CancelledError:
                     await self._finish(paths, success=False)
                     raise
-            finally:
-                self._release_session_lock(event, lock)
+                except Exception as exc:
+                    await self._finish(paths, success=False)
+                    self._log_media_failure(operation, started_at, exc)
+                    raise
+                finally:
+                    self._release_session_lock(event, lock)
 
     async def deliver_edited_image(self, event: Any, prompt: str) -> None:
-        self._preflight(event, "image_edit")
-        async with self._media_sem:
-            lock = self._session_guard(event)
-            await lock.acquire()
-            try:
-                data_url = await self._find_input_image(event)
-                results = await self._client.edit_image(
-                    prompt,
-                    data_url,
-                    model=self._config.image_edit_model,
-                    response_format=self._config.image_response_format,
-                    api_base_url=self._config.api_base_url,
-                    max_download_bytes=self._config.max_image_download_mb * 1024 * 1024,
-                )
+        operation = "image_edit"
+        with operation_scope(operation):
+            self._preflight(event, "image_edit")
+            async with self._media_sem:
+                lock = self._session_guard(event)
+                await lock.acquire()
                 paths: list[Path] = []
+                started_at = time.monotonic()
                 try:
-                    for r in results[:1]:
-                        if r.content:
-                            paths.append(await self._workspace.save_image(r))
+                    data_url = await self._find_input_image(event)
+                    safe_log(
+                        logging.INFO,
+                        "media_job_started",
+                        operation=operation,
+                        model=self._config.image_edit_model,
+                        media_count=1,
+                    )
+                    await self._send_media_progress(event, operation, "正在编辑图片，请稍候…")
+                    results = await self._client.edit_image(
+                        prompt,
+                        data_url,
+                        model=self._config.image_edit_model,
+                        response_format=self._config.image_response_format,
+                        api_base_url=self._config.api_base_url,
+                        max_download_bytes=self._config.max_image_download_mb * 1024 * 1024,
+                    )
+                    for result in results[:1]:
+                        if result.content:
+                            paths.append(await self._workspace.save_image(result))
                         else:
                             dest = self._new_media_path("edit")
                             await self._client.download_media(
-                                r.source_url,
+                                result.source_url,
                                 dest,
                                 max_bytes=self._config.max_image_download_mb * 1024 * 1024,
                             )
                             paths.append(dest)
                     await self._sender.send_images(event, paths)
                     await self._finish(paths, success=True)
-                except Exception:
+                    safe_log(
+                        logging.INFO,
+                        "media_job_completed",
+                        operation=operation,
+                        model=self._config.image_edit_model,
+                        media_count=len(paths),
+                        elapsed_ms=self._elapsed_ms(started_at),
+                    )
+                except asyncio.CancelledError:
                     await self._finish(paths, success=False)
                     raise
-            finally:
-                self._release_session_lock(event, lock)
+                except Exception as exc:
+                    await self._finish(paths, success=False)
+                    self._log_media_failure(operation, started_at, exc)
+                    raise
+                finally:
+                    self._release_session_lock(event, lock)
 
     async def _find_input_image(self, event: Any) -> str:
         """First Image component in the current chain, else the Reply chain."""
@@ -300,44 +397,74 @@ class GrokService:
 
     # -- video -------------------------------------------------------------
     async def deliver_video(self, event: Any, command: VideoCommand) -> None:
-        self._preflight(event, "video")
-        async with self._media_sem:
-            lock = self._session_guard(event)
-            await lock.acquire()
-            try:
-                if self._config.send_video_progress:
-                    await self._sender.send_text(event, "视频正在生成，请稍候…")
-                image_data_url = ""
+        operation = "video_generate"
+        with operation_scope(operation):
+            self._preflight(event, "video")
+            async with self._media_sem:
+                lock = self._session_guard(event)
+                await lock.acquire()
+                paths: list[Path] = []
+                started_at = time.monotonic()
                 try:
-                    image_data_url = await self._find_input_image(event)
-                except ProtocolError:
+                    safe_log(
+                        logging.INFO,
+                        "media_job_started",
+                        operation=operation,
+                        model=self._config.video_model,
+                        media_count=1,
+                    )
+                    await self._send_media_progress(event, operation, "视频正在生成，请稍候…")
                     image_data_url = ""
+                    try:
+                        image_data_url = await self._find_input_image(event)
+                    except ProtocolError:
+                        image_data_url = ""
 
-                request_id = await self._client.create_video(
-                    command.prompt,
-                    model=self._config.video_model,
-                    duration=command.duration,
-                    aspect_ratio=command.aspect_ratio,
-                    resolution=self._config.video_resolution,
-                    image_data_url=image_data_url,
-                )
-                job = await self._client.wait_for_video(request_id)
-                if job.status == "failed":
-                    raise ProtocolError(f"视频生成失败：{job.error_code}", code="video_failed")
-                dest = self._workspace.allocate_video_path(request_id)
-                await self._client.download_video(
-                    request_id,
-                    dest,
-                    max_bytes=self._config.max_video_download_mb * 1024 * 1024,
-                )
-                try:
+                    request_id = await self._client.create_video(
+                        command.prompt,
+                        model=self._config.video_model,
+                        duration=command.duration,
+                        aspect_ratio=command.aspect_ratio,
+                        resolution=self._config.video_resolution,
+                        image_data_url=image_data_url,
+                    )
+                    safe_log(
+                        logging.INFO,
+                        "video_created",
+                        operation=operation,
+                        model=self._config.video_model,
+                        request_id=request_id,
+                    )
+                    job = await self._client.wait_for_video(request_id)
+                    if job.status == "failed":
+                        raise ProtocolError(f"视频生成失败：{job.error_code}", code="video_failed")
+                    dest = self._workspace.allocate_video_path(request_id)
+                    paths.append(dest)
+                    await self._client.download_video(
+                        request_id,
+                        dest,
+                        max_bytes=self._config.max_video_download_mb * 1024 * 1024,
+                    )
                     await self._sender.send_video(event, dest)
-                    await self._finish([dest], success=True)
-                except Exception:
-                    await self._finish([dest], success=False)
+                    await self._finish(paths, success=True)
+                    safe_log(
+                        logging.INFO,
+                        "media_job_completed",
+                        operation=operation,
+                        model=self._config.video_model,
+                        media_count=1,
+                        request_id=request_id,
+                        elapsed_ms=self._elapsed_ms(started_at),
+                    )
+                except asyncio.CancelledError:
+                    await self._finish(paths, success=False)
                     raise
-            finally:
-                self._release_session_lock(event, lock)
+                except Exception as exc:
+                    await self._finish(paths, success=False)
+                    self._log_media_failure(operation, started_at, exc)
+                    raise
+                finally:
+                    self._release_session_lock(event, lock)
 
     def _release_session_lock(self, event: Any, lock: asyncio.Lock) -> None:
         """Release the session lock and clean up the dict entry if idle."""

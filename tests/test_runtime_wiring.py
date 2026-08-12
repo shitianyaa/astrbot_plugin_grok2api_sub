@@ -32,11 +32,13 @@ def _cfg(**over) -> PluginConfig:
             "search_timeout_seconds": 181,
             "image_timeout_seconds": 301,
             "video_create_timeout_seconds": 121,
+            "video_poll_timeout_seconds": 31,
             "video_poll_interval_seconds": 7,
-            "video_max_wait_seconds": 901,
             "download_timeout_seconds": 302,
-            "get_retry_attempts": 4,
+            "model_retry_count": 4,
+            "video_retry_count": 1,
             "retry_base_delay_seconds": 1.25,
+            "retry_excluded_errors": "401,invalid_json",
             "max_input_image_mb": 13,
         },
     }
@@ -70,20 +72,24 @@ def test_client_consumes_timeouts_attempts_delay():
         search_timeout=cfg.search_timeout_seconds,
         image_timeout=cfg.image_timeout_seconds,
         video_create_timeout=cfg.video_create_timeout_seconds,
+        video_poll_timeout=cfg.video_poll_timeout_seconds,
         video_poll_interval=cfg.video_poll_interval_seconds,
-        video_max_wait=cfg.video_max_wait_seconds,
         download_timeout=cfg.download_timeout_seconds,
-        retry_attempts=cfg.get_retry_attempts,
+        model_retry_count=cfg.model_retry_count,
+        video_retry_count=cfg.video_retry_count,
         retry_base_delay=cfg.retry_base_delay_seconds,
+        retry_excluded_errors=cfg.retry_excluded_errors,
     )
     assert c._search_timeout == 181
     assert c._image_timeout == 301
     assert c._video_create_timeout == 121
+    assert c._video_poll_timeout == 31
     assert c._video_poll_interval == 7
-    assert c._video_max_wait == 901
     assert c._download_timeout == 302
-    assert c._retry_attempts == 4
+    assert c._model_retry_count == 4
+    assert c._video_retry_count == 1
     assert c._retry_base_delay == 1.25
+    assert c._retry_excluded_errors == frozenset({"401", "invalid_json"})
 
 
 def test_workspace_consumes_max_input_bytes(tmp_path):
@@ -92,21 +98,21 @@ def test_workspace_consumes_max_input_bytes(tmp_path):
     assert ws.max_input_bytes == 13 * 1024 * 1024
 
 
-def test_get_retry_policy_uses_attempts_delay():
+def test_retry_policy_uses_group_retries_delay_and_exclusions():
     cfg = _cfg()
-    from core.client import _get_retry, _post_retry
+    from core.client import _retry
 
-    r = _get_retry("op", cfg.get_retry_attempts, cfg.retry_base_delay_seconds)
+    r = _retry(
+        "op",
+        cfg.model_retry_count,
+        cfg.retry_base_delay_seconds,
+        cfg.retry_excluded_errors,
+    )
     assert isinstance(r, RetryPolicy)
-    assert r.attempts == 4
+    assert r.retries == 4
+    assert r.attempts == 5
     assert r.base_delay == 1.25
-    assert r.allow_retry is True
-    assert r.retriable_statuses == {429, 502, 503, 504}
-
-    p = _post_retry("gen")
-    assert p.attempts == 1
-    assert p.allow_retry is False
-    assert p.retriable_statuses == set()
+    assert r.excluded_errors == frozenset({"401", "invalid_json"})
 
 
 def test_service_wiring_non_default(tmp_path):
@@ -120,7 +126,7 @@ def test_service_wiring_non_default(tmp_path):
         debug_mode=cfg.debug_mode,
         session_factory=lambda: s,
     )
-    c = Grok2APIClient(t, retry_attempts=cfg.get_retry_attempts)
+    c = Grok2APIClient(t, model_retry_count=cfg.model_retry_count)
     svc = GrokService(cfg, c, ws, DeliveryAdapter(ws))
     assert svc._config is cfg
 

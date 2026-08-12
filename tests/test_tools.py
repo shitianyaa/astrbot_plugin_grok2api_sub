@@ -38,7 +38,7 @@ class _FakeService:
         return self._result
 
 
-def _service_result():
+def _service_result(*, sources=None):
     from core.models import SearchResult, SearchSource
 
     return SearchResult(
@@ -46,7 +46,7 @@ def _service_result():
         model="m",
         status="completed",
         text="answer",
-        sources=(SearchSource(url="https://e.com/1", title="T"),),
+        sources=sources or (SearchSource(url="https://e.com/1", title="T"),),
         search_performed=True,
     )
 
@@ -84,6 +84,27 @@ async def test_tool_does_not_call_event_send():
     tool, ctx = _tool(event=ev)
     await tool.call(ctx, query="q")
     assert ev.sent == []
+
+
+@pytest.mark.parametrize(
+    ("show_sources", "max_sources", "expected_count"),
+    [(False, 5, 0), (True, 0, 0), (True, 1, 1)],
+)
+async def test_tool_sources_follow_display_configuration(show_sources, max_sources, expected_count):
+    from core.models import SearchSource
+
+    result = _service_result(
+        sources=(
+            SearchSource(url="https://e.com/1", title="One"),
+            SearchSource(url="https://e.com/2", title="Two"),
+        )
+    )
+    tool, ctx = _tool(
+        policy=_policy(show_sources=show_sources, max_sources=max_sources),
+        service=_FakeService(result=result),
+    )
+    out = _parse(await tool.call(ctx, query="q"))
+    assert len(out["sources"]) == expected_count
 
 
 async def test_tool_name_and_description():

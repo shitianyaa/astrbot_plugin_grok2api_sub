@@ -30,7 +30,7 @@ def _default_raw() -> dict:
             "video_resolution": "",
             "image_response_format": "b64_json",
             "max_images_per_request": 4,
-            "send_video_progress": True,
+            "send_media_progress": True,
         },
         "access_settings": {
             "user_whitelist": [],
@@ -43,16 +43,18 @@ def _default_raw() -> dict:
             "search_timeout_seconds": 180,
             "image_timeout_seconds": 300,
             "video_create_timeout_seconds": 120,
+            "video_poll_timeout_seconds": 30,
             "video_poll_interval_seconds": 3,
-            "video_max_wait_seconds": 1800,
             "download_timeout_seconds": 300,
             "max_input_image_mb": 12,
             "max_image_download_mb": 25,
             "max_video_download_mb": 190,
             "max_concurrent_searches": 4,
             "max_concurrent_media_jobs": 2,
-            "get_retry_attempts": 3,
+            "model_retry_count": 2,
+            "video_retry_count": 2,
             "retry_base_delay_seconds": 0.5,
+            "retry_excluded_errors": "",
             "save_media": False,
             "temp_retention_hours": 24,
             "debug_mode": False,
@@ -139,8 +141,11 @@ def test_defaults():
     assert c.max_images_per_request == 4
     assert c.max_concurrent_searches == 4
     assert c.max_concurrent_media_jobs == 2
-    assert c.get_retry_attempts == 3
+    assert c.model_retry_count == 2
+    assert c.video_retry_count == 2
     assert c.retry_base_delay_seconds == 0.5
+    assert c.retry_excluded_errors == frozenset()
+    assert c.video_poll_timeout_seconds == 30
     assert c.image_response_format == "b64_json"
     assert c.video_resolution == ""
     assert c.save_media is False
@@ -150,6 +155,11 @@ def test_defaults():
     assert c.search_reasoning_effort == "high"
     assert c.prompt_max_chars == 4000
     assert c.video_aspect_ratios == ("1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3")
+
+
+def test_auto_search_reasoning_effort_is_accepted():
+    c = _cfg(capability_settings={"search_reasoning_effort": "auto"})
+    assert c.search_reasoning_effort == "auto"
 
 
 def test_empty_models_do_not_block_startup():
@@ -217,8 +227,10 @@ def test_reject_out_of_range():
     _raises(capability_settings={"max_search_output_chars": 90000})
     _raises(capability_settings={"max_images_per_request": 11})
     _raises(capability_settings={"max_images_per_request": 0})
-    _raises(advanced_settings={"get_retry_attempts": 0})
-    _raises(advanced_settings={"get_retry_attempts": 9})
+    _raises(advanced_settings={"model_retry_count": -1})
+    _raises(advanced_settings={"model_retry_count": 6})
+    _raises(advanced_settings={"video_retry_count": -1})
+    _raises(advanced_settings={"video_retry_count": 6})
 
 
 def test_reject_invalid_options():
@@ -227,9 +239,30 @@ def test_reject_invalid_options():
     _raises(capability_settings={"search_reasoning_effort": "maximum"})
 
 
+def test_retry_excluded_errors_are_normalized_and_validated():
+    c = _cfg(
+        advanced_settings={"retry_excluded_errors": "400, 401, auth_error, NETWORK_ERROR, 400"}
+    )
+    assert c.retry_excluded_errors == frozenset({"400", "401", "auth_error", "network_error"})
+    _raises(advanced_settings={"retry_excluded_errors": "400，401"})
+    _raises(advanced_settings={"retry_excluded_errors": "99"})
+    _raises(advanced_settings={"retry_excluded_errors": "Bad Error"})
+
+
 def test_search_requires_at_least_one_enabled_search_tool():
     c = _cfg(capability_settings={"enable_web_search": False, "enable_x_search": False})
     assert c.missing_capability("search") == "未启用联网搜索工具"
+
+
+def test_x_search_only_is_unavailable_for_chat_only_candidates():
+    c = _cfg(
+        capability_settings={
+            "search_models": "grok-chat-fast,grok-chat-auto",
+            "enable_web_search": False,
+            "enable_x_search": True,
+        }
+    )
+    assert c.missing_capability("search") == "当前搜索模型不支持已启用的搜索工具"
 
 
 def test_empty_base_url_is_allowed_but_disables_capability():

@@ -6,6 +6,7 @@ from core.search_models import (
     catalog_model_id,
     partition_visible_models,
     reasoning_effort_for_model,
+    search_tools_for_model,
 )
 
 
@@ -48,5 +49,24 @@ def test_exact_match_takes_precedence_over_provider():
 def test_reasoning_effort_uses_catalog_model_id_and_omits_unsupported_values():
     assert reasoning_effort_for_model("Build/grok-4.5", "high") == "high"
     assert reasoning_effort_for_model("grok-4.20-multi-agent-0309", "xhigh") == "xhigh"
+    assert reasoning_effort_for_model("grok-4.5", "auto") == ""
     assert reasoning_effort_for_model("grok-build-0.1", "high") == ""
     assert reasoning_effort_for_model("custom-model", "high") == ""
+
+
+def test_chat_models_disable_x_search_without_disabling_web_search():
+    assert search_tools_for_model(
+        "Build/grok-chat-fast",
+        enable_web_search=True,
+        enable_x_search=True,
+    ) == (True, False)
+    assert search_tools_for_model(
+        "grok-chat-auto",
+        enable_web_search=False,
+        enable_x_search=True,
+    ) == (False, False)
+    assert search_tools_for_model(
+        "grok-4.5",
+        enable_web_search=True,
+        enable_x_search=True,
+    ) == (True, True)

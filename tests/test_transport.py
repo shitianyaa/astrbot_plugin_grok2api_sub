@@ -7,12 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from core.errors import (
-    AmbiguousSubmissionError,
-    APIError,
-    ConfigurationError,
-    PluginError,
-)
+from core.errors import APIError, ConfigurationError, PluginError
 from core.transport import (
     HTTPTransport,
     RetryPolicy,
@@ -39,8 +34,13 @@ async def _noop():
     pass
 
 
-def _policy(*, allow=True, attempts=3, base=0.1) -> RetryPolicy:
-    return RetryPolicy(operation="op", attempts=attempts, base_delay=base, allow_retry=allow)
+def _policy(*, retries=2, base=0.1, excluded=()) -> RetryPolicy:
+    return RetryPolicy(
+        operation="op",
+        retries=retries,
+        base_delay=base,
+        excluded_errors=frozenset(excluded),
+    )
 
 
 # -- auth / headers -------------------------------------------------------
@@ -75,6 +75,61 @@ async def test_requests_carry_bearer_and_accept():
     assert "Authorization" not in joined
 
 
+async def test_debug_request_log_is_emitted_by_production_request(monkeypatch):
+    events = []
+    monkeypatch.setattr(
+        "core.transport.safe_log", lambda _level, name, **fields: events.append((name, fields))
+    )
+    t, s = _make(debug_mode=True)
+    s.push(FakeResponse(200, body='{"ok":1}'))
+    await t.request_json(
+        "GET",
+        "/v1/models",
+        json_body=None,
+        timeout_seconds=5,
+        retry_policy=_policy(),
+        operation="models",
+    )
+    assert len(events) == 1
+    name, fields = events[0]
+    assert name == "http_request_completed"
+    assert fields["method"] == "GET"
+    assert fields["path"] == "/v1/models"
+    assert fields["attempt"] == 1
+    assert fields["status"] == 200
+    assert fields["retryable"] is False
+    assert isinstance(fields["elapsed_ms"], int)
+    assert fields["elapsed_ms"] >= 0
+
+
+async def test_debug_request_log_records_network_failure(monkeypatch):
+    events = []
+    monkeypatch.setattr(
+        "core.transport.safe_log", lambda _level, name, **fields: events.append((name, fields))
+    )
+    t, s = _make(debug_mode=True)
+    s.push(FakeResponse(error=asyncio.TimeoutError()))
+    with pytest.raises(PluginError):
+        await t.request_json(
+            "GET",
+            "/v1/models",
+            json_body=None,
+            timeout_seconds=5,
+            retry_policy=_policy(retries=0),
+            operation="models",
+        )
+    assert len(events) == 1
+    name, fields = events[0]
+    assert name == "http_request_completed"
+    assert fields["method"] == "GET"
+    assert fields["path"] == "/v1/models"
+    assert fields["attempt"] == 1
+    assert fields["status"] == 0
+    assert fields["retryable"] is False
+    assert isinstance(fields["elapsed_ms"], int)
+    assert fields["elapsed_ms"] >= 0
+
+
 async def test_only_same_origin_relative_path():
     t, s = _make()
     s.push(FakeResponse(200, body='{"d":1}'))
@@ -83,7 +138,7 @@ async def test_only_same_origin_relative_path():
         "/v1/responses",
         json_body={},
         timeout_seconds=5,
-        retry_policy=_policy(allow=False),
+        retry_policy=_policy(),
         operation="search",
     )
     assert s.calls[0]["url"] == "https://grok.example.com/v1/responses"
@@ -115,69 +170,42 @@ async def test_rejects_non_v1_path():
         )
 
 
-# -- ambiguous generation POST -------------------------------------------
-async def test_generation_post_503_calls_once_no_retry():
-    t, s = _make(sleep=None)
-    s.push(FakeResponse(503, body="{}"))
-    with pytest.raises(Exception) as ei:
-        await t.request_json(
-            "POST",
-            "/v1/images/generations",
-            json_body={},
-            timeout_seconds=5,
-            retry_policy=_policy(allow=False),
-            operation="生图",
-        )
-    assert len(s.calls) == 1
-    assert isinstance(ei.value, PluginError)
-
-
-async def test_generation_read_timeout_ambiguous():
+# -- remote POST retry ----------------------------------------------------
+async def test_generation_post_retries_503_then_succeeds():
     t, s = _make()
-    s.push(FakeResponse(200, error=asyncio.TimeoutError()))
-    with pytest.raises(AmbiguousSubmissionError):
-        await t.request_json(
-            "POST",
-            "/v1/responses",
-            json_body={},
-            timeout_seconds=5,
-            retry_policy=_policy(allow=False),
-            operation="搜索",
-        )
-    assert len(s.calls) == 1
+    s.push(FakeResponse(503, body="{}"), FakeResponse(200, body='{"ok":1}'))
+    result = await t.request_json(
+        "POST",
+        "/v1/images/generations",
+        json_body={},
+        timeout_seconds=5,
+        retry_policy=_policy(),
+        operation="生图",
+    )
+    assert result == {"ok": 1}
+    assert len(s.calls) == 2
 
 
-async def test_generation_invalid_200_json_ambiguous():
+async def test_generation_post_retries_network_and_invalid_json():
     t, s = _make()
-    s.push(FakeResponse(200, body="not json"))
-    with pytest.raises(AmbiguousSubmissionError):
-        await t.request_json(
-            "POST",
-            "/v1/images/generations",
-            json_body={},
-            timeout_seconds=5,
-            retry_policy=_policy(allow=False),
-            operation="生图",
-        )
-    assert len(s.calls) == 1
+    s.push(
+        FakeResponse(200, error=asyncio.TimeoutError()),
+        FakeResponse(200, body="not json"),
+        FakeResponse(200, body='{"ok":1}'),
+    )
+    result = await t.request_json(
+        "POST",
+        "/v1/responses",
+        json_body={},
+        timeout_seconds=5,
+        retry_policy=_policy(),
+        operation="搜索",
+    )
+    assert result == {"ok": 1}
+    assert len(s.calls) == 3
 
 
-async def test_generation_503_ambiguous():
-    t, s = _make()
-    s.push(FakeResponse(503, body="{}"))
-    with pytest.raises(AmbiguousSubmissionError):
-        await t.request_json(
-            "POST",
-            "/v1/images/generations",
-            json_body={},
-            timeout_seconds=5,
-            retry_policy=_policy(allow=False),
-            operation="生图",
-        )
-    assert len(s.calls) == 1
-
-
-async def test_generation_4xx_is_api_error_not_ambiguous():
+async def test_excluded_status_stops_generation_post_retry():
     t, s = _make()
     s.push(FakeResponse(401, body='{"error": {"code": "auth", "message": "bad key"}}'))
     with pytest.raises(APIError) as ei:
@@ -186,14 +214,14 @@ async def test_generation_4xx_is_api_error_not_ambiguous():
             "/v1/images/generations",
             json_body={},
             timeout_seconds=5,
-            retry_policy=_policy(allow=False),
+            retry_policy=_policy(excluded=("401",)),
             operation="生图",
         )
     assert ei.value.status == 401
     assert len(s.calls) == 1
 
 
-# -- GET retry matrix -----------------------------------------------------
+# -- remote retry ---------------------------------------------------------
 async def test_get_retries_on_503():
     delays = []
 
@@ -238,7 +266,7 @@ async def test_get_429_honors_retry_after():
     assert delays and delays[0] == 2.0
 
 
-async def test_get_invalid_4xx_no_retry():
+async def test_excluded_error_code_stops_retry():
     t, s = _make()
     s.push(FakeResponse(404, body="{}"))
     with pytest.raises(PluginError) as ei:
@@ -247,7 +275,7 @@ async def test_get_invalid_4xx_no_retry():
             "/v1/models",
             json_body=None,
             timeout_seconds=5,
-            retry_policy=_policy(),
+            retry_policy=_policy(excluded=("not_found",)),
             operation="models",
         )
     assert len(s.calls) == 1
@@ -385,7 +413,7 @@ async def _post_search(transport: HTTPTransport) -> dict:
         "/v1/responses",
         json_body={"model": "test-model", "input": "test"},
         timeout_seconds=5,
-        retry_policy=_policy(allow=False, attempts=1),
+        retry_policy=_policy(retries=0),
         operation="搜索",
     )
 

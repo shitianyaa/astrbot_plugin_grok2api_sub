@@ -5,10 +5,11 @@ The two most important rules enforced across this codebase:
 1. **Never log or leak credentials.** The grok2api Client Key must never appear
    in logs, error messages, test output or the ``redacted_summary()`` report.
    Only a boolean ``client_key_configured`` flag is exposed.
-2. **Never auto-replay ambiguous generation.** Any image/video ``POST`` that
-   fails in an indeterminate way (read timeout, connection reset, 5xx, or an
-   invalid 2xx body) must raise ``AmbiguousSubmissionError`` and must NOT be
-   retried, to avoid duplicate generation and duplicate billing.
+2. **Remote-call retries are explicit and configurable.** Search, image and
+   image-edit work use the model retry group; video creation, polling and
+   download use the video retry group. Generation requests may be replayed
+   when the configured policy permits it, so do not add an implicit bypass
+   for generation requests.
 
 Validation commands (run from this repo root):
 

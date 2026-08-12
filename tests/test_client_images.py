@@ -8,7 +8,7 @@ import json
 import pytest
 
 from core.client import Grok2APIClient
-from core.errors import AmbiguousSubmissionError, MediaLimitError, ProtocolError
+from core.errors import MediaLimitError, ProtocolError
 from core.transport import HTTPTransport
 from tests.fakes import FakeResponse, FakeSession
 
@@ -27,7 +27,12 @@ def _image_json(fmt="b64_json", n=1, error=None) -> str:
     return json.dumps(d)
 
 
-def _client(api_base="https://grok.example.com") -> tuple[Grok2APIClient, FakeSession]:
+def _client(
+    api_base="https://grok.example.com",
+    *,
+    model_retry_count: int = 2,
+    retry_excluded_errors: frozenset[str] = frozenset(),
+) -> tuple[Grok2APIClient, FakeSession]:
     s = FakeSession()
     t = HTTPTransport(
         api_base,
@@ -35,7 +40,11 @@ def _client(api_base="https://grok.example.com") -> tuple[Grok2APIClient, FakeSe
         sleep=lambda d: _noop(),
         session_factory=lambda: s,
     )
-    return Grok2APIClient(t), s
+    return Grok2APIClient(
+        t,
+        model_retry_count=model_retry_count,
+        retry_excluded_errors=retry_excluded_errors,
+    ), s
 
 
 async def _noop():
@@ -114,7 +123,7 @@ async def test_edit_path_and_json_image_url():
 
 # -- strict base64 / size --------------------------------------------------
 async def test_invalid_b64_raises_protocol_error():
-    c, s = _client()
+    c, s = _client(model_retry_count=0)
     s.push(FakeResponse(200, body=json.dumps({"data": [{"b64_json": "@@@@notbase64"}]})))
     with pytest.raises(ProtocolError):
         await c.generate_images(
@@ -159,7 +168,7 @@ async def test_url_only_accepts_media_asset_path():
 
 
 async def test_url_rejects_external_host():
-    c, s = _client()
+    c, s = _client(model_retry_count=0)
     s.push(FakeResponse(200, body=json.dumps({"data": [{"url": "https://evil.com/other"}]})))
     with pytest.raises(ProtocolError):
         await c.generate_images(
@@ -173,7 +182,7 @@ async def test_url_rejects_external_host():
 
 
 async def test_url_rejects_non_media_path():
-    c, s = _client()
+    c, s = _client(model_retry_count=0)
     s.push(
         FakeResponse(
             200, body=json.dumps({"data": [{"url": "https://upstream.example.com/other/x"}]})
@@ -192,7 +201,7 @@ async def test_url_rejects_non_media_path():
 
 # -- missing / fewer data --------------------------------------------------
 async def test_no_data_raises_protocol():
-    c, s = _client()
+    c, s = _client(model_retry_count=0)
     s.push(FakeResponse(200, body=json.dumps({"data": []})))
     with pytest.raises(ProtocolError):
         await c.generate_images(
@@ -207,42 +216,44 @@ async def test_no_data_raises_protocol():
 
 async def test_upstream_error_maps_to_api_error():
     c, s = _client()
-    s.push(FakeResponse(200, body=json.dumps({"error": {"code": "quota", "message": "no quota"}})))
-    with pytest.raises(Exception) as ei:
-        await c.generate_images(
-            "x",
-            model="m",
-            count=1,
-            response_format="b64_json",
-            api_base_url="https://grok.example.com",
-            max_download_bytes=10_000_000,
-        )
-    assert getattr(ei.value, "code", None) == "quota"
+    s.push(
+        FakeResponse(200, body=json.dumps({"error": {"code": "quota", "message": "no quota"}})),
+        FakeResponse(200, body=_image_json()),
+    )
+    results = await c.generate_images(
+        "x",
+        model="m",
+        count=1,
+        response_format="b64_json",
+        api_base_url="https://grok.example.com",
+        max_download_bytes=10_000_000,
+    )
+    assert len(results) == 1
+    assert len(s.calls) == 2
 
 
-# -- ambiguous failures ----------------------------------------------------
-async def test_image_post_503_no_retry_ambiguous():
+# -- retry failures --------------------------------------------------------
+async def test_image_post_503_retries_then_succeeds():
     c, s = _client()
-    s.push(FakeResponse(503, body="{}"))
-    with pytest.raises(Exception) as ei:
-        await c.generate_images(
-            "x",
-            model="m",
-            count=1,
-            response_format="b64_json",
-            api_base_url="https://grok.example.com",
-            max_download_bytes=10_000_000,
-        )
-    assert len(s.calls) == 1
-    assert type(ei.value).__name__ == "AmbiguousSubmissionError"
+    s.push(FakeResponse(503, body="{}"), FakeResponse(200, body=_image_json()))
+    results = await c.generate_images(
+        "x",
+        model="m",
+        count=1,
+        response_format="b64_json",
+        api_base_url="https://grok.example.com",
+        max_download_bytes=10_000_000,
+    )
+    assert len(results) == 1
+    assert len(s.calls) == 2
 
 
-async def test_image_post_read_timeout_ambiguous():
+async def test_image_post_timeout_honors_excluded_network_error():
     import asyncio
 
-    c, s = _client()
+    c, s = _client(retry_excluded_errors=frozenset({"network_error"}))
     s.push(FakeResponse(200, error=asyncio.TimeoutError()))
-    with pytest.raises(AmbiguousSubmissionError):
+    with pytest.raises(Exception) as ei:
         await c.generate_images(
             "x",
             model="m",
@@ -252,3 +263,4 @@ async def test_image_post_read_timeout_ambiguous():
             max_download_bytes=10_000_000,
         )
     assert len(s.calls) == 1
+    assert getattr(ei.value, "code", None) == "network_error"

@@ -164,7 +164,7 @@ def parse_search_response(payload: Mapping[str, Any]) -> SearchResult:
         err = payload.get("error") or {}
         code = str(err.get("code") or "upstream_error")
         message = str(err.get("message") or "上游搜索失败")
-        raise APIError(500, code, message)
+        raise APIError(500, code, message, retryable=True)
 
     if status == "incomplete":
         return SearchResult(
@@ -178,7 +178,11 @@ def parse_search_response(payload: Mapping[str, Any]) -> SearchResult:
         )
 
     if status != "completed":
-        raise ProtocolError(f"未知的搜索状态：{status}", code="unknown_status")
+        raise ProtocolError(
+            f"未知的搜索状态：{status}",
+            code="unknown_status",
+            retryable=True,
+        )
 
     if not search_done:
         raise SearchNotPerformedError()
@@ -206,7 +210,7 @@ def format_search_result(
     if not show_sources:
         return text
     lines = [text] if text else ["（无正文）"]
-    if result.sources:
+    if max_sources > 0 and result.sources:
         lines.append("")
         lines.append("来源：")
         for src in result.sources[:max_sources]:
@@ -227,11 +231,11 @@ def parse_image_response(
         err = payload["error"]
         code = str((err.get("code") if isinstance(err, Mapping) else "") or "upstream_error")
         message = str((err.get("message") if isinstance(err, Mapping) else err) or "生图失败")
-        raise APIError(500, code, message)
+        raise APIError(500, code, message, retryable=True)
 
     data = payload.get("data")
     if not isinstance(data, Sequence) or not data:
-        raise ProtocolError("上游未返回图片数据", code="no_image_data")
+        raise ProtocolError("上游未返回图片数据", code="no_image_data", retryable=True)
 
     results: list[ImageResult] = []
     for entry in data:
@@ -242,9 +246,13 @@ def parse_image_response(
             try:
                 content = base64.b64decode(b64, validate=True)
             except (binascii.Error, ValueError) as exc:
-                raise ProtocolError("图片 Base64 解码失败", code="bad_b64") from exc
+                raise ProtocolError(
+                    "图片 Base64 解码失败",
+                    code="bad_b64",
+                    retryable=True,
+                ) from exc
             if not content:
-                raise ProtocolError("图片内容为空", code="empty_image")
+                raise ProtocolError("图片内容为空", code="empty_image", retryable=True)
             if len(content) > max_bytes:
                 raise MediaLimitError(f"单张图片超过 {max_bytes} 字节上限", code="image_too_large")
             media_type = str(entry.get("mime_type") or "image/png")
@@ -252,12 +260,12 @@ def parse_image_response(
         else:
             url = str(entry.get("url") or "")
             if not _image_asset_url(url):
-                raise ProtocolError("图片 URL 不符合协议", code="bad_image_url")
+                raise ProtocolError("图片 URL 不符合协议", code="bad_image_url", retryable=True)
             # strip scheme/host, rebuild against configured base to avoid SSRF
             rel = "/" + url.split("/", 3)[3]
             results.append(ImageResult(content=b"", media_type="", source_url=api_base_url + rel))
     if not results:
-        raise ProtocolError("未解析到可用图片", code="no_image_data")
+        raise ProtocolError("未解析到可用图片", code="no_image_data", retryable=True)
     return tuple(results)
 
 
@@ -300,7 +308,11 @@ def parse_video_response(payload: Mapping[str, Any], request_id: str = "") -> Vi
         if isinstance(raw_progress, (int, float)):
             progress = max(0, min(100, int(raw_progress)))
         return VideoJob(request_id=rid, status="pending", progress=progress)
-    raise ProtocolError(f"未知的视频状态：{status}", code="unknown_video_status")
+    raise ProtocolError(
+        f"未知的视频状态：{status}",
+        code="unknown_video_status",
+        retryable=True,
+    )
 
 
 def _clamp_progress(payload: Mapping[str, Any]) -> str:

@@ -69,11 +69,13 @@ class Grok2APISubPlugin(Star):
                 search_timeout=cfg.search_timeout_seconds,
                 image_timeout=cfg.image_timeout_seconds,
                 video_create_timeout=cfg.video_create_timeout_seconds,
+                video_poll_timeout=cfg.video_poll_timeout_seconds,
                 video_poll_interval=cfg.video_poll_interval_seconds,
-                video_max_wait=cfg.video_max_wait_seconds,
                 download_timeout=cfg.download_timeout_seconds,
-                retry_attempts=cfg.get_retry_attempts,
+                model_retry_count=cfg.model_retry_count,
+                video_retry_count=cfg.video_retry_count,
                 retry_base_delay=cfg.retry_base_delay_seconds,
+                retry_excluded_errors=cfg.retry_excluded_errors,
             )
             sender = DeliveryAdapter(workspace)
             self._service = GrokService(cfg, client, workspace, sender)
@@ -125,11 +127,11 @@ class Grok2APISubPlugin(Star):
             enabled=self._plugin_config.enabled if self._plugin_config else False,
             enable_tool=self._plugin_config.enable_llm_search_tool if self._plugin_config else True,
             has_key=(self._plugin_config.has_client_key if self._plugin_config else False),
-            has_model=bool(
-                self._plugin_config
-                and self._plugin_config.search_models
-                and (self._plugin_config.enable_web_search or self._plugin_config.enable_x_search)
+            has_model=(
+                self._plugin_config.capability_enabled("search") if self._plugin_config else False
             ),
+            show_sources=self._plugin_config.show_search_sources if self._plugin_config else True,
+            max_sources=self._plugin_config.max_search_sources if self._plugin_config else 5,
         )
         tool = build_search_tool(self._service, policy=policy)
         self.context.add_llm_tools(tool)
@@ -288,7 +290,7 @@ class Grok2APISubPlugin(Star):
             enabled=cfg.enabled,
             enable_tool=cfg.enable_llm_search_tool,
             has_key=cfg.has_client_key,
-            has_model=bool(cfg.search_models and (cfg.enable_web_search or cfg.enable_x_search)),
+            has_model=cfg.capability_enabled("search"),
         )
         return tool_allowed_for_event(event, policy, cfg)
 

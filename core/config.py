@@ -16,6 +16,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 
 from .errors import ConfigurationError
+from .search_models import search_tools_for_model
 
 # ---------------------------------------------------------------------------
 # Constants (mirror of section 3 of the implementation plan)
@@ -39,9 +40,10 @@ MAX_MODEL_ID_CHARS = 255
 _VIDEO_ASPECT_RATIOS = ("1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3")
 _VIDEO_RESOLUTIONS = ("", "480p", "720p")
 _IMAGE_FORMATS = ("b64_json", "url")
-_SEARCH_REASONING_EFFORTS = ("none", "low", "medium", "high", "xhigh")
+_SEARCH_REASONING_EFFORTS = ("auto", "none", "low", "medium", "high", "xhigh")
 
 _URL_SCHEME_RE = re.compile(r"^[a-zA-Z][a-zA-Z0-9+.-]*://")
+_RETRY_ERROR_CODE_RE = re.compile(r"^[a-z][a-z0-9_.-]{0,63}$")
 
 _SECTIONS = ("connection_settings", "capability_settings", "access_settings", "advanced_settings")
 
@@ -84,6 +86,37 @@ def parse_search_models(value: object) -> tuple[str, ...]:
     if len(result) > MAX_SEARCH_MODELS:
         _fail("capability_settings.search_models", "最多配置 12 个模型")
     return tuple(result)
+
+
+def parse_retry_excluded_errors(value: object) -> frozenset[str]:
+    """Parse configured HTTP status codes or stable error codes to skip.
+
+    The WebUI field is intentionally a comma-separated string rather than a
+    free-form object. It can only contain HTTP statuses (100-599) or lowercase
+    stable plugin error codes, never upstream response text.
+    """
+    if not isinstance(value, str):
+        _fail("advanced_settings.retry_excluded_errors", "必须是英文逗号分隔的字符串")
+    if "，" in value:
+        _fail("advanced_settings.retry_excluded_errors", "请使用英文逗号 , 分隔")
+    values: set[str] = set()
+    for raw in value.split(","):
+        token = raw.strip().lower()
+        if not token:
+            continue
+        if token.isdecimal():
+            status = int(token)
+            if not 100 <= status <= 599:
+                _fail(
+                    "advanced_settings.retry_excluded_errors", "HTTP 状态码必须在 100 到 599 之间"
+                )
+        elif not _RETRY_ERROR_CODE_RE.fullmatch(token):
+            _fail(
+                "advanced_settings.retry_excluded_errors",
+                "只能填写 HTTP 状态码或小写稳定错误码",
+            )
+        values.add(token)
+    return frozenset(values)
 
 
 def _to_int(key: str, value: object, lo: int, hi: int) -> int:
@@ -186,8 +219,8 @@ class PluginConfig:
     search_timeout_seconds: int
     image_timeout_seconds: int
     video_create_timeout_seconds: int
+    video_poll_timeout_seconds: int
     video_poll_interval_seconds: int
-    video_max_wait_seconds: int
     download_timeout_seconds: int
 
     max_input_image_mb: int
@@ -201,12 +234,14 @@ class PluginConfig:
     video_resolution: str
     image_response_format: str
 
-    get_retry_attempts: int
+    model_retry_count: int
+    video_retry_count: int
     retry_base_delay_seconds: float
+    retry_excluded_errors: frozenset[str]
 
     save_media: bool
     temp_retention_hours: int
-    send_video_progress: bool
+    send_media_progress: bool
 
     user_whitelist: tuple[str, ...] = field(default_factory=tuple)
     user_blacklist: tuple[str, ...] = field(default_factory=tuple)
@@ -255,6 +290,17 @@ class PluginConfig:
                 return "未配置搜索模型"
             if not self.enable_web_search and not self.enable_x_search:
                 return "未启用联网搜索工具"
+            if not any(
+                any(
+                    search_tools_for_model(
+                        model,
+                        enable_web_search=self.enable_web_search,
+                        enable_x_search=self.enable_x_search,
+                    )
+                )
+                for model in self.search_models
+            ):
+                return "当前搜索模型不支持已启用的搜索工具"
             return None
         key = {
             "image": "image_model",
@@ -381,17 +427,17 @@ class PluginConfig:
                 10,
                 600,
             ),
+            video_poll_timeout_seconds=_to_int(
+                "advanced_settings.video_poll_timeout_seconds",
+                g(adv, "video_poll_timeout_seconds", 30),
+                1,
+                600,
+            ),
             video_poll_interval_seconds=_to_int(
                 "advanced_settings.video_poll_interval_seconds",
                 g(adv, "video_poll_interval_seconds", 3),
                 1,
                 30,
-            ),
-            video_max_wait_seconds=_to_int(
-                "advanced_settings.video_max_wait_seconds",
-                g(adv, "video_max_wait_seconds", 1800),
-                30,
-                7200,
             ),
             download_timeout_seconds=_to_int(
                 "advanced_settings.download_timeout_seconds",
@@ -442,8 +488,11 @@ class PluginConfig:
                 g(cap, "image_response_format", "b64_json"),
                 _IMAGE_FORMATS,
             ),
-            get_retry_attempts=_to_int(
-                "advanced_settings.get_retry_attempts", g(adv, "get_retry_attempts", 3), 1, 5
+            model_retry_count=_to_int(
+                "advanced_settings.model_retry_count", g(adv, "model_retry_count", 2), 0, 5
+            ),
+            video_retry_count=_to_int(
+                "advanced_settings.video_retry_count", g(adv, "video_retry_count", 2), 0, 5
             ),
             retry_base_delay_seconds=_to_float(
                 "advanced_settings.retry_base_delay_seconds",
@@ -451,6 +500,7 @@ class PluginConfig:
                 0.1,
                 5.0,
             ),
+            retry_excluded_errors=parse_retry_excluded_errors(g(adv, "retry_excluded_errors", "")),
             save_media=_bool_flag("advanced_settings.save_media", g(adv, "save_media"), False),
             temp_retention_hours=_to_int(
                 "advanced_settings.temp_retention_hours",
@@ -458,8 +508,8 @@ class PluginConfig:
                 1,
                 168,
             ),
-            send_video_progress=_bool_flag(
-                "capability_settings.send_video_progress", g(cap, "send_video_progress"), True
+            send_media_progress=_bool_flag(
+                "capability_settings.send_media_progress", g(cap, "send_media_progress"), True
             ),
             user_whitelist=_dedupe(
                 list(g(acc, "user_whitelist", []) or []), "access_settings.user_whitelist"

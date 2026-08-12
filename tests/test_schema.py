@@ -73,8 +73,13 @@ def test_capability_group_has_search_models(schema):
         "video_resolution",
         "image_response_format",
         "max_images_per_request",
-        "send_video_progress",
+        "send_media_progress",
     }
+
+
+def test_search_reasoning_effort_supports_auto(schema):
+    options = schema["capability_settings"]["items"]["search_reasoning_effort"]["options"]
+    assert options[0] == "auto"
 
 
 def test_access_group_items(schema):
@@ -94,16 +99,18 @@ def test_advanced_group_items(schema):
         "search_timeout_seconds",
         "image_timeout_seconds",
         "video_create_timeout_seconds",
+        "video_poll_timeout_seconds",
         "video_poll_interval_seconds",
-        "video_max_wait_seconds",
         "download_timeout_seconds",
         "max_input_image_mb",
         "max_image_download_mb",
         "max_video_download_mb",
         "max_concurrent_searches",
         "max_concurrent_media_jobs",
-        "get_retry_attempts",
+        "model_retry_count",
+        "video_retry_count",
         "retry_base_delay_seconds",
+        "retry_excluded_errors",
         "save_media",
         "temp_retention_hours",
         "debug_mode",

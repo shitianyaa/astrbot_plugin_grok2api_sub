@@ -205,7 +205,7 @@
   | Group | Items |
   |---|---|
   | `connection_settings` | `enabled`, `api_base_url`, `client_api_key`, `verify_tls`, `client_proxy_url` |
-  | `capability_settings` | `search_models`, `image_model`, `image_edit_model`, `video_model`, `enable_llm_search_tool`, `show_search_sources`, `max_search_sources`, `max_search_output_chars`, `video_resolution`, `image_response_format`, `max_images_per_request`, `send_video_progress` |
+  | `capability_settings` | `search_models`, `image_model`, `image_edit_model`, `video_model`, `enable_llm_search_tool`, `show_search_sources`, `max_search_sources`, `max_search_output_chars`, `video_resolution`, `image_response_format`, `max_images_per_request`, `send_media_progress` |
   | `access_settings` | `user_whitelist`, `user_blacklist`, `group_whitelist`, `group_blacklist` |
   | `advanced_settings` | `connect_timeout_seconds`, `search_timeout_seconds`, `image_timeout_seconds`, `video_create_timeout_seconds`, `video_poll_interval_seconds`, `video_max_wait_seconds`, `download_timeout_seconds`, `max_input_image_mb`, `max_image_download_mb`, `max_video_download_mb`, `max_concurrent_searches`, `max_concurrent_media_jobs`, `get_retry_attempts`, `retry_base_delay_seconds`, `save_media`, `temp_retention_hours`, `debug_mode` |
 

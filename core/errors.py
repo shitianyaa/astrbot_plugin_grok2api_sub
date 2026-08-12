@@ -55,20 +55,21 @@ class ConfigurationError(PluginError):
 
 
 class APIError(PluginError):
-    def __init__(self, status: int, upstream_code: str, user_message: str) -> None:
-        super().__init__(user_message, code=upstream_code)
+    def __init__(
+        self,
+        status: int,
+        upstream_code: str,
+        user_message: str,
+        *,
+        retryable: bool = False,
+    ) -> None:
+        super().__init__(user_message, code=upstream_code, retryable=retryable)
         self.status = status
-
-
-class AmbiguousSubmissionError(PluginError):
-    def __init__(self, user_message: str, *, code: str = "ambiguous_submission") -> None:
-        msg = f"{user_message} 请求结果状态未知，为避免重复生成或重复扣费，插件未自动重试。"
-        super().__init__(msg, code=code, ambiguous=True)
 
 
 class SearchNotPerformedError(PluginError):
     def __init__(self, user_message: str = "模型未执行联网搜索，无法返回联网结果。") -> None:
-        super().__init__(user_message, code="search_not_performed")
+        super().__init__(user_message, code="search_not_performed", retryable=True)
 
 
 class MediaLimitError(PluginError):
@@ -79,8 +80,14 @@ class MediaLimitError(PluginError):
 class ProtocolError(PluginError):
     """Upstream returned a shape we cannot parse (non-SSRF, non-ambiguous)."""
 
-    def __init__(self, user_message: str, *, code: str = "protocol_error") -> None:
-        super().__init__(user_message, code=code)
+    def __init__(
+        self,
+        user_message: str,
+        *,
+        code: str = "protocol_error",
+        retryable: bool = False,
+    ) -> None:
+        super().__init__(user_message, code=code, retryable=retryable)
 
 
 class NotSupportedError(PluginError):

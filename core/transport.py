@@ -5,9 +5,9 @@ Design rules (section 4.5 of the plan):
 - Only same-origin relative ``/v1/...`` paths are ever requested. Absolute URLs
   supplied by upstream are never used as an authenticated-request target, so the
   Client Key is never forwarded to another host.
-- The retry matrix is strictly enforced: generation / edit / video-create POSTs
-  are never auto-replayed; idempotent GETs may retry on connect/429/5xx while
-  honoring ``Retry-After``.
+- Every remote request uses a caller-selected retry policy. The policy groups
+  model/image/search work separately from video work, supports configured
+  status/error exclusions, and honors ``Retry-After``.
 - Downloads write to a ``.part`` file, enforce a byte cap, delete the partial
   file on failure, and atomically rename on success.
 - ``asyncio.CancelledError`` is always re-raised.
@@ -23,21 +23,15 @@ import time
 from collections.abc import Callable, Coroutine
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TypeVar
 
 import aiohttp
 
-from .errors import (
-    AmbiguousSubmissionError,
-    APIError,
-    ConfigurationError,
-    PluginError,
-    ProtocolError,
-)
-from .observability import current_trace_id, safe_log
+from .errors import APIError, ConfigurationError, PluginError, ProtocolError
+from .observability import safe_log
 
 logger = logging.getLogger("astrbot_plugin_grok2api_sub.transport")
 
-_RETRYABLE_GET_STATUS = {429, 502, 503, 504}
 _MAX_BACKOFF = 30.0
 _MAX_URL_LEN = 2048
 _MAX_ERROR_BODY_BYTES = 64 * 1024
@@ -45,18 +39,27 @@ _SAFE_ERROR_CODE_RE = re.compile(r"^[A-Za-z0-9_.-]{1,64}$")
 _MODEL_FALLBACK_CODES = frozenset({"model_not_found", "model_not_allowed"})
 
 SleepFn = Callable[[float], Coroutine[None, None, None]]
+ResponseValue = TypeVar("ResponseValue")
 
 
 @dataclass(frozen=True, slots=True)
 class RetryPolicy:
     operation: str
-    attempts: int = 3  # total tries
+    retries: int = 2  # retries after the initial request
     base_delay: float = 0.5
-    allow_retry: bool = True
+    excluded_errors: frozenset[str] = frozenset()
 
     @property
-    def retriable_statuses(self) -> set[int]:
-        return _RETRYABLE_GET_STATUS if self.allow_retry else set()
+    def attempts(self) -> int:
+        return self.retries + 1
+
+    def allows(self, error: PluginError) -> bool:
+        """Return whether a normalized remote error is eligible for retry."""
+        if error.code in self.excluded_errors:
+            return False
+        if isinstance(error, APIError) and str(error.status) in self.excluded_errors:
+            return False
+        return error.retryable
 
 
 def _exponential_delay(attempt: int, base: float, retry_after: float | None = None) -> float:
@@ -173,14 +176,29 @@ class HTTPTransport:
             "Accept": "application/json",
         }
 
-    def _log_request(self, method: str, url: str) -> None:
-        # never log Authorization header; only the verified relative path
+    def _log_request(
+        self,
+        method: str,
+        path: str,
+        *,
+        attempt: int = 0,
+        status: int = 0,
+        started_at: float | None = None,
+        retryable: bool = False,
+    ) -> None:
+        """Log one request attempt's non-sensitive outcome in debug mode."""
+        if not self._debug_mode:
+            return
+        elapsed_ms = int((time.monotonic() - started_at) * 1000) if started_at is not None else 0
         safe_log(
             logging.DEBUG,
             "http_request_completed",
             method=method,
-            path=url,
-            trace_id=current_trace_id(),
+            path=path,
+            attempt=attempt,
+            status=status,
+            elapsed_ms=elapsed_ms,
+            retryable=retryable,
         )
 
     async def close(self) -> None:
@@ -206,11 +224,10 @@ class HTTPTransport:
         timeout_seconds: float,
         retry_policy: RetryPolicy,
         operation: str,
-    ) -> dict:
+        response_parser: Callable[[dict], ResponseValue] | None = None,
+    ) -> dict | ResponseValue:
         path = _validate_relative_path(path)
         url = self._base_url + path
-        retriable = retry_policy.retriable_statuses
-        last_error: PluginError | None = None
         timeout = aiohttp.ClientTimeout(
             total=timeout_seconds,
             connect=min(self._connect_timeout, timeout_seconds),
@@ -219,6 +236,7 @@ class HTTPTransport:
             if self._closed:
                 raise ConfigurationError("插件已关闭", code="closed")
             session = self._session_for()
+            started_at = time.monotonic()
             try:
                 async with session.request(
                     method,
@@ -230,38 +248,77 @@ class HTTPTransport:
                 ) as resp:
                     status = resp.status
                     retry_after = parse_retry_after(resp.headers.get("Retry-After"), time.time())
-                    if status == 200:
+                    if 200 <= status < 300:
                         try:
-                            return await resp.json()
-                        except Exception as exc:  # noqa: BLE001
-                            if not retry_policy.allow_retry:
-                                raise AmbiguousSubmissionError(
-                                    f"{operation} 响应无法解析", code="invalid_2xx_ambiguous"
-                                ) from exc
-                            raise ProtocolError(
-                                "上游返回了无法解析的 JSON", code="invalid_json"
-                            ) from exc
-                    if status in retriable and attempt < retry_policy.attempts:
+                            payload = await resp.json()
+                        except Exception:  # noqa: BLE001
+                            error = ProtocolError(
+                                "上游返回了无法解析的 JSON",
+                                code="invalid_json",
+                                retryable=True,
+                            )
+                        else:
+                            if not isinstance(payload, dict):
+                                error = ProtocolError(
+                                    "上游返回了无效的 JSON 结构",
+                                    code="invalid_json",
+                                    retryable=True,
+                                )
+                            elif response_parser is None:
+                                self._log_request(
+                                    method,
+                                    path,
+                                    attempt=attempt,
+                                    status=status,
+                                    started_at=started_at,
+                                )
+                                return payload
+                            else:
+                                try:
+                                    result = response_parser(payload)
+                                except PluginError as exc:
+                                    error = exc
+                                else:
+                                    self._log_request(
+                                        method,
+                                        path,
+                                        attempt=attempt,
+                                        status=status,
+                                        started_at=started_at,
+                                    )
+                                    return result
+                    else:
+                        error = await self._status_error(status, resp, operation)
+
+                    will_retry = attempt < retry_policy.attempts and retry_policy.allows(error)
+                    self._log_request(
+                        method,
+                        path,
+                        attempt=attempt,
+                        status=status,
+                        started_at=started_at,
+                        retryable=will_retry,
+                    )
+                    if will_retry:
                         await self._backoff(attempt, retry_policy.base_delay, retry_after)
                         continue
-                    if status >= 500 and not retry_policy.allow_retry:
-                        raise AmbiguousSubmissionError(
-                            f"{operation} 上游错误（{status}）", code="http_5xx_ambiguous"
-                        )
-                    raise await self._status_error(status, resp, operation)
+                    raise error
             except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
-                # read timeout / connection reset on a generation POST is ambiguous
-                if not retry_policy.allow_retry:
-                    raise AmbiguousSubmissionError(
-                        f"{operation} 网络失败", code="network_ambiguous"
-                    ) from exc
-                if attempt < retry_policy.attempts:
+                error = PluginError(f"{operation} 网络失败", code="network_error", retryable=True)
+                will_retry = attempt < retry_policy.attempts and retry_policy.allows(error)
+                self._log_request(
+                    method,
+                    path,
+                    attempt=attempt,
+                    status=0,
+                    started_at=started_at,
+                    retryable=will_retry,
+                )
+                if will_retry:
                     await self._backoff(attempt, retry_policy.base_delay, None)
                     continue
-                last_error = PluginError(
-                    f"{operation} 网络失败", code="network_error", retryable=True
-                )
-        raise last_error or PluginError(f"{operation} 失败", code="unknown")
+                raise error from exc
+        raise PluginError(f"{operation} 失败", code="unknown")
 
     async def _backoff(self, attempt: int, base_delay: float, retry_after: float | None) -> None:
         delay = _exponential_delay(attempt, base_delay, retry_after)
@@ -276,18 +333,30 @@ class HTTPTransport:
         # model fallback codes are the only bytes we keep from the error body
         upstream_code = await _extract_safe_error_code(resp)
         if upstream_code == "model_not_found":
-            return APIError(status, upstream_code, "搜索模型不存在")
+            return APIError(status, upstream_code, "搜索模型不存在", retryable=True)
         if upstream_code == "model_not_allowed":
-            return APIError(status, upstream_code, "当前 Client Key 无权使用该搜索模型")
+            return APIError(
+                status, upstream_code, "当前 Client Key 无权使用该搜索模型", retryable=True
+            )
         if status in (401, 403):
-            return APIError(status, "auth_error", "Client Key 无效或权限不足")
+            return APIError(status, "auth_error", "Client Key 无效或权限不足", retryable=True)
         if status == 404:
-            return APIError(status, "not_found", "接口或资源不存在，请检查 base URL")
+            return APIError(
+                status,
+                "not_found",
+                "接口或资源不存在，请检查 base URL",
+                retryable=True,
+            )
         if status == 429:
-            return APIError(status, "rate_limited", "上游限流，请稍后再试")
+            return APIError(status, "rate_limited", "上游限流，请稍后再试", retryable=True)
         if status >= 500:
-            return APIError(status, f"upstream_{status}", f"上游服务错误（{status}）")
-        return APIError(status, "http_error", f"上游返回错误（{status}）")
+            return APIError(
+                status,
+                f"upstream_{status}",
+                f"上游服务错误（{status}）",
+                retryable=True,
+            )
+        return APIError(status, "http_error", f"上游返回错误（{status}）", retryable=True)
 
     async def download(
         self,
@@ -310,21 +379,29 @@ class HTTPTransport:
                 raise ConfigurationError("插件已关闭", code="closed")
             session = self._session_for()
             written = 0
+            started_at = time.monotonic()
             try:
                 async with session.get(
                     url, headers=self._headers(), timeout=timeout, proxy=self._proxy_url or None
                 ) as resp:
                     if resp.status != 200:
-                        if (
-                            resp.status in retry_policy.retriable_statuses
-                            and attempt < retry_policy.attempts
-                        ):
+                        error = await self._status_error(resp.status, resp, "下载")
+                        will_retry = attempt < retry_policy.attempts and retry_policy.allows(error)
+                        self._log_request(
+                            "GET",
+                            path,
+                            attempt=attempt,
+                            status=resp.status,
+                            started_at=started_at,
+                            retryable=will_retry,
+                        )
+                        if will_retry:
                             retry_after = parse_retry_after(
                                 resp.headers.get("Retry-After"), time.time()
                             )
                             await self._backoff(attempt, retry_policy.base_delay, retry_after)
                             continue
-                        raise await self._status_error(resp.status, resp, "下载")
+                        raise error
                     declared = resp.content_length or 0
                     if declared > max_bytes:
                         part.unlink(missing_ok=True)
@@ -342,18 +419,50 @@ class HTTPTransport:
                             fh.write(chunk)
                     if written == 0:
                         part.unlink(missing_ok=True)
-                        raise ProtocolError("上游返回空媒体", code="empty_media")
+                        error = ProtocolError(
+                            "上游返回空媒体",
+                            code="empty_media",
+                            retryable=True,
+                        )
+                        will_retry = attempt < retry_policy.attempts and retry_policy.allows(error)
+                        self._log_request(
+                            "GET",
+                            path,
+                            attempt=attempt,
+                            status=resp.status,
+                            started_at=started_at,
+                            retryable=will_retry,
+                        )
+                        if will_retry:
+                            await self._backoff(attempt, retry_policy.base_delay, None)
+                            continue
+                        raise error
                     part.replace(destination)
+                    self._log_request(
+                        "GET",
+                        path,
+                        attempt=attempt,
+                        status=resp.status,
+                        started_at=started_at,
+                    )
                     return destination
             except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
                 part.unlink(missing_ok=True)
-                if attempt < retry_policy.attempts:
+                error = PluginError("下载网络失败", code="network_error", retryable=True)
+                will_retry = attempt < retry_policy.attempts and retry_policy.allows(error)
+                self._log_request(
+                    "GET",
+                    path,
+                    attempt=attempt,
+                    status=0,
+                    started_at=started_at,
+                    retryable=will_retry,
+                )
+                if will_retry:
                     await self._backoff(attempt, retry_policy.base_delay, None)
                     continue
-                raise PluginError(
-                    f"下载失败（{type(exc).__name__}）", code="download_failed", retryable=True
-                ) from exc
+                raise error from exc
             except Exception:
                 part.unlink(missing_ok=True)
                 raise
-        raise PluginError("下载失败", code="download_failed")
+        raise PluginError("下载失败", code="unknown")

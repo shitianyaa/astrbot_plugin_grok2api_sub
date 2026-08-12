@@ -44,7 +44,7 @@
         "description": "联网搜索模型候选，英文逗号分隔，左侧优先，最多 12 个。留空则搜索能力不可用。",
         "type": "string",
         "default": "grok-4.5,grok-4.3,grok-4.20-0309-reasoning,grok-4.20-0309-non-reasoning,grok-4.20-multi-agent-0309,grok-build-0.1,grok-chat-fast",
-        "hint": "使用英文逗号 , 分隔，按首次出现保序去重。左侧模型优先尝试，只有 model_not_found/model_not_allowed/search_not_performed 才切换下一个。"
+        "hint": "使用英文逗号 , 分隔，按首次出现保序去重。左侧模型优先；远端失败先按重试设置重试，只有 model_not_found/model_not_allowed/search_not_performed 耗尽后才切换下一个。"
       },
       "enable_web_search": {
         "description": "启用 Web 联网搜索。",
@@ -56,14 +56,14 @@
         "description": "启用 X 搜索。",
         "type": "bool",
         "default": true,
-        "hint": "默认开启；关闭后仅使用已启用的 Web 联网搜索。"
+        "hint": "默认开启；grok-chat-* 模型不支持 X 搜索，会自动仅使用已启用的 Web 联网搜索。"
       },
       "search_reasoning_effort": {
         "description": "联网搜索思考强度。",
         "type": "string",
         "default": "high",
-        "options": ["none", "low", "medium", "high", "xhigh"],
-        "hint": "默认 high；当前候选模型不支持所选强度时会省略该参数，继续尝试搜索。"
+        "options": ["auto", "none", "low", "medium", "high", "xhigh"],
+        "hint": "默认 high；auto 表示不发送 reasoning 参数，由远端自动选择。当前候选模型不支持所选强度时也会省略该参数。"
       },
       "image_model": {
         "description": "文生图模型。留空则生图不可用。",
@@ -93,7 +93,7 @@
         "description": "搜索结果是否展示结构化来源。",
         "type": "bool",
         "default": true,
-        "hint": "手动命令与 Tool 均保留来源，此开关只控制格式化时是否展示。"
+        "hint": "手动命令输出与 Tool 返回内容均遵守此开关。"
       },
       "max_search_sources": {
         "description": "单个搜索结果最多展示的来源数。",
@@ -129,11 +129,11 @@
         "default": 4,
         "slider": { "min": 1, "max": 10, "step": 1 }
       },
-      "send_video_progress": {
-        "description": "视频生成前发送一次进度提示。",
+      "send_media_progress": {
+        "description": "媒体生成前发送一次进度提示。",
         "type": "bool",
         "default": true,
-        "hint": "QQ Official 建议开启且只发一次。"
+        "hint": "覆盖生图、改图和视频；QQ Official 建议开启且每个任务只发一次。"
       }
     }
   },
@@ -191,17 +191,17 @@
         "default": 120,
         "slider": { "min": 10, "max": 600, "step": 10 }
       },
+      "video_poll_timeout_seconds": {
+        "description": "每次视频状态查询请求整体超时（秒）。",
+        "type": "int",
+        "default": 30,
+        "slider": { "min": 1, "max": 600, "step": 1 }
+      },
       "video_poll_interval_seconds": {
         "description": "视频状态轮询间隔（秒）。",
         "type": "int",
         "default": 3,
         "slider": { "min": 1, "max": 30, "step": 1 }
-      },
-      "video_max_wait_seconds": {
-        "description": "视频从创建到完成的最长等待（秒）。",
-        "type": "int",
-        "default": 1800,
-        "slider": { "min": 30, "max": 7200, "step": 30 }
       },
       "download_timeout_seconds": {
         "description": "媒体下载整体超时（秒）。",
@@ -241,17 +241,29 @@
         "default": 2,
         "slider": { "min": 1, "max": 8, "step": 1 }
       },
-      "get_retry_attempts": {
-        "description": "允许重试的 GET 操作（列表/状态/下载）最大尝试次数。",
+      "model_retry_count": {
+        "description": "搜索、生图、改图、模型目录和图片下载的最大额外重试次数；不含首次请求。",
         "type": "int",
-        "default": 3,
-        "slider": { "min": 1, "max": 5, "step": 1 }
+        "default": 2,
+        "slider": { "min": 0, "max": 5, "step": 1 }
+      },
+      "video_retry_count": {
+        "description": "视频创建、状态轮询和视频下载的最大额外重试次数；不含首次请求。",
+        "type": "int",
+        "default": 2,
+        "slider": { "min": 0, "max": 5, "step": 1 }
       },
       "retry_base_delay_seconds": {
         "description": "重试退避基准延迟（秒）。",
         "type": "float",
         "default": 0.5,
         "slider": { "min": 0.1, "max": 5.0, "step": 0.1 }
+      },
+      "retry_excluded_errors": {
+        "description": "不自动重试的错误，英文逗号分隔；可填 HTTP 状态码或稳定错误码，留空即全部远端错误重试。",
+        "type": "string",
+        "default": "",
+        "hint": "示例：400,401,403,404,422,auth_error,model_not_found,invalid_json,network_error"
       },
       "save_media": {
         "description": "是否在发送后保留生成媒体。",

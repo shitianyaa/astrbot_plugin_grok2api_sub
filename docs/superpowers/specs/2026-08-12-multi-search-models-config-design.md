@@ -39,8 +39,8 @@ grok-4.5,grok-4.3,grok-4.20-0309-reasoning,grok-4.20-0309-non-reasoning,grok-4.2
 5. 单项最长 255 个 Unicode 字符，总计最多 12 项。
 6. 空字符串、纯空白或只有英文逗号的值解析为空 tuple，表示显式关闭搜索能力。
 7. 中文逗号 `，` 不自动转换，明确报错，避免模型 ID 被错误拼接。
-8. `enable_web_search` 与 `enable_x_search` 默认均为 true；二者都关闭时搜索能力不可用。
-9. `search_reasoning_effort` 允许 `none/low/medium/high/xhigh`，默认 `high`。已知模型不支持时省略 `reasoning` 字段，未知自定义模型也不强加该字段。
+8. `enable_web_search` 与 `enable_x_search` 默认均为 true；二者都关闭时搜索能力不可用。`grok-chat-*` 不支持 X 搜索，启用 X 时自动仅保留 Web 搜索；若只开 X 且候选全为 chat 模型，则搜索能力不可用。
+9. `search_reasoning_effort` 允许 `auto/none/low/medium/high/xhigh`，默认 `high`。`auto` 表示省略 `reasoning` 字段、由远端选择；已知模型不支持时同样省略，未知自定义模型也不强加该字段。
 
 运行时模型存储为：
 
@@ -119,7 +119,7 @@ search_models: tuple[str, ...]
 WebUI 从约 38 个顶层配置项改成 4 个 `object` 分组：
 
 1. `connection_settings`：启用、远端 API 地址、Client Key、TLS、可选代理。新安装的 `api_base_url` 和 `client_proxy_url` 默认都必须是空字符串，不内置任何本地服务地址或本地代理端口。
-2. `capability_settings`：搜索模型列表、Web/X 搜索开关、思考强度、图片/改图/视频模型、LLM 搜索 Tool、来源显示、输出限制、视频分辨率、响应格式、单次图片数、视频进度提示。
+2. `capability_settings`：搜索模型列表、Web/X 搜索开关、思考强度、图片/改图/视频模型、LLM 搜索 Tool、来源显示、输出限制、视频分辨率、响应格式、单次图片数、媒体进度提示。
 3. `access_settings`：用户与群聊黑白名单。
 4. `advanced_settings`：连接/请求/下载超时、媒体大小、并发、GET 重试、媒体保留、清理时间和 debug 日志。
 

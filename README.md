@@ -50,8 +50,8 @@ python -m pip install -r requirements.txt
 |---|---|
 | `search_models` | `grok-4.5,grok-4.3,grok-4.20-0309-reasoning,grok-4.20-0309-non-reasoning,grok-4.20-multi-agent-0309,grok-build-0.1,grok-chat-fast`（英文逗号分隔，**左侧优先**，最多 12 个，留空禁用搜索） |
 | `enable_web_search` | `true`（默认启用 Web 联网搜索） |
-| `enable_x_search` | `true`（默认启用 X 搜索） |
-| `search_reasoning_effort` | `high`（`none`、`low`、`medium`、`high`、`xhigh`） |
+| `enable_x_search` | `true`（默认启用 X 搜索；`grok-chat-*` 自动降级为仅 Web 搜索） |
+| `search_reasoning_effort` | `high`（`auto`、`none`、`low`、`medium`、`high`、`xhigh`） |
 | `image_model` | `grok-imagine-image` |
 | `image_edit_model` | `grok-imagine-image` |
 | `video_model` | `grok-imagine-video` |
@@ -62,7 +62,14 @@ python -m pip install -r requirements.txt
 
 **高级设置（`advanced_settings`）**：超时、并发、媒体大小、重试、`save_media`、`debug_mode` 等。
 
-> `search_models` 默认顺序为 `grok-4.5,grok-4.3,grok-4.20-0309-reasoning,grok-4.20-0309-non-reasoning,grok-4.20-multi-agent-0309,grok-build-0.1,grok-chat-fast`，可自行按需调整。模型列表来自一次远端实例快照，实际可用性以你自己 Client Key 的 `GET /v1/models` 可见目录为准。若候选模型不支持选择的思考强度，插件会省略该参数继续搜索，不会因此跳过模型。
+`model_retry_count` 默认 `2`，覆盖搜索、生图、改图、模型目录和图片下载；`video_retry_count`
+默认 `2`，覆盖视频创建、状态轮询和视频下载。两个值都是**首次请求之外**的额外重试次数，设为
+`0` 即只请求一次。`retry_excluded_errors` 默认留空，表示所有远端 HTTP、网络、JSON 和远端响应
+结构错误都可重试；可用英文逗号填写 HTTP 状态码或稳定错误码排除，例如
+`400,401,403,404,422,auth_error,model_not_found,invalid_json,network_error`。每次尝试仍使用各自的
+单次超时；视频不再使用插件侧的总等待上限，会持续轮询至远端返回完成或失败状态。
+
+> `search_models` 默认顺序为 `grok-4.5,grok-4.3,grok-4.20-0309-reasoning,grok-4.20-0309-non-reasoning,grok-4.20-multi-agent-0309,grok-build-0.1,grok-chat-fast`，可自行按需调整。模型列表来自一次远端实例快照，实际可用性以你自己 Client Key 的 `GET /v1/models` 可见目录为准。`grok-chat-*` 不支持 X 搜索，启用 X 搜索时会保留 Web 搜索；如果只启用 X 搜索且候选全为 chat 模型，搜索能力会明确不可用。`search_reasoning_effort=auto` 或候选不支持所选强度时，插件会省略 `reasoning` 参数继续搜索，不会因此跳过模型。
 
 模型通常通过 `GET /v1/models` 可见；`/g2状态` 可查看该 Client Key 可见的模型列表与搜索候选分区。
 
@@ -70,7 +77,7 @@ python -m pip install -r requirements.txt
 
 | 命令 | 别名 | 权限 | 行为 |
 |---|---|---|---|
-| `/g2搜索 <问题>` | `/grok2搜索` | 访问规则 | 强制执行联网搜索，返回正文和来源 |
+| `/g2搜索 <问题>` | `/grok2搜索` | 访问规则 | 强制执行全局已启用的 Web/X 搜索，直接返回远端正文和来源，不调用本地 LLM 改写 |
 | `/g2生图 [数量] <提示词>` | `/grok2生图` | 访问规则 | 生成 1 到配置上限张图片 |
 | `/g2改图 <编辑要求>` | `/grok2改图` | 访问规则 | 编辑当前或回复消息中的第一张图片 |
 | `/g2视频 [时长] [比例] <提示词>` | `/grok2视频` | 访问规则 | 创建、轮询、鉴权下载并发送视频 |
@@ -79,13 +86,19 @@ python -m pip install -r requirements.txt
 
 详见 [docs/commands.md](docs/commands.md)。
 
+`/g2搜索` 只使用 `enable_web_search`、`enable_x_search` 与
+`search_reasoning_effort` 的全局设置；两个搜索开关都关闭时会在请求前拒绝。它直接请求
+grok2api 并发送远端结果。`grok2api_web_search` 则是给 AstrBot 主模型选择的 Tool：主模型
+调用 Tool 后，仍会根据 Tool 结果组织最终回复。
+
 ## 限制与安全警告
 
-- 生成类 POST 遇到结果不确定的网络失败时 **不会自动重试**，避免重复生成/扣费。
+- 搜索、生图、改图和视频请求默认会按重试配置重放；生成 POST 也可能被重放，可能造成重复生成或重复扣费。需要避免某类错误重试时，在 `retry_excluded_errors` 中显式排除对应状态码或错误码。
 - 图片/视频会立即下载到本地再发送；原结果 URL 不作为永久存档。
 - QQ Official 单次最多生成/发送 **4** 张图片；超出在调用 API 前拒绝。
 - 改图只接受当前消息或回复链中的图片，不接受任意本地路径、用户输入 URL 或 `file_id`。
 - 视频时长 1–15 秒；比例仅 `1:1`、`16:9`、`9:16`、`4:3`、`3:4`、`3:2`、`2:3`。
+- `send_media_progress` 默认开启；生图、改图、视频在开始远端任务前各提示一次，提示发送失败不会取消任务。
 - 发送异常时交付状态可能不确定，插件不自动重发。
 
 ## 排错
@@ -93,7 +106,7 @@ python -m pip install -r requirements.txt
 - `/g2状态` 无模型：检查 Client Key 权限与 `api_base_url`。
 - 401/403：Client Key 无效或权限不足。
 - 404：`api_base_url` 或 endpoint 错误。
-- 搜索无完成态 `web_search_call` 或 `x_search_call`：上游未执行联网搜索，插件明确提示并按候选顺序回退。
+- 搜索无完成态 `web_search_call` 或 `x_search_call`：上游未执行联网搜索，先按 `model_retry_count` 重试当前模型，耗尽后按候选顺序回退。
 
 ## 开发
 

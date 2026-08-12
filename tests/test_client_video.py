@@ -2,28 +2,29 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
 
 import pytest
 
 from core.client import Grok2APIClient
-from core.errors import PluginError, ProtocolError
+from core.errors import ProtocolError
 from core.transport import HTTPTransport
 from tests.fakes import FakeResponse, FakeSession
-from tests.test_transport import _noop
 
 
-async def asyncio_sleep(d):
-    await asyncio.sleep(d)
+async def _no_sleep(_delay: float) -> None:
+    return None
 
 
 def _client(
-    api_base="https://grok.example.com", poll=0.01, wait=0.05
+    api_base="https://grok.example.com",
+    poll=0.01,
+    *,
+    video_retry_count: int = 2,
 ) -> tuple[Grok2APIClient, FakeSession]:
     s = FakeSession()
-    t = HTTPTransport(api_base, "g2a_key", sleep=_noop, session_factory=lambda: s)
-    return Grok2APIClient(t, video_poll_interval=poll, video_max_wait=wait), s
+    t = HTTPTransport(api_base, "g2a_key", sleep=_no_sleep, session_factory=lambda: s)
+    return Grok2APIClient(t, video_poll_interval=poll, video_retry_count=video_retry_count), s
 
 
 # -- create ----------------------------------------------------------------
@@ -75,23 +76,28 @@ async def test_create_sends_optional_fields_when_present():
 
 @pytest.mark.parametrize("bad", ["../etc/passwd", "a/b", "video/x..", "a b", "ok\n"])
 async def test_create_rejects_bad_request_id(bad):
-    c, s = _client()
+    c, s = _client(video_retry_count=0)
     s.push(FakeResponse(200, body=json.dumps({"request_id": bad})))
     with pytest.raises(ProtocolError):
         await c.create_video("cat", model="m", duration=6, aspect_ratio="", resolution="")
 
 
 @pytest.mark.parametrize("status", [503])
-async def test_create_post_503_once_no_retry(status):
+async def test_create_post_503_retries_then_succeeds(status):
     c, s = _client()
-    s.push(FakeResponse(status, body="{}"))
-    with pytest.raises(PluginError):
+    s.push(
+        FakeResponse(status, body="{}"),
+        FakeResponse(200, body=json.dumps({"request_id": "video_abc"})),
+    )
+    assert (
         await c.create_video("cat", model="m", duration=6, aspect_ratio="", resolution="")
-    assert len(s.calls) == 1
+        == "video_abc"
+    )
+    assert len(s.calls) == 2
 
 
 async def test_create_missing_request_id_raises():
-    c, s = _client()
+    c, s = _client(video_retry_count=0)
     s.push(FakeResponse(200, body=json.dumps({})))
     with pytest.raises(ProtocolError):
         await c.create_video("cat", model="m", duration=6, aspect_ratio="", resolution="")
@@ -130,18 +136,19 @@ async def test_poll_failed_reports_clean_error():
     assert job.error_code == "quota"
 
 
-async def test_poll_honors_total_wait_cap():
+async def test_poll_waits_until_remote_terminal_status():
     c, s = _client()
-    # always pending, never done
-    for _ in range(50):
-        s.push(FakeResponse(200, body=json.dumps({"status": "pending", "progress": 1})))
-    with pytest.raises(PluginError) as ei:
-        await c.wait_for_video("video_abc")
-    assert ei.value.code == "video_timeout"
+    s.push(
+        FakeResponse(200, body=json.dumps({"status": "pending", "progress": 1})),
+        FakeResponse(200, body=json.dumps({"status": "done", "progress": 100})),
+    )
+    job = await c.wait_for_video("video_abc")
+    assert job.status == "done"
+    assert len(s.calls) == 2
 
 
 async def test_poll_unknown_status_is_protocol_error():
-    c, s = _client()
+    c, s = _client(video_retry_count=0)
     s.push(FakeResponse(200, body=json.dumps({"status": "weird"})))
     with pytest.raises(ProtocolError):
         await c.wait_for_video("video_abc")

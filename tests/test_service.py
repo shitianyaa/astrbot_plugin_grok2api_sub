@@ -4,13 +4,13 @@ from __future__ import annotations
 
 import asyncio
 import json
+from unittest.mock import AsyncMock
 
 import pytest
 
 from core.client import Grok2APIClient
 from core.config import PluginConfig
 from core.errors import (
-    AmbiguousSubmissionError,
     APIError,
     PluginError,
     ProtocolError,
@@ -220,7 +220,8 @@ async def test_deliver_images_saves_and_sends(tmp_path):
 
     b64 = base64.b64encode(_png_bytes()).decode()
     s.push(FakeResponse(200, body=json.dumps({"data": [{"b64_json": b64}, {"b64_json": b64}]})))
-    svc, _ = _make_service(ws, session=s)
+    cfg = _cfg(capability_settings={"send_media_progress": False})
+    svc, _ = _make_service(ws, cfg, session=s)
     ev = FakeEvent()
     await svc.deliver_generated_images(ev, "cat", 2)
     assert len(ev.sent) == 1
@@ -228,6 +229,83 @@ async def test_deliver_images_saves_and_sends(tmp_path):
     # files cleaned after send (save_media=false)
     leftover = [p for p in ws.workspace.iterdir() if p.suffix in (".png", ".jpg")]
     assert leftover == []
+
+
+async def test_deliver_images_sends_progress_after_job_is_accepted(tmp_path):
+    ws = MediaWorkspace(tmp_path)
+    s = FakeSession()
+    import base64
+
+    b64 = base64.b64encode(_png_bytes()).decode()
+    s.push(FakeResponse(200, body=json.dumps({"data": [{"b64_json": b64}]})))
+    svc, _ = _make_service(ws, session=s)
+    ev = FakeEvent()
+    await svc.deliver_generated_images(ev, "cat", 1)
+    assert len(ev.sent) == 2
+    assert type(ev.sent[0].chain[0]).__name__ == "Plain"
+    assert type(ev.sent[1].chain[0]).__name__ == "Image"
+
+
+async def test_deliver_edited_image_sends_progress_after_input_is_read(tmp_path):
+    ws = MediaWorkspace(tmp_path)
+    s = FakeSession()
+    import base64
+
+    b64 = base64.b64encode(_png_bytes()).decode()
+    s.push(FakeResponse(200, body=json.dumps({"data": [{"b64_json": b64}]})))
+    svc, _ = _make_service(ws, session=s)
+    svc._find_input_image = AsyncMock(return_value="data:image/png;base64,AAAA")
+    ev = FakeEvent()
+    await svc.deliver_edited_image(ev, "make red")
+    assert len(ev.sent) == 2
+    assert type(ev.sent[0].chain[0]).__name__ == "Plain"
+    assert type(ev.sent[1].chain[0]).__name__ == "Image"
+
+
+class _ProgressFailureEvent(FakeEvent):
+    def __init__(self):
+        super().__init__()
+        self._send_calls = 0
+
+    async def send(self, chain):
+        self._send_calls += 1
+        if self._send_calls == 1:
+            raise RuntimeError("progress unavailable")
+        self.sent.append(chain)
+
+
+async def test_progress_delivery_failure_does_not_cancel_image_job(tmp_path):
+    ws = MediaWorkspace(tmp_path)
+    s = FakeSession()
+    import base64
+
+    b64 = base64.b64encode(_png_bytes()).decode()
+    s.push(FakeResponse(200, body=json.dumps({"data": [{"b64_json": b64}]})))
+    svc, _ = _make_service(ws, session=s)
+    ev = _ProgressFailureEvent()
+    await svc.deliver_generated_images(ev, "cat", 1)
+    assert len(ev.sent) == 1
+    assert type(ev.sent[0].chain[0]).__name__ == "Image"
+
+
+async def test_media_lifecycle_logs_are_safe_and_correlated(tmp_path, monkeypatch):
+    ws = MediaWorkspace(tmp_path)
+    s = FakeSession()
+    import base64
+
+    b64 = base64.b64encode(_png_bytes()).decode()
+    s.push(FakeResponse(200, body=json.dumps({"data": [{"b64_json": b64}]})))
+    events = []
+    monkeypatch.setattr(
+        "core.service.safe_log",
+        lambda _level, name, **fields: events.append((name, fields)),
+    )
+    svc, _ = _make_service(ws, session=s)
+    await svc.deliver_generated_images(FakeEvent(), "secret prompt", 1)
+    names = [name for name, _ in events]
+    assert "media_job_started" in names
+    assert "media_job_completed" in names
+    assert all("secret prompt" not in repr(fields) for _, fields in events)
 
 
 async def test_deliver_images_qq_limit_precheck(tmp_path):
@@ -449,12 +527,12 @@ def _search_result(model: str) -> SearchResult:
     )
 
 
-def _make_scripted_service(tmp_path, client, search_models):
-    cfg = _cfg(
-        capability_settings={
-            "search_models": ",".join(search_models),
-        }
-    )
+def _make_scripted_service(tmp_path, client, search_models, **capability_overrides):
+    capability_settings = {
+        "search_models": ",".join(search_models),
+        **capability_overrides,
+    }
+    cfg = _cfg(capability_settings=capability_settings)
     workspace = MediaWorkspace(tmp_path)
     return GrokService(cfg, client, workspace, DeliveryAdapter(workspace))
 
@@ -497,6 +575,38 @@ async def test_search_omits_unsupported_reasoning_effort_but_keeps_candidate(tmp
     assert client.search_options[0]["reasoning_effort"] == ""
 
 
+async def test_chat_model_disables_x_search_but_keeps_web_search(tmp_path):
+    client = ScriptedSearchClient(
+        models=("grok-chat-fast",),
+        search_results=(_search_result("grok-chat-fast"),),
+    )
+    service = _make_scripted_service(tmp_path, client, ("grok-chat-fast",))
+    await service.search(FakeEvent(), "question")
+    assert client.search_options == [
+        {
+            "enable_web_search": True,
+            "enable_x_search": False,
+            "reasoning_effort": "",
+            "required": True,
+        }
+    ]
+
+
+async def test_auto_reasoning_effort_omits_reasoning_field(tmp_path):
+    client = ScriptedSearchClient(
+        models=("grok-4.5",),
+        search_results=(_search_result("grok-4.5"),),
+    )
+    service = _make_scripted_service(
+        tmp_path,
+        client,
+        ("grok-4.5",),
+        search_reasoning_effort="auto",
+    )
+    await service.search(FakeEvent(), "question")
+    assert client.search_options[0]["reasoning_effort"] == ""
+
+
 async def test_catalog_failure_tries_original_first_model_only_on_success(tmp_path):
     client = ScriptedSearchClient(
         models_error=PluginError("目录失败", code="network_error"),
@@ -532,7 +642,6 @@ async def test_explicit_model_failure_advances_to_next(tmp_path, first_error):
         APIError(401, "auth_error", "bad key"),
         APIError(429, "rate_limited", "slow down"),
         APIError(400, "http_error", "bad request"),
-        AmbiguousSubmissionError("不确定"),
         ProtocolError("协议错误"),
         PluginError("网络失败", code="network_error"),
         asyncio.TimeoutError(),
