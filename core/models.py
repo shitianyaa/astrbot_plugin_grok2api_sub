@@ -72,3 +72,8 @@ class StatusReport:
     configured_capabilities: tuple[str, ...]
     visible_models: tuple[str, ...]
     latency_ms: int
+    error_code: str = ""
+    configured_search_models: tuple[str, ...] = ()
+    available_search_models: tuple[str, ...] = ()
+    unavailable_search_models: tuple[str, ...] = ()
+    catalog_available: bool = False

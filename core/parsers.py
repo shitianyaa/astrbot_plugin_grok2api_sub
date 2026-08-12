@@ -31,16 +31,36 @@ _URL_RE = re.compile(r"^https?://[^\s]+\Z")
 # ---------------------------------------------------------------------------
 
 
-def build_search_payload(query: str, model: str, *, required: bool = True) -> dict[str, Any]:
+def build_search_payload(
+    query: str,
+    model: str,
+    *,
+    enable_web_search: bool = True,
+    enable_x_search: bool = True,
+    reasoning_effort: str = "",
+    required: bool = True,
+) -> dict[str, Any]:
+    tools: list[dict[str, str]] = []
+    include: list[str] = []
+    if enable_web_search:
+        tools.append({"type": "web_search"})
+        include.append("web_search_call.action.sources")
+    if enable_x_search:
+        tools.append({"type": "x_search"})
+
     payload: dict[str, Any] = {
         "model": model,
         "input": query,
         "stream": False,
         "store": False,
-        "tools": [{"type": "web_search"}],
-        "include": ["web_search_call.action.sources"],
     }
-    if required:
+    if tools:
+        payload["tools"] = tools
+    if include:
+        payload["include"] = include
+    if reasoning_effort:
+        payload["reasoning"] = {"effort": reasoning_effort}
+    if tools and required:
         payload["tool_choice"] = "required"
     return payload
 
@@ -65,19 +85,22 @@ def _collect_sources(raw_sources: Any) -> list[SearchSource]:
     return out
 
 
-def _web_search_call(payload: Mapping[str, Any]) -> tuple[bool, list[SearchSource]]:
-    """Return (search_completed, sources) from any completed web_search_call output."""
+def _search_calls(payload: Mapping[str, Any]) -> tuple[bool, list[SearchSource]]:
+    """Return completed Web/X search state and sources from response outputs."""
+    search_done = False
+    all_sources: list[SearchSource] = []
     for output in payload.get("output", []):
         if not isinstance(output, Mapping):
             continue
-        if output.get("type") != "web_search_call":
+        if output.get("type") not in {"web_search_call", "x_search_call"}:
             continue
         if output.get("status") != "completed":
             continue
+        search_done = True
         action = output.get("action") or {}
         sources = _collect_sources(action.get("sources"))
-        return True, sources
-    return False, []
+        all_sources.extend(sources)
+    return search_done, all_sources
 
 
 def _message_text_and_annotations(
@@ -112,7 +135,8 @@ def parse_search_response(payload: Mapping[str, Any]) -> SearchResult:
     model = str(payload.get("model") or "")
     status = str(payload.get("status") or "")
 
-    search_done, call_sources = _web_search_call(payload)
+    call_sources = _search_calls(payload)
+    search_done, call_sources = call_sources
 
     text_parts: list[str] = []
     annotation_sources: list[SearchSource] = []
@@ -125,7 +149,7 @@ def parse_search_response(payload: Mapping[str, Any]) -> SearchResult:
                 text_parts.append(t)
             annotation_sources.extend(ann)
 
-    # URL-dedupe preserving order; annotation title wins over web_search_call.
+    # URL-dedupe preserving order; annotation title wins over search-call data.
     merged: list[SearchSource] = []
     seen: set[str] = set()
     for src in annotation_sources + call_sources:

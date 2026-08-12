@@ -44,22 +44,28 @@ def check_access(event: Any, config: PluginConfig) -> AccessDecision:
 
 def _check_access_view(view: _EventView, config: PluginConfig) -> AccessDecision:
     sender = view.sender_id
+
+    # 1. User blacklist (applies to both private and group chat)
     if sender in config.user_blacklist:
         return AccessDecision(
             False, reason_code="user_blacklisted", user_message="你没有使用该能力的权限"
         )
-    if view.is_group:
-        gid = view.group_id
-        if gid in config.group_blacklist:
-            return AccessDecision(
-                False, reason_code="group_blacklisted", user_message="该群不允许使用此能力"
-            )
-        if config.group_whitelist and gid not in config.group_whitelist:
-            return AccessDecision(
-                False, reason_code="group_not_whitelisted", user_message="该群未在白名单中"
-            )
-    elif config.user_whitelist and sender not in config.user_whitelist:
+
+    # 2. User whitelist (applies to both private and group chat)
+    if config.user_whitelist and sender not in config.user_whitelist:
         return AccessDecision(
             False, reason_code="user_not_whitelisted", user_message="你没有使用该能力的权限"
         )
+
+    # 3. Group rules (only apply to group chat)
+    if view.is_group:
+        if view.group_id in config.group_blacklist:
+            return AccessDecision(
+                False, reason_code="group_blacklisted", user_message="该群不允许使用此能力"
+            )
+        if config.group_whitelist and view.group_id not in config.group_whitelist:
+            return AccessDecision(
+                False, reason_code="group_not_whitelisted", user_message="该群未在白名单中"
+            )
+
     return AccessDecision(True, reason_code="allowed", user_message="")

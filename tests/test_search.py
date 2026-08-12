@@ -27,6 +27,14 @@ def _web_call(status="completed", sources=None) -> dict:
     }
 
 
+def _x_call(status="completed", sources=None) -> dict:
+    return {
+        "type": "x_search_call",
+        "status": status,
+        "action": {"type": "search", "sources": sources or []},
+    }
+
+
 def _payload(**over) -> dict:
     base = {
         "id": "resp_1",
@@ -48,18 +56,42 @@ def _payload(**over) -> dict:
 
 # -- payload ---------------------------------------------------------------
 def test_golden_payload():
-    p = build_search_payload("q", "m", required=True)
+    p = build_search_payload("q", "m", reasoning_effort="high", required=True)
     assert p["stream"] is False
     assert p["store"] is False
-    assert p["tools"] == [{"type": "web_search"}]
+    assert p["tools"] == [{"type": "web_search"}, {"type": "x_search"}]
     assert p["tool_choice"] == "required"
     assert p["include"] == ["web_search_call.action.sources"]
+    assert p["reasoning"] == {"effort": "high"}
     assert "search_parameters" not in p
 
 
 def test_payload_required_false_omits_tool_choice():
     p = build_search_payload("q", "m", required=False)
     assert "tool_choice" not in p
+
+
+def test_payload_respects_search_tool_switches():
+    x_only = build_search_payload("q", "m", enable_web_search=False)
+    assert x_only["tools"] == [{"type": "x_search"}]
+    assert "include" not in x_only
+
+    disabled = build_search_payload("q", "m", enable_web_search=False, enable_x_search=False)
+    assert "tools" not in disabled
+    assert "tool_choice" not in disabled
+
+
+def test_x_search_call_counts_as_completed_search():
+    result = parse_search_response(
+        _payload(
+            output=[
+                _x_call(sources=[{"url": "https://x.com/example"}]),
+                _message_output("answer"),
+            ]
+        )
+    )
+    assert result.search_performed is True
+    assert result.sources[0].url == "https://x.com/example"
 
 
 # -- parser: happy path ----------------------------------------------------
@@ -117,7 +149,7 @@ def test_parse_annotation_title_priority():
 
 
 # -- status handling -------------------------------------------------------
-def test_no_web_search_call_raises():
+def test_no_completed_search_call_raises():
     p = _payload(output=[_message_output("just text")])
     with pytest.raises(SearchNotPerformedError):
         parse_search_response(p)

@@ -153,8 +153,56 @@ async def test_blacklisted_user_blocked_via_service():
     from core.errors import PluginError as PE
     from tests.test_service import _cfg
 
-    cfg = _cfg(user_blacklist=["u1"])
+    cfg = _cfg(access_settings={"user_blacklist": ["u1"]})
     svc = GrokService(config=cfg, client=None, workspace=None, sender=None)
     with pytest.raises(PE) as ei:
         await svc.search(FakeEvent(sender_id="u1"), "q")
     assert ei.value.code == "user_blacklisted"
+
+
+# -- Task 5: has_model derives from search_models tuple ---------------------
+def test_policy_has_model_from_empty_search_models_disables():
+    from tests.test_service import _cfg
+
+    cfg = _cfg(capability_settings={"search_models": ""})
+    policy = SearchToolPolicy(
+        enabled=cfg.enabled,
+        enable_tool=cfg.enable_llm_search_tool,
+        has_key=cfg.has_client_key,
+        has_model=bool(cfg.search_models),
+    )
+    assert policy.allow() is False
+
+
+def test_policy_has_model_from_nonempty_search_models_enables():
+    from tests.test_service import _cfg
+
+    cfg = _cfg(capability_settings={"search_models": "grok-chat-fast,grok-4.5"})
+    policy = SearchToolPolicy(
+        enabled=cfg.enabled,
+        enable_tool=cfg.enable_llm_search_tool,
+        has_key=cfg.has_client_key,
+        has_model=bool(cfg.search_models),
+    )
+    assert policy.allow() is True
+
+
+def test_policy_disables_when_all_remote_search_tools_are_off():
+    from tests.test_service import _cfg
+
+    cfg = _cfg(capability_settings={"enable_web_search": False, "enable_x_search": False})
+    policy = SearchToolPolicy(
+        enabled=cfg.enabled,
+        enable_tool=cfg.enable_llm_search_tool,
+        has_key=cfg.has_client_key,
+        has_model=bool(cfg.search_models and (cfg.enable_web_search or cfg.enable_x_search)),
+    )
+    assert policy.allow() is False
+
+
+async def test_tool_calls_service_once_with_tuple_models():
+    # the tool must delegate a single search call; it never loops models itself
+    svc = _FakeService(result=_service_result())
+    tool, ctx = _tool(service=svc)
+    await tool.call(ctx, query="q")
+    assert svc.calls == 1

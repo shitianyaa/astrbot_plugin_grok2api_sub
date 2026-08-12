@@ -24,6 +24,15 @@ class FakeResponse:
         self._error = error
         self._text_called = 0
         self._json_called = 0
+        self._bounded = FakeStreamReader(body.encode("utf-8"))
+
+    @property
+    def content_length(self) -> int:
+        return len(self._body.encode("utf-8"))
+
+    @property
+    def content(self):
+        return self._bounded
 
     async def text(self) -> str:
         self._text_called += 1
@@ -44,6 +53,32 @@ class FakeResponse:
 
     async def __aexit__(self, *exc):
         return False
+
+
+class FakeStreamReader:
+    """Bounded stream reader: read(n) returns at most n bytes, then empty."""
+
+    def __init__(self, data: bytes):
+        self._data = data
+        self._pos = 0
+
+    def content_length(self) -> int:
+        return len(self._data)
+
+    async def read(self, n: int = -1) -> bytes:
+        if n < 0:
+            out = self._data[self._pos :]
+            self._pos = len(self._data)
+            return out
+        out = self._data[self._pos : self._pos + n]
+        self._pos += len(out)
+        return out
+
+    async def iter_chunked(self, n: int):
+        while self._pos < len(self._data):
+            chunk = self._data[self._pos : self._pos + n]
+            self._pos += len(chunk)
+            yield chunk
 
 
 @dataclass
@@ -70,6 +105,7 @@ class FakeSession:
                 "method": method,
                 "url": url,
                 "headers": kwargs.get("headers", {}),
+                "json": kwargs.get("json"),
                 "params": kwargs.get("params"),
                 "timeout": kwargs.get("timeout"),
                 "proxy": kwargs.get("proxy"),

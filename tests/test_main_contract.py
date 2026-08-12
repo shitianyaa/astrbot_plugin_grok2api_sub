@@ -71,7 +71,34 @@ def test_g2_status_has_admin_decorator():
 
 def test_handlers_take_runtime_args():
     src = _main_src()
-    assert "*runtime_args: Any" in src
+    # the six command handlers must not carry *runtime_args: Any (breaks GreedyStr)
+    for name in (
+        "g2_search",
+        "g2_generate_image",
+        "g2_edit_image",
+        "g2_generate_video",
+        "g2_status",
+        "g2_help",
+    ):
+        idx = src.find(f"async def {name}")
+        body = src[idx : idx + 400]
+        assert "*runtime_args" not in body, name
+    # the four parameterized commands must use GreedyStr params
+    for name, param in (
+        ("g2_search", "query"),
+        ("g2_generate_image", "arguments"),
+        ("g2_edit_image", "prompt"),
+        ("g2_generate_video", "arguments"),
+    ):
+        idx = src.find(f"async def {name}")
+        body = src[idx : idx + 400]
+        assert f"{param}: GreedyStr" in body, name
+
+
+def test_no_sys_path_injection():
+    src = _main_src()
+    assert "sys.path.insert" not in src
+    assert "GreedyStr" in src
 
 
 def test_initialize_registers_tool_conditionally():
@@ -79,3 +106,9 @@ def test_initialize_registers_tool_conditionally():
     assert "add_llm_tools" in src
     assert "unregister_llm_tool" in src
     assert "TOOL_NAME" in src
+
+
+def test_imports_are_package_relative():
+    src = _main_src()
+    assert "from .core." in src
+    assert "from astrbot.core.star.filter.command import GreedyStr" in src

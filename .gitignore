@@ -6,6 +6,10 @@ __pycache__/
 coverage.xml
 htmlcov/
 .grok_test_*.json
+# local scratch: live-key smoke scripts and generated media (never publish)
+testignore/
+# goal-mode task tracking (local only)
+goal-1/
 # AstrBot runtime data dir (created by StarTools.get_data_dir)
 data/
 # implementation plan document (not part of the published plugin)

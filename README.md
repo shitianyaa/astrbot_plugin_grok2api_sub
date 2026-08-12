@@ -6,7 +6,7 @@
 
 ## 功能
 
-- 手动命令联网搜索（强制 hosted web search）
+- 手动命令联网搜索（默认同时启用 Web 与 X 搜索）
 - AstrBot 主模型按 Tool 描述自动决定是否联网（`grok2api_web_search`）
 - 文生图（1 到配置上限张）
 - 单图改图（当前消息或回复消息中的第一张图片）
@@ -32,19 +32,39 @@ python -m pip install -r requirements.txt
 
 ### 典型配置
 
-在 AstrBot WebUI 插件配置页填写：
+在 AstrBot WebUI 插件配置页，配置按 4 个分组展示：
+
+**连接设置（`connection_settings`）**
 
 | 配置项 | 示例 |
 |---|---|
-| `api_base_url` | `https://grok.example.com` |
-| `client_api_key` | `g2a_...`（仅 Client Key） |
-| `client_proxy_url` | `http://127.0.0.1:3067`（可选代理） |
-| `search_model` | `grok-build-0.1` 或 `grok-4.5` |
+| `enabled` | `true`（总开关） |
+| `api_base_url` | `https://grok.example.com`（远端 grok2api 根地址，不带 `/v1`） |
+| `client_api_key` | `g2a_...`（专用 Client Key，非管理员 JWT） |
+| `verify_tls` | `true`（生产保持开启） |
+| `client_proxy_url` | `http://proxy.example:8080`（可选，AstrBot 到远端 API 的代理，留空不代理） |
+
+**能力设置（`capability_settings`）**
+
+| 配置项 | 示例 |
+|---|---|
+| `search_models` | `grok-4.5,grok-4.3,grok-4.20-0309-reasoning,grok-4.20-0309-non-reasoning,grok-4.20-multi-agent-0309,grok-build-0.1,grok-chat-fast`（英文逗号分隔，**左侧优先**，最多 12 个，留空禁用搜索） |
+| `enable_web_search` | `true`（默认启用 Web 联网搜索） |
+| `enable_x_search` | `true`（默认启用 X 搜索） |
+| `search_reasoning_effort` | `high`（`none`、`low`、`medium`、`high`、`xhigh`） |
 | `image_model` | `grok-imagine-image` |
 | `image_edit_model` | `grok-imagine-image` |
 | `video_model` | `grok-imagine-video` |
+| `enable_llm_search_tool` | `true`（主模型按 Tool 描述自动搜索） |
+| `max_images_per_request` | `4`（QQ Official 运行时固定上限 4） |
 
-模型通常通过 `GET /v1/models` 可见；`/g2状态` 可查看该 Client Key 可见的模型列表。
+**访问控制（`access_settings`）**：`user_whitelist` / `user_blacklist` / `group_whitelist` / `group_blacklist`（空列表不限制）。
+
+**高级设置（`advanced_settings`）**：超时、并发、媒体大小、重试、`save_media`、`debug_mode` 等。
+
+> `search_models` 默认顺序为 `grok-4.5,grok-4.3,grok-4.20-0309-reasoning,grok-4.20-0309-non-reasoning,grok-4.20-multi-agent-0309,grok-build-0.1,grok-chat-fast`，可自行按需调整。模型列表来自一次远端实例快照，实际可用性以你自己 Client Key 的 `GET /v1/models` 可见目录为准。若候选模型不支持选择的思考强度，插件会省略该参数继续搜索，不会因此跳过模型。
+
+模型通常通过 `GET /v1/models` 可见；`/g2状态` 可查看该 Client Key 可见的模型列表与搜索候选分区。
 
 ## 六个命令
 
@@ -73,7 +93,7 @@ python -m pip install -r requirements.txt
 - `/g2状态` 无模型：检查 Client Key 权限与 `api_base_url`。
 - 401/403：Client Key 无效或权限不足。
 - 404：`api_base_url` 或 endpoint 错误。
-- 搜索无 `web_search_call`：上游未执行联网搜索，插件明确提示。
+- 搜索无完成态 `web_search_call` 或 `x_search_call`：上游未执行联网搜索，插件明确提示并按候选顺序回退。
 
 ## 开发
 

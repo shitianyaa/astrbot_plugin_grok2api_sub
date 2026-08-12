@@ -16,16 +16,22 @@ ruff format --check .
 
 | 文件 | 覆盖 |
 |---|---|
-| `tests/test_transport.py` | 认证头、同源相对路径、重试矩阵、`.part` 原子下载、Retry-After |
-| `tests/test_search.py` | Responses hosted web search 契约与 parser |
+| `tests/test_config.py` | 4 分组配置解析、`search_models` 解析（去空白/去重/上限/中文逗号拒绝）、Web/X 开关与思考强度、默认值、脱敏 |
+| `tests/test_schema.py` | `_conf_schema.json` 顶层恰好 4 个 `object` 分组、远端默认空、默认模型顺序稳定 |
+| `tests/test_transport.py` | 认证头、同源相对路径、重试矩阵、`.part` 原子下载、Retry-After、安全模型错误码提取（64 KiB 有界、只保留 model_not_found/model_not_allowed） |
+| `tests/test_search.py` | Responses Web/X 搜索工具组合、`reasoning` 请求契约与 parser |
+| `tests/test_search_models.py` | `catalog_model_id` Provider 前缀归一、`partition_visible_models` 保序分区、模型思考强度映射、大小写敏感 |
+| `tests/test_client_models.py` | 目录缓存 300s TTL、并发单 GET、force_refresh、过期失败抛原错、去重排序 |
 | `tests/test_client_images.py` | 生图/改图路径、b64/url 格式、模糊失败 |
 | `tests/test_client_video.py` | 视频创建/轮询/鉴权下载、request_id 校验 |
-| `tests/test_media.py` | 路径安全、图片归一化、解压炸弹、清理 |
+| `tests/test_media.py` | 路径安全、图片归一化、解压炸弹、清理、archive/ 归档 |
 | `tests/test_access.py` / `test_platform.py` | 黑白名单、平台识别 |
 | `tests/test_sender.py` | OneBot/QQ Official 发送、限值、不重发 |
-| `tests/test_service.py` | 预检、并发、会话锁、清理、状态脱敏 |
-| `tests/test_main_contract.py` / `test_main_commands.py` | 入口与命令契约 |
-| `tests/test_tools.py` | FunctionTool 策略、JSON 输出 |
+| `tests/test_service.py` | 预检、并发、会话锁、清理、状态脱敏、**有序搜索回退矩阵**（3 类可切换/7 类禁止切换/耗尽/重启优先）、**状态候选分区不执行搜索 POST** |
+| `tests/test_observability.py` | 日志脱敏、trace_id 传播、白名单字段、debug 开关 |
+| `tests/test_runtime_wiring.py` | 配置注入 transport/client/media 的运行时接线 |
+| `tests/test_main_commands.py` | 命令注册参数模型（GreedyStr）、star_handlers_registry 验证 |
+| `tests/test_tools.py` | Tool 策略（search_models 空/非空）、JSON 输出、不直接发送 |
 
 ## Fake 设计
 
@@ -55,7 +61,7 @@ ruff format --check .
 - 404：区分 base URL/endpoint 和 video job 不存在。
 - 429/503：允许重试的 GET 遵循退避；生成 POST 不重放。
 - 生成 POST read timeout：提示状态未知和未重试。
-- Responses 无 `web_search_call`：明确提示未执行联网搜索。
+- Responses 无完成态 `web_search_call` 或 `x_search_call`：明确提示未执行联网搜索。
 - 视频 failed、等待超时、下载超限：各有单一、可理解回复，临时文件清理。
 - 输入图片损坏、超限、解压炸弹：在调用 API 前拒绝。
 - QQ Official 5 图请求：在调用 API 前拒绝。

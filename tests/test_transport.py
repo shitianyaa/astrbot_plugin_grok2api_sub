@@ -9,9 +9,9 @@ import pytest
 
 from core.errors import (
     AmbiguousSubmissionError,
+    APIError,
     ConfigurationError,
     PluginError,
-    ProtocolError,
 )
 from core.transport import (
     HTTPTransport,
@@ -147,10 +147,10 @@ async def test_generation_read_timeout_ambiguous():
     assert len(s.calls) == 1
 
 
-async def test_generation_invalid_200_json_protocol_error():
+async def test_generation_invalid_200_json_ambiguous():
     t, s = _make()
     s.push(FakeResponse(200, body="not json"))
-    with pytest.raises(ProtocolError):
+    with pytest.raises(AmbiguousSubmissionError):
         await t.request_json(
             "POST",
             "/v1/images/generations",
@@ -159,6 +159,37 @@ async def test_generation_invalid_200_json_protocol_error():
             retry_policy=_policy(allow=False),
             operation="生图",
         )
+    assert len(s.calls) == 1
+
+
+async def test_generation_503_ambiguous():
+    t, s = _make()
+    s.push(FakeResponse(503, body="{}"))
+    with pytest.raises(AmbiguousSubmissionError):
+        await t.request_json(
+            "POST",
+            "/v1/images/generations",
+            json_body={},
+            timeout_seconds=5,
+            retry_policy=_policy(allow=False),
+            operation="生图",
+        )
+    assert len(s.calls) == 1
+
+
+async def test_generation_4xx_is_api_error_not_ambiguous():
+    t, s = _make()
+    s.push(FakeResponse(401, body='{"error": {"code": "auth", "message": "bad key"}}'))
+    with pytest.raises(APIError) as ei:
+        await t.request_json(
+            "POST",
+            "/v1/images/generations",
+            json_body={},
+            timeout_seconds=5,
+            retry_policy=_policy(allow=False),
+            operation="生图",
+        )
+    assert ei.value.status == 401
     assert len(s.calls) == 1
 
 
@@ -345,3 +376,75 @@ async def test_close_idempotent():
 async def test_close_not_called_on_unused():
     t, s = _make()
     assert s.closed is False
+
+
+# -- safe model error code extraction (Task 2) ----------------------------
+async def _post_search(transport: HTTPTransport) -> dict:
+    return await transport.request_json(
+        "POST",
+        "/v1/responses",
+        json_body={"model": "test-model", "input": "test"},
+        timeout_seconds=5,
+        retry_policy=_policy(allow=False, attempts=1),
+        operation="搜索",
+    )
+
+
+@pytest.mark.parametrize(
+    ("status", "upstream_code"),
+    [(403, "model_not_allowed"), (404, "model_not_found")],
+)
+async def test_model_error_code_is_preserved(status, upstream_code):
+    import json
+
+    t, s = _make()
+    secret = "upstream detail with g2a_secret"
+    s.push(
+        FakeResponse(
+            status=status,
+            body=json.dumps({"error": {"code": upstream_code, "message": secret}}),
+        )
+    )
+    with pytest.raises(APIError) as caught:
+        await _post_search(t)
+    assert caught.value.code == upstream_code
+    assert secret not in str(caught.value)
+    assert "g2a_secret" not in str(caught.value)
+
+
+async def test_unknown_or_invalid_error_code_uses_stable_mapping():
+    import json
+
+    t, s = _make()
+    s.push(
+        FakeResponse(
+            status=403,
+            body=json.dumps({"error": {"code": "bad code with spaces", "message": "raw"}}),
+        )
+    )
+    with pytest.raises(APIError) as caught:
+        await _post_search(t)
+    assert caught.value.code == "auth_error"
+    assert "raw" not in str(caught.value)
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        pytest.param("x" * (64 * 1024 + 10), id="oversized"),
+        pytest.param("not json", id="non_json"),
+        pytest.param('{"error": "not an object"}', id="error_not_object"),
+        pytest.param('{"error": {"code": 123, "message": "x"}}', id="code_not_string"),
+    ],
+)
+async def test_malformed_error_bodies_use_stable_mapping(body):
+    # 401 -> auth_error stable mapping; no body leak
+    t, s = _make()
+    secret_marker = "LEAK_" + "S" * 20
+    payload = body + secret_marker if "not json" in body else body
+    s.push(FakeResponse(status=401, body=payload))
+    with pytest.raises(APIError) as caught:
+        await _post_search(t)
+    assert caught.value.code == "auth_error"
+    assert "LEAK" not in str(caught.value)
+    assert secret_marker not in str(caught.value)

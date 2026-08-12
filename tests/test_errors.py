@@ -17,7 +17,7 @@ from core.errors import (
 
 def _secret_error() -> PluginError:
     body = (
-        "<html><body>Authorization: Bearer g2a_e31d7a46fba6_secret_marker "
+        "<html><body>Authorization: Bearer g2a_testkeyid0000_secret_marker "
         "data:image/png;base64," + base64.b64encode(b"leak").decode() + "</body></html>"
     )
     return APIError(401, "unauthorized", body)
@@ -26,7 +26,7 @@ def _secret_error() -> PluginError:
 def test_error_message_never_leaks_key_or_b64():
     e = _secret_error()
     msg = str(e)
-    assert "g2a_e31d7a46fba6" not in msg
+    assert "g2a_testkeyid0000" not in msg
     assert "secret_marker" not in msg
     assert "bGVhaw==" not in msg
     assert len(msg) <= 200

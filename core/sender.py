@@ -19,6 +19,7 @@ from astrbot.core.message.message_event_result import MessageChain
 
 from .errors import MediaLimitError, PluginError
 from .media import MediaWorkspace
+from .observability import safe_log
 from .platform import PlatformKind
 
 logger = logging.getLogger("astrbot_plugin_grok2api_sub.sender")
@@ -76,5 +77,10 @@ class DeliveryAdapter:
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # noqa: BLE001
-            logger.warning("发送失败 delivery_unknown: %s", exc)
+            safe_log(
+                logging.WARNING,
+                "delivery_unknown",
+                error_code="delivery_unknown",
+                exception_type=type(exc).__name__,
+            )
             raise DeliveryError("消息发送状态未知，为避免重复发送未自动重试") from exc

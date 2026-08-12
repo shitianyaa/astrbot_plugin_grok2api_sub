@@ -234,7 +234,7 @@ async def test_image_post_503_no_retry_ambiguous():
             max_download_bytes=10_000_000,
         )
     assert len(s.calls) == 1
-    assert type(ei.value).__name__ == "APIError"
+    assert type(ei.value).__name__ == "AmbiguousSubmissionError"
 
 
 async def test_image_post_read_timeout_ambiguous():

@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import io
 import time
+from pathlib import Path
 
 import pytest
 
@@ -76,7 +77,7 @@ async def test_image_component_to_data_url(ws):
 
 def ImageResult_to_component(png: bytes):
     class FakeImage:
-        def convert_to_base64(self):
+        async def convert_to_base64(self):
             return _b64(png)
 
     return FakeImage()
@@ -84,7 +85,7 @@ def ImageResult_to_component(png: bytes):
 
 async def test_data_url_input_accepted(ws):
     class FakeImage:
-        def convert_to_base64(self):
+        async def convert_to_base64(self):
             return f"data:image/png;base64,{_b64(_png_bytes())}"
 
     url = await ws.image_component_to_data_url(FakeImage())
@@ -97,7 +98,7 @@ async def test_decompression_bomb_rejected(ws):
 
     # craft a tiny header-only image; verify() will fail cleanly
     class FakeImage:
-        def convert_to_base64(self):
+        async def convert_to_base64(self):
             return _b64(b"\x00\x01\x02")
 
     with pytest.raises(ProtocolError):
@@ -106,7 +107,7 @@ async def test_decompression_bomb_rejected(ws):
 
 async def test_corrupt_image_rejected(ws):
     class FakeImage:
-        def convert_to_base64(self):
+        async def convert_to_base64(self):
             return _b64(b"not-an-image-at-all")
 
     with pytest.raises(ProtocolError):
@@ -115,7 +116,7 @@ async def test_corrupt_image_rejected(ws):
 
 async def test_empty_image_rejected(ws):
     class FakeImage:
-        def convert_to_base64(self):
+        async def convert_to_base64(self):
             return ""
 
     with pytest.raises(MediaLimitError):
@@ -124,10 +125,21 @@ async def test_empty_image_rejected(ws):
 
 async def test_invalid_base64_rejected(ws):
     class FakeImage:
-        def convert_to_base64(self):
+        async def convert_to_base64(self):
             return "@@@@notbase64"
 
     with pytest.raises(ProtocolError):
+        await ws.image_component_to_data_url(FakeImage())
+
+
+async def test_input_too_large_rejected(ws):
+    # Create a FakeImage whose base64 length suggests decoded size > max_input_bytes * 2
+    class FakeImage:
+        async def convert_to_base64(self):
+            # 20 MB of base64 chars -> ~15 MB decoded, > 12 MB * 2 = 24 MB estimate trigger
+            return "AAAA" * (1024 * 1024 * 20)
+
+    with pytest.raises(MediaLimitError):
         await ws.image_component_to_data_url(FakeImage())
 
 
@@ -160,6 +172,51 @@ async def test_finalize_delivery_deletes_files(ws):
     f1.write_bytes(_png_bytes())
     await ws.finalize_delivery([f1], success=False)
     assert not f1.exists()
+
+
+async def test_finalize_delivery_archives_when_keep(ws):
+    f1 = ws.workspace / "a.png"
+    f1.write_bytes(_png_bytes())
+    await ws.finalize_delivery([f1], success=True, keep=True)
+    assert not f1.exists()
+    assert (ws.archive / "a.png").exists()
+    assert (ws.archive / "a.png").read_bytes() == _png_bytes()
+
+
+async def test_finalize_delivery_keep_nonempty_archives():
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as d:
+        ws = MediaWorkspace(Path(d))
+        await ws.initialize()
+        f = ws.workspace / "x.png"
+        f.write_bytes(_png_bytes())
+        await ws.finalize_delivery([f], success=True, keep=True)
+        assert not f.exists()
+        assert (ws.archive / "x.png").exists()
+
+
+async def test_raw_cleanup_skips_archive():
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as d:
+        ws = MediaWorkspace(Path(d))
+        await ws.initialize()
+        # an old mtime file in the workspace root is cleaned up
+        tmp = ws.workspace / "tmp.png"
+        tmp.write_bytes(_png_bytes())
+        old_time = time.time() - (48 * 3600)
+        import os
+
+        os.utime(tmp, (old_time, old_time))
+        # an old mtime file in archive/ must survive cleanup_expired
+        kept = ws.archive / "kept.png"
+        kept.write_bytes(_png_bytes())
+        os.utime(kept, (old_time, old_time))
+        removed = await ws.cleanup_expired(retention_hours=24)
+        assert removed == 1
+        assert kept.exists()
+        assert not tmp.exists()
 
 
 async def test_validate_delivery_rejects_empty(ws):
