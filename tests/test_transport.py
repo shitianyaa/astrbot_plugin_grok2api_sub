@@ -75,12 +75,12 @@ async def test_requests_carry_bearer_and_accept():
     assert "Authorization" not in joined
 
 
-async def test_debug_request_log_is_emitted_by_production_request(monkeypatch):
+async def test_request_log_is_emitted_by_production_request(monkeypatch):
     events = []
     monkeypatch.setattr(
         "core.transport.safe_log", lambda _level, name, **fields: events.append((name, fields))
     )
-    t, s = _make(debug_mode=True)
+    t, s = _make()
     s.push(FakeResponse(200, body='{"ok":1}'))
     await t.request_json(
         "GET",
@@ -90,8 +90,11 @@ async def test_debug_request_log_is_emitted_by_production_request(monkeypatch):
         retry_policy=_policy(),
         operation="models",
     )
-    assert len(events) == 1
-    name, fields = events[0]
+    assert [name for name, _fields in events] == [
+        "http_request_started",
+        "http_request_completed",
+    ]
+    name, fields = events[1]
     assert name == "http_request_completed"
     assert fields["method"] == "GET"
     assert fields["path"] == "/v1/models"
@@ -102,12 +105,12 @@ async def test_debug_request_log_is_emitted_by_production_request(monkeypatch):
     assert fields["elapsed_ms"] >= 0
 
 
-async def test_debug_request_log_records_network_failure(monkeypatch):
+async def test_request_log_records_network_failure(monkeypatch):
     events = []
     monkeypatch.setattr(
         "core.transport.safe_log", lambda _level, name, **fields: events.append((name, fields))
     )
-    t, s = _make(debug_mode=True)
+    t, s = _make()
     s.push(FakeResponse(error=asyncio.TimeoutError()))
     with pytest.raises(PluginError):
         await t.request_json(
@@ -118,8 +121,11 @@ async def test_debug_request_log_records_network_failure(monkeypatch):
             retry_policy=_policy(retries=0),
             operation="models",
         )
-    assert len(events) == 1
-    name, fields = events[0]
+    assert [name for name, _fields in events] == [
+        "http_request_started",
+        "http_request_completed",
+    ]
+    name, fields = events[1]
     assert name == "http_request_completed"
     assert fields["method"] == "GET"
     assert fields["path"] == "/v1/models"

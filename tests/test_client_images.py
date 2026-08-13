@@ -68,7 +68,7 @@ async def test_generate_path_and_payload():
     assert call["method"] == "POST"
 
 
-async def test_generate_stream_false_and_no_size_field():
+async def test_generate_uses_default_resolution_without_legacy_size_field():
     c, s = _client()
     s.push(FakeResponse(200, body=_image_json()))
     # capture the json body by patching session.request
@@ -92,6 +92,31 @@ async def test_generate_stream_false_and_no_size_field():
     assert body["n"] == 1
     assert "size" not in body
     assert "aspect_ratio" not in body
+    assert body["resolution"] == "1k"
+
+
+async def test_generate_sends_explicit_ratio_and_2k_resolution():
+    c, s = _client()
+    s.push(FakeResponse(200, body=_image_json()))
+    captured = {}
+
+    def capture(self, method, url, **kwargs):
+        captured.update(kwargs)
+        return FakeSession.request(self, method, url, **kwargs)
+
+    s.request = capture.__get__(s, FakeSession)
+    await c.generate_images(
+        "a cat",
+        model="m",
+        count=1,
+        aspect_ratio="9:16",
+        resolution="2k",
+        response_format="b64_json",
+        api_base_url="https://grok.example.com",
+        max_download_bytes=10_000_000,
+    )
+    assert captured["json"]["aspect_ratio"] == "9:16"
+    assert captured["json"]["resolution"] == "2k"
 
 
 # -- edit path + payload ---------------------------------------------------

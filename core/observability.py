@@ -42,6 +42,15 @@ ALLOWED_FIELDS = {
     "reason",
     "candidate_count",
     "catalog_count",
+    "query_chars",
+    "text_chars",
+    "source_count",
+    "sent_chars",
+    "result_status",
+    "target_count",
+    "trigger",
+    "background_source",
+    "prompt_mode",
 }
 
 _KEY_RE = re.compile(r"g2a_[A-Za-z0-9_]+")

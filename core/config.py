@@ -16,6 +16,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 
 from .errors import ConfigurationError
+from .panel_models import DEFAULT_PANEL_PERIOD, PANEL_PERIODS, PANEL_SECTION_ORDER
 from .search_models import search_tools_for_model
 
 # ---------------------------------------------------------------------------
@@ -38,12 +39,15 @@ MAX_SEARCH_MODELS = 12
 MAX_MODEL_ID_CHARS = 255
 
 _VIDEO_ASPECT_RATIOS = ("1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3")
-_VIDEO_RESOLUTIONS = ("", "480p", "720p")
+PANEL_RESOLUTIONS = ("720p", "1080p", "1440p")
+DEFAULT_PANEL_RESOLUTION = "1080p"
 _IMAGE_FORMATS = ("b64_json", "url")
 _SEARCH_REASONING_EFFORTS = ("auto", "none", "low", "medium", "high", "xhigh")
+_PROMPT_PROCESSING_MODES = ("off", "extract", "enhance")
 
 _URL_SCHEME_RE = re.compile(r"^[a-zA-Z][a-zA-Z0-9+.-]*://")
 _RETRY_ERROR_CODE_RE = re.compile(r"^[a-z][a-z0-9_.-]{0,63}$")
+_CRON_FIELD_RE = re.compile(r"^[0-9A-Za-z*/,\-]+$")
 
 _SECTIONS = ("connection_settings", "capability_settings", "access_settings", "advanced_settings")
 
@@ -86,6 +90,102 @@ def parse_search_models(value: object) -> tuple[str, ...]:
     if len(result) > MAX_SEARCH_MODELS:
         _fail("capability_settings.search_models", "最多配置 12 个模型")
     return tuple(result)
+
+
+def parse_panel_sections(value: object) -> tuple[str, ...]:
+    """Parse the WebUI multi-select into an ordered tuple of section labels.
+
+    Only the five approved labels are accepted. Input order is preserved (the
+    report follows the WebUI selection order). An empty list is valid and means
+    no panel section is enabled. A non-list value (e.g. a comma string) is
+    rejected rather than split into characters.
+    """
+    if not isinstance(value, list):
+        _fail("advanced_settings.panel_sections", "必须是一个列表（多选）")
+    result: list[str] = []
+    for item in value:
+        if not isinstance(item, str):
+            _fail("advanced_settings.panel_sections", "每个选项必须为字符串")
+        if item not in PANEL_SECTION_ORDER:
+            _fail("advanced_settings.panel_sections", f"未知数据块：{item}")
+        if item not in result:
+            result.append(item)
+    return tuple(result)
+
+
+def parse_panel_background_tags(value: object) -> tuple[str, ...]:
+    """Parse the optional multi-line Lolicon tag list without logging it."""
+    if not isinstance(value, str):
+        _fail("advanced_settings.panel_background_tags", "必须是多行文本")
+    result: list[str] = []
+    for raw in value.splitlines():
+        tag = raw.strip()
+        if not tag:
+            continue
+        if len(tag) > 100:
+            _fail("advanced_settings.panel_background_tags", "单行标签不能超过 100 个字符")
+        if any(ord(ch) < 32 for ch in tag):
+            _fail("advanced_settings.panel_background_tags", "标签包含不可见字符")
+        if tag not in result:
+            result.append(tag)
+    if len(result) > 32:
+        _fail("advanced_settings.panel_background_tags", "最多配置 32 行标签")
+    return tuple(result)
+
+
+def _parse_umo(key: str, value: object) -> str:
+    if not isinstance(value, str):
+        _fail(key, "UMO 必须是字符串")
+    umo = value.strip()
+    parts = umo.split(":", 2)
+    if len(parts) != 3 or not all(parts) or len(umo) > 512:
+        _fail(key, "UMO 格式必须为 platform:message_type:session_id")
+    if any(ch.isspace() or ord(ch) < 32 for ch in umo):
+        _fail(key, "UMO 不能包含空白或控制字符")
+    return umo
+
+
+def parse_panel_push_targets(value: object) -> tuple[str, ...]:
+    """Parse fixed targets from AstrBot's native ``template_list`` value."""
+    if not isinstance(value, list):
+        _fail("advanced_settings.panel_push_targets", "必须是模板列表")
+    result: list[str] = []
+    for index, item in enumerate(value):
+        if not isinstance(item, Mapping):
+            _fail("advanced_settings.panel_push_targets", "每个模板项必须是对象")
+        enabled = _bool_flag(
+            f"advanced_settings.panel_push_targets[{index}].enabled",
+            item.get("enabled"),
+            True,
+        )
+        if not enabled:
+            continue
+        umo = _parse_umo(f"advanced_settings.panel_push_targets[{index}].umo", item.get("umo", ""))
+        if umo not in result:
+            result.append(umo)
+    if len(result) > 32:
+        _fail("advanced_settings.panel_push_targets", "最多配置 32 个启用目标")
+    return tuple(result)
+
+
+def parse_panel_cron_expression(value: object) -> str:
+    """Validate AstrBot's five-field cron syntax before registering a job."""
+    if not isinstance(value, str):
+        _fail("advanced_settings.panel_cron_expression", "必须是 Cron 字符串")
+    expression = value.strip()
+    fields = expression.split()
+    valid_fields = all(_CRON_FIELD_RE.fullmatch(field) for field in fields)
+    if len(fields) != 5 or len(expression) > 100 or not valid_fields:
+        _fail("advanced_settings.panel_cron_expression", "必须是五段 Cron 表达式")
+    try:
+        from apscheduler.triggers.cron import CronTrigger
+        from astrbot.core.cron.manager import _normalize_crontab_day_of_week
+
+        normalized = " ".join((*fields[:4], _normalize_crontab_day_of_week(fields[4])))
+        CronTrigger.from_crontab(normalized)
+    except (ImportError, TypeError, ValueError):
+        _fail("advanced_settings.panel_cron_expression", "Cron 表达式无效")
+    return expression
 
 
 def parse_retry_excluded_errors(value: object) -> frozenset[str]:
@@ -146,6 +246,15 @@ def _to_str_id(key: str, value: object) -> str:
     if isinstance(value, bool):
         _fail(key, "ID 不能是布尔值")
     return str(value)
+
+
+def _provider_id(key: str, value: object) -> str:
+    if not isinstance(value, str):
+        _fail(key, "必须是供应商标识字符串")
+    provider_id = value.strip()
+    if len(provider_id) > MAX_MODEL_ID_CHARS or any(ord(ch) < 32 for ch in provider_id):
+        _fail(key, "供应商标识无效")
+    return provider_id
 
 
 def _normalize_url(key: str, value: str, *, allow_userinfo: bool) -> str:
@@ -226,13 +335,14 @@ class PluginConfig:
     max_input_image_mb: int
     max_image_download_mb: int
     max_video_download_mb: int
-    max_images_per_request: int
-
     max_concurrent_searches: int
     max_concurrent_media_jobs: int
 
-    video_resolution: str
     image_response_format: str
+    prompt_processing_mode: str
+    prompt_extract_provider_id: str
+    prompt_enhance_provider_id: str
+    prompt_processing_timeout_seconds: int
 
     model_retry_count: int
     video_retry_count: int
@@ -248,7 +358,18 @@ class PluginConfig:
     group_whitelist: tuple[str, ...] = field(default_factory=tuple)
     group_blacklist: tuple[str, ...] = field(default_factory=tuple)
 
-    debug_mode: bool = False
+    admin_username: str = field(default="")
+    admin_password: str = field(default="")
+    panel_period: str = field(default=DEFAULT_PANEL_PERIOD)
+    panel_sections: tuple[str, ...] = field(default_factory=lambda: PANEL_SECTION_ORDER)
+    panel_t2i_enabled: bool = field(default=True)
+    panel_resolution: str = field(default=DEFAULT_PANEL_RESOLUTION)
+    panel_background_tags: tuple[str, ...] = field(default_factory=tuple)
+    panel_push_targets: tuple[str, ...] = field(default_factory=tuple)
+    panel_cron_enabled: bool = field(default=False)
+    panel_cron_expression: str = field(default="0 9 * * *")
+    panel_interval_enabled: bool = field(default=False)
+    panel_interval_minutes: int = field(default=30)
 
     # -- protocol constants (not configurable via WebUI) --------------------
     prompt_max_chars: int = PROMPT_MAX_CHARS
@@ -266,6 +387,11 @@ class PluginConfig:
     @property
     def has_api_base_url(self) -> bool:
         return bool(self.api_base_url)
+
+    @property
+    def has_admin_credentials(self) -> bool:
+        """Both management credential fields are required; they gate the panel only."""
+        return bool(self.admin_username and self.admin_password)
 
     def capability_enabled(self, capability: str) -> bool:
         """Return True when the given capability may issue remote calls."""
@@ -336,8 +462,18 @@ class PluginConfig:
             "image_model": self.image_model,
             "image_edit_model": self.image_edit_model,
             "video_model": self.video_model,
-            "max_images_per_request": self.max_images_per_request,
-            "debug_mode": self.debug_mode,
+            "prompt_processing_mode": self.prompt_processing_mode,
+            "prompt_extract_provider_configured": bool(self.prompt_extract_provider_id),
+            "prompt_enhance_provider_configured": bool(self.prompt_enhance_provider_id),
+            "admin_configured": self.has_admin_credentials,
+            "panel_period": self.panel_period,
+            "panel_sections": self.panel_sections,
+            "panel_t2i_enabled": self.panel_t2i_enabled,
+            "panel_resolution": self.panel_resolution,
+            "panel_fixed_target_count": len(self.panel_push_targets),
+            "panel_cron_enabled": self.panel_cron_enabled,
+            "panel_interval_enabled": self.panel_interval_enabled,
+            "panel_interval_minutes": self.panel_interval_minutes,
         }
 
     # -- builder ------------------------------------------------------------
@@ -348,6 +484,7 @@ class PluginConfig:
         cap = _section(m, "capability_settings")
         acc = _section(m, "access_settings")
         adv = _section(m, "advanced_settings")
+        prompt_processing = _section(cap, "prompt_processing")
 
         def g(section: Mapping[str, object], key: str, default: object = None) -> object:
             return section.get(key, default)
@@ -364,6 +501,13 @@ class PluginConfig:
         )
 
         client_key = str(g(conn, "client_api_key", "")).strip()
+        admin_username = str(g(conn, "admin_username", "")).strip()
+        admin_password = str(g(conn, "admin_password", "")).strip()
+        panel_period = _to_choice(
+            "advanced_settings.panel_period",
+            g(adv, "panel_period", DEFAULT_PANEL_PERIOD),
+            PANEL_PERIODS,
+        )
 
         cfg = cls(
             enabled=_bool_flag("connection_settings.enabled", g(conn, "enabled"), True),
@@ -371,6 +515,37 @@ class PluginConfig:
             client_api_key=client_key,
             verify_tls=_bool_flag("connection_settings.verify_tls", g(conn, "verify_tls"), True),
             client_proxy_url=proxy,
+            admin_username=admin_username,
+            admin_password=admin_password,
+            panel_period=panel_period,
+            panel_sections=parse_panel_sections(
+                g(adv, "panel_sections", list(PANEL_SECTION_ORDER))
+            ),
+            panel_t2i_enabled=_bool_flag(
+                "advanced_settings.panel_t2i_enabled", g(adv, "panel_t2i_enabled"), True
+            ),
+            panel_resolution=_to_choice(
+                "advanced_settings.panel_resolution",
+                g(adv, "panel_resolution", DEFAULT_PANEL_RESOLUTION),
+                PANEL_RESOLUTIONS,
+            ),
+            panel_background_tags=parse_panel_background_tags(g(adv, "panel_background_tags", "")),
+            panel_push_targets=parse_panel_push_targets(g(adv, "panel_push_targets", [])),
+            panel_cron_enabled=_bool_flag(
+                "advanced_settings.panel_cron_enabled", g(adv, "panel_cron_enabled"), False
+            ),
+            panel_cron_expression=parse_panel_cron_expression(
+                g(adv, "panel_cron_expression", "0 9 * * *")
+            ),
+            panel_interval_enabled=_bool_flag(
+                "advanced_settings.panel_interval_enabled", g(adv, "panel_interval_enabled"), False
+            ),
+            panel_interval_minutes=_to_int(
+                "advanced_settings.panel_interval_minutes",
+                g(adv, "panel_interval_minutes", 30),
+                1,
+                1440,
+            ),
             search_models=parse_search_models(
                 g(cap, "search_models", default=",".join(DEFAULT_SEARCH_MODELS))
             ),
@@ -460,12 +635,6 @@ class PluginConfig:
                 1,
                 200,
             ),
-            max_images_per_request=_to_int(
-                "capability_settings.max_images_per_request",
-                g(cap, "max_images_per_request", 4),
-                1,
-                10,
-            ),
             max_concurrent_searches=_to_int(
                 "advanced_settings.max_concurrent_searches",
                 g(adv, "max_concurrent_searches", 4),
@@ -478,15 +647,29 @@ class PluginConfig:
                 1,
                 8,
             ),
-            video_resolution=_to_choice(
-                "capability_settings.video_resolution",
-                g(cap, "video_resolution", ""),
-                _VIDEO_RESOLUTIONS,
-            ),
             image_response_format=_to_choice(
                 "capability_settings.image_response_format",
                 g(cap, "image_response_format", "b64_json"),
                 _IMAGE_FORMATS,
+            ),
+            prompt_processing_mode=_to_choice(
+                "capability_settings.prompt_processing.mode",
+                g(prompt_processing, "mode", "off"),
+                _PROMPT_PROCESSING_MODES,
+            ),
+            prompt_extract_provider_id=_provider_id(
+                "capability_settings.prompt_processing.extract_provider_id",
+                g(prompt_processing, "extract_provider_id", ""),
+            ),
+            prompt_enhance_provider_id=_provider_id(
+                "capability_settings.prompt_processing.enhance_provider_id",
+                g(prompt_processing, "enhance_provider_id", ""),
+            ),
+            prompt_processing_timeout_seconds=_to_int(
+                "advanced_settings.prompt_processing_timeout_seconds",
+                g(adv, "prompt_processing_timeout_seconds", 15),
+                1,
+                60,
             ),
             model_retry_count=_to_int(
                 "advanced_settings.model_retry_count", g(adv, "model_retry_count", 2), 0, 5
@@ -523,7 +706,6 @@ class PluginConfig:
             group_blacklist=_dedupe(
                 list(g(acc, "group_blacklist", []) or []), "access_settings.group_blacklist"
             ),
-            debug_mode=_bool_flag("advanced_settings.debug_mode", g(adv, "debug_mode"), False),
         )
         return cfg
 

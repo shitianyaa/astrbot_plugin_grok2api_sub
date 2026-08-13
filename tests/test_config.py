@@ -6,6 +6,7 @@ import pytest
 
 from core.config import DEFAULT_SEARCH_MODELS, PluginConfig
 from core.errors import ConfigurationError
+from core.panel_models import PANEL_PERIODS, PANEL_SECTION_ORDER
 
 
 def _default_raw() -> dict:
@@ -27,9 +28,12 @@ def _default_raw() -> dict:
             "show_search_sources": True,
             "max_search_sources": 5,
             "max_search_output_chars": 6000,
-            "video_resolution": "",
             "image_response_format": "b64_json",
-            "max_images_per_request": 4,
+            "prompt_processing": {
+                "mode": "off",
+                "extract_provider_id": "",
+                "enhance_provider_id": "",
+            },
             "send_media_progress": True,
         },
         "access_settings": {
@@ -57,7 +61,7 @@ def _default_raw() -> dict:
             "retry_excluded_errors": "",
             "save_media": False,
             "temp_retention_hours": 24,
-            "debug_mode": False,
+            "prompt_processing_timeout_seconds": 15,
         },
     }
 
@@ -138,7 +142,6 @@ def test_defaults():
     c = _cfg()
     assert c.enabled is True
     assert c.verify_tls is True
-    assert c.max_images_per_request == 4
     assert c.max_concurrent_searches == 4
     assert c.max_concurrent_media_jobs == 2
     assert c.model_retry_count == 2
@@ -147,9 +150,9 @@ def test_defaults():
     assert c.retry_excluded_errors == frozenset()
     assert c.video_poll_timeout_seconds == 30
     assert c.image_response_format == "b64_json"
-    assert c.video_resolution == ""
+    assert c.prompt_processing_mode == "off"
+    assert c.prompt_processing_timeout_seconds == 15
     assert c.save_media is False
-    assert c.debug_mode is False
     assert c.enable_web_search is True
     assert c.enable_x_search is True
     assert c.search_reasoning_effort == "high"
@@ -218,15 +221,30 @@ def test_reject_non_http_scheme():
     _raises(connection_settings={"client_proxy_url": "socks5://h.com"})
 
 
+def test_prompt_processing_config_accepts_independent_providers():
+    c = _cfg(
+        capability_settings={
+            "prompt_processing": {
+                "mode": "enhance",
+                "extract_provider_id": "small-model",
+                "enhance_provider_id": "large-model",
+            }
+        }
+    )
+    assert c.prompt_processing_mode == "enhance"
+    assert c.prompt_extract_provider_id == "small-model"
+    assert c.prompt_enhance_provider_id == "large-model"
+
+
 def test_reject_bool_as_int():
-    _raises(capability_settings={"max_images_per_request": True})  # type: ignore[call-overload]
+    _raises(advanced_settings={"prompt_processing_timeout_seconds": True})  # type: ignore[call-overload]
 
 
 def test_reject_out_of_range():
     _raises(capability_settings={"max_search_output_chars": 100})
     _raises(capability_settings={"max_search_output_chars": 90000})
-    _raises(capability_settings={"max_images_per_request": 11})
-    _raises(capability_settings={"max_images_per_request": 0})
+    _raises(advanced_settings={"prompt_processing_timeout_seconds": 61})
+    _raises(advanced_settings={"prompt_processing_timeout_seconds": 0})
     _raises(advanced_settings={"model_retry_count": -1})
     _raises(advanced_settings={"model_retry_count": 6})
     _raises(advanced_settings={"video_retry_count": -1})
@@ -234,9 +252,9 @@ def test_reject_out_of_range():
 
 
 def test_reject_invalid_options():
-    _raises(capability_settings={"video_resolution": "1080p"})
     _raises(capability_settings={"image_response_format": "raw"})
     _raises(capability_settings={"search_reasoning_effort": "maximum"})
+    _raises(capability_settings={"prompt_processing": {"mode": "rewrite"}})
 
 
 def test_retry_excluded_errors_are_normalized_and_validated():
@@ -294,3 +312,138 @@ def test_redacted_summary_never_contains_key():
 def test_redacted_summary_reports_not_configured():
     c = _cfg(connection_settings={"client_api_key": ""})
     assert c.redacted_summary()["client_key_configured"] is False
+
+
+# -- panel configuration ---------------------------------------------------
+def test_panel_defaults_select_all_sections():
+    cfg = _cfg()
+    assert cfg.panel_period == "7d"
+    assert cfg.panel_sections == PANEL_SECTION_ORDER
+    assert cfg.admin_username == ""
+    assert cfg.admin_password == ""
+    assert cfg.has_admin_credentials is False
+    assert cfg.panel_t2i_enabled is True
+    assert cfg.panel_resolution == "1080p"
+    assert cfg.panel_background_tags == ()
+    assert cfg.panel_push_targets == ()
+    assert cfg.panel_cron_enabled is False
+    assert cfg.panel_cron_expression == "0 9 * * *"
+    assert cfg.panel_interval_enabled is False
+    assert cfg.panel_interval_minutes == 30
+
+
+def test_admin_credentials_require_both_values():
+    assert _cfg(connection_settings={"admin_username": "u"}).has_admin_credentials is False
+    assert _cfg(connection_settings={"admin_password": "p"}).has_admin_credentials is False
+    assert (
+        _cfg(
+            connection_settings={"admin_username": "u", "admin_password": "p"}
+        ).has_admin_credentials
+        is True
+    )
+
+
+def test_panel_period_rejects_unknown_value():
+    with pytest.raises(ConfigurationError):
+        _cfg(advanced_settings={"panel_period": "1h"})
+
+
+@pytest.mark.parametrize("resolution", ("720p", "1080p", "1440p"))
+def test_panel_resolution_accepts_exact_profiles(resolution):
+    assert _cfg(advanced_settings={"panel_resolution": resolution}).panel_resolution == resolution
+
+
+def test_panel_resolution_rejects_unknown_value():
+    with pytest.raises(ConfigurationError, match="panel_resolution"):
+        _cfg(advanced_settings={"panel_resolution": "4k"})
+
+
+def test_panel_sections_rejects_non_list():
+    _raises(advanced_settings={"panel_sections": "账号池,图片库"})
+    _raises(advanced_settings={"panel_sections": "账号池"})
+
+
+def test_panel_sections_rejects_unknown_label():
+    with pytest.raises(ConfigurationError):
+        _cfg(advanced_settings={"panel_sections": ["账号池", "不存在的块"]})
+    with pytest.raises(ConfigurationError):
+        _cfg(advanced_settings={"panel_sections": [123]})
+
+
+def test_panel_sections_empty_is_allowed_and_order_preserved():
+    cfg = _cfg(advanced_settings={"panel_sections": []})
+    assert cfg.panel_sections == ()
+    cfg = _cfg(advanced_settings={"panel_sections": ["按模型统计", "账号池"]})
+    assert cfg.panel_sections == ("按模型统计", "账号池")
+
+
+def test_admin_credentials_are_trimmed_and_never_in_redacted_summary():
+    cfg = _cfg(connection_settings={"admin_username": "  admin  ", "admin_password": "  s3cret "})
+    assert cfg.admin_username == "admin"
+    assert cfg.admin_password == "s3cret"
+    summary = cfg.redacted_summary()
+    assert summary["admin_configured"] is True
+    assert "'s3cret'" not in repr(summary)  # string literal of the password value
+    assert "'admin'" not in repr(summary)  # string literal of the username value
+
+
+def test_panel_period_matches_constant():
+    assert PANEL_PERIODS == ("24h", "7d", "30d", "90d")
+
+
+def test_panel_schedule_config_parses_tags_targets_and_interval():
+    cfg = _cfg(
+        advanced_settings={
+            "panel_background_tags": "sky\nsky\ncity",
+            "panel_push_targets": [
+                {"__template_key": "umo_target", "umo": "onebot:group:123", "enabled": True},
+                {"__template_key": "umo_target", "umo": "onebot:group:123", "enabled": True},
+                {
+                    "__template_key": "umo_target",
+                    "umo": "qqofficial:c2c:456",
+                    "enabled": False,
+                },
+            ],
+            "panel_cron_enabled": True,
+            "panel_cron_expression": "*/15 8-18 * * 1-5",
+            "panel_interval_enabled": True,
+            "panel_interval_minutes": 45,
+        }
+    )
+    assert cfg.panel_background_tags == ("sky", "city")
+    assert cfg.panel_push_targets == ("onebot:group:123",)
+    assert cfg.panel_cron_enabled is True
+    assert cfg.panel_cron_expression == "*/15 8-18 * * 1-5"
+    assert cfg.panel_interval_enabled is True
+    assert cfg.panel_interval_minutes == 45
+    summary = cfg.redacted_summary()
+    assert summary["panel_fixed_target_count"] == 1
+    assert "onebot:group:123" not in repr(summary)
+    assert "sky" not in repr(summary)
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        {"umo": "onebot:group:1"},
+        [{"umo": "bad"}],
+        [{"umo": "onebot:group:1", "enabled": "yes"}],
+    ],
+)
+def test_panel_push_targets_reject_invalid_values(value):
+    _raises(advanced_settings={"panel_push_targets": value})
+
+
+@pytest.mark.parametrize("expression", ["* * * *", "61 * * * *", "* * * * * *"])
+def test_panel_cron_rejects_invalid_expression(expression):
+    _raises(advanced_settings={"panel_cron_expression": expression})
+
+
+def test_panel_cron_accepts_standard_sunday_seven():
+    cfg = _cfg(advanced_settings={"panel_cron_expression": "0 9 * * 7"})
+    assert cfg.panel_cron_expression == "0 9 * * 7"
+
+
+@pytest.mark.parametrize("minutes", [0, 1441, True])
+def test_panel_interval_rejects_invalid_minutes(minutes):
+    _raises(advanced_settings={"panel_interval_minutes": minutes})

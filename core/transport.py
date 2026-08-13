@@ -144,7 +144,6 @@ class HTTPTransport:
         verify_tls: bool = True,
         proxy_url: str = "",
         connect_timeout_seconds: float = 10.0,
-        debug_mode: bool = False,
         sleep: SleepFn | None = None,
         session_factory: Callable[[], object] | None = None,
     ) -> None:
@@ -153,7 +152,6 @@ class HTTPTransport:
         self._verify_tls = verify_tls
         self._proxy_url = proxy_url
         self._connect_timeout = connect_timeout_seconds
-        self._debug_mode = debug_mode
         self._sleep = sleep or asyncio.sleep
         self._session_factory = session_factory
         self._session: object | None = None
@@ -185,16 +183,17 @@ class HTTPTransport:
         status: int = 0,
         started_at: float | None = None,
         retryable: bool = False,
+        operation: str = "",
     ) -> None:
-        """Log one request attempt's non-sensitive outcome in debug mode."""
-        if not self._debug_mode:
-            return
+        """Log one request attempt's non-sensitive outcome."""
         elapsed_ms = int((time.monotonic() - started_at) * 1000) if started_at is not None else 0
+        log_path = path if path.startswith("/v1/") or path == "/v1" else "[invalid_path]"
         safe_log(
-            logging.DEBUG,
+            logging.INFO if not retryable else logging.WARNING,
             "http_request_completed",
+            operation=operation,
             method=method,
-            path=path,
+            path=log_path,
             attempt=attempt,
             status=status,
             elapsed_ms=elapsed_ms,
@@ -237,6 +236,14 @@ class HTTPTransport:
                 raise ConfigurationError("插件已关闭", code="closed")
             session = self._session_for()
             started_at = time.monotonic()
+            safe_log(
+                logging.INFO,
+                "http_request_started",
+                operation=operation,
+                method=method,
+                path=path,
+                attempt=attempt,
+            )
             try:
                 async with session.request(
                     method,
@@ -271,6 +278,7 @@ class HTTPTransport:
                                     attempt=attempt,
                                     status=status,
                                     started_at=started_at,
+                                    operation=operation,
                                 )
                                 return payload
                             else:
@@ -285,6 +293,7 @@ class HTTPTransport:
                                         attempt=attempt,
                                         status=status,
                                         started_at=started_at,
+                                        operation=operation,
                                     )
                                     return result
                     else:
@@ -298,6 +307,7 @@ class HTTPTransport:
                         status=status,
                         started_at=started_at,
                         retryable=will_retry,
+                        operation=operation,
                     )
                     if will_retry:
                         await self._backoff(attempt, retry_policy.base_delay, retry_after)
@@ -313,6 +323,7 @@ class HTTPTransport:
                     status=0,
                     started_at=started_at,
                     retryable=will_retry,
+                    operation=operation,
                 )
                 if will_retry:
                     await self._backoff(attempt, retry_policy.base_delay, None)
@@ -380,6 +391,14 @@ class HTTPTransport:
             session = self._session_for()
             written = 0
             started_at = time.monotonic()
+            safe_log(
+                logging.INFO,
+                "http_request_started",
+                operation="download",
+                method="GET",
+                path=path,
+                attempt=attempt,
+            )
             try:
                 async with session.get(
                     url, headers=self._headers(), timeout=timeout, proxy=self._proxy_url or None
@@ -394,6 +413,7 @@ class HTTPTransport:
                             status=resp.status,
                             started_at=started_at,
                             retryable=will_retry,
+                            operation="download",
                         )
                         if will_retry:
                             retry_after = parse_retry_after(
@@ -432,6 +452,7 @@ class HTTPTransport:
                             status=resp.status,
                             started_at=started_at,
                             retryable=will_retry,
+                            operation="download",
                         )
                         if will_retry:
                             await self._backoff(attempt, retry_policy.base_delay, None)
@@ -444,6 +465,7 @@ class HTTPTransport:
                         attempt=attempt,
                         status=resp.status,
                         started_at=started_at,
+                        operation="download",
                     )
                     return destination
             except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
@@ -457,6 +479,7 @@ class HTTPTransport:
                     status=0,
                     started_at=started_at,
                     retryable=will_retry,
+                    operation="download",
                 )
                 if will_retry:
                     await self._backoff(attempt, retry_policy.base_delay, None)

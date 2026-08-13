@@ -3,6 +3,8 @@ __pycache__/
 .ruff_cache/
 .venv/
 *.pyc
+build/
+*.egg-info/
 coverage.xml
 htmlcov/
 .grok_test_*.json
@@ -10,6 +12,11 @@ htmlcov/
 testignore/
 # goal-mode task tracking (local only)
 goal-1/
+# local agent plans and progress records (never publish)
+.superpowers/
+Progress/
+docs/superpowers/plans/
+docs/superpowers/specs/
 # AstrBot runtime data dir (created by StarTools.get_data_dir)
 data/
 # implementation plan document (not part of the published plugin)

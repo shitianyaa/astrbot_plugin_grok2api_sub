@@ -3,16 +3,61 @@
 ## 模块依赖
 
 ```text
-main.py -> config / access / service / tools / sender / platform / observability
-service.py -> client / media / models / errors / access / parser / observability
+main.py -> config / service / prompt_processor / tools / sender / panel_background / panel_card / panel_schedule / observability
+service.py -> client / media / models / errors / access / parser / prompt_processor / observability
+service.py -> admin_client / panel_models（仅 /g2面板 路径）
 client.py -> transport / parsers / models / errors
 sender.py -> platform / models / observability + AstrBot message components
+panel_renderer.py / panel_card.py -> panel_models（纯渲染数据层）
+panel_background.py -> Lolicon（显式 proxy/TLS，不读取环境代理）
+panel_schedule.py -> UMO 订阅存储与午夜对齐规则
 models.py / errors.py / parsers.py / observability.py -> 不依赖 AstrBot
 ```
 
 - `main.py` 只保留生命周期、命令装饰器和 LLM Tool 暴露策略。
 - 业务层（`service.py`、`sender.py`）不直接调用 OneBot action，也不直接调用
   QQ OpenAPI；所有 HTTP 都经由 `transport.py`，所有发送都经由 `sender.py`。
+  例外仅 `admin_client.py`：它是管理面专用的独立只读客户端，见下节。
+
+## 媒体提示词处理
+
+`/g2生图` 与 `/g2视频` 接收命令后的整段文本，不再将数字、时长或比例前缀当作命令参数。`PromptProcessor` 在服务层发起 grok2api 请求前解析模式：`off` 直接保留原提示词，`extract` 调用配置的 AstrBot 整理供应商且只接受媒体参数，`enhance` 调用独立的优化供应商并可替换提示词。
+
+- 三套固定 system prompt 分别用于图片参数、视频参数和通用媒体优化；用户内容以 JSON 数据体传给 `Context.llm_generate()`，而不是插入 system prompt。
+- 返回内容必须是无多余字段的 JSON。比例、图片 `1k/2k`、视频 `6/10/15` 秒和 `480p/720p/1080p` 逐项白名单校验；模型异常、工具调用响应、超时或格式错误都会在 grok2api 生成请求前终止本次命令。
+- `prompt_processor.py` 的日志仅记录模式、字符数、耗时、稳定错误码和异常类型，不记录提示词、provider 标识或模型响应正文。
+
+## 管理面板安全域（`/g2面板`）
+
+管理面与 Client Key `/v1` 通道是两条互不重叠的通路：
+
+```text
+AstrBot WebUI 配置
+  -> PluginConfig（admin_username / admin_password / panel_period / panel_sections）
+  -> AdminClient（login -> 缓存 Bearer GET -> 401 refresh -> 单次重放）
+  -> GrokService.build_panel()
+  -> PanelReport（汇总字段 + 脱敏审计行为聚合）
+  -> PanelBackgroundProvider（Lolicon / 缓存 / CSS 默认背景）
+  -> panel_card.py HTML 模板
+  -> Star.html_render()（AstrBot T2I）
+  -> 受控 workspace 图片 -> MessageChain
+
+T2I 失败：PanelReport -> format_panel_text() -> MessageChain 文本回复
+```
+
+- `HTTPTransport` 仍只允许 `/v1/...`，绝不承载管理路径；`AdminClient` 自建 aiohttp 会话，
+  只允许账号摘要、图片/视频统计、审计摘要与审计列表五个 GET，管理路径按
+  `api_base_url` 的 scheme + authority 同源拼接，忽略 `/v1` 后缀。
+- Access token 只存进程内存；服务端提供 refresh token 时也仅存进程内存，由一把 `asyncio.Lock` 保护。
+  401 优先触发一次 refresh；未提供或拒绝 refresh token 时重新登录一次，并只重放一次，再次 401 即命令级失败，不做循环。
+- 超时用 `connect_timeout_seconds` + 固定 30s 管理读超时，与 `search_timeout_seconds` 无关。
+- 审计汇总的请求数、Token、费用、计费状态、统计区间和计价元数据来自 summary 接口；审计行只保留时间、状态、模型、operation、provider、usageSource、流式、重试、工具和媒体等非身份字段，用于行为、UTC 调用趋势与模型聚合。趋势按 `24h=1h`、`7d=6h`、`30d=1d`、`90d=1w` 分桶，列表覆盖不足时保留 `X/Y` 覆盖提示，不伪造完整明细。
+- 面板预检是独立的 `_panel_preflight()`，**不复用** `_preflight`/`missing_capability`
+  （二者强制要求 Client Key），因此只配管理凭据、不配 Client Key 也能用 `/g2面板`。
+- `PanelReport` 只保留聚合值；账号邮箱、Client Key 名、请求 ID 与原始审计行在解析时即丢弃。
+- **T2I 边界**：`panel_card.py` 只消费 `PanelReport`，不改动取数、鉴权与脱敏规则。图片
+  调用经 `Star.html_render()` 使用 AstrBot 全局的 T2I 配置，插件不持有 T2I 主机或凭据，也不使用 Playwright。`panel_resolution` 将固定 1280x720 逻辑布局原生栅格化为 720p、1080p 或 1440p；渲染结果在发送前会验证为真实图片，错误 JSON 或 HTML 不会被当作图片发送。
+- **定时投递**：`main.py` 使用 AstrBot `CronJobManager.add_basic_job()` 注册非持久化处理器；插件重载时重建处理器并清理同名前缀的遗留任务。`panel_schedule.py` 的命令订阅与 Schema 固定目标合并后去重，Cron 与间隔触发在自然分钟维度再去重。
 
 ## 联网搜索的双层决策
 
@@ -81,8 +126,8 @@ Provider；无论选哪个 Provider，插件都以完成态 `web_search_call` �
   发送失败只记录安全日志，不取消已经接受的远端任务。
 - 每个媒体任务记录开始、完成或失败事件，字段限于操作类型、模型、数量、耗时、安全 request ID、
   错误码和异常类型。日志不包含提示词、图片内容、完整 URL 或凭据。
-- `debug_mode=true` 时，JSON HTTP 的每次尝试额外记录 method、相对 path、attempt、status、
-  elapsed_ms 和 retryable；网络失败以 `status=0` 记录。
+- JSON HTTP 的每次尝试默认记录 method、相对 path、attempt、status、elapsed_ms 和 retryable；
+  网络失败以 `status=0` 记录。日志事件名和字段名保持英文，不记录 URL、请求体或凭据。
 
 ## 远端重试边界
 

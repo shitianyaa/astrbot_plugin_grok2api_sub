@@ -4,6 +4,19 @@
 
 ## [Unreleased]
 
+### Added
+
+- **媒体提示词处理**：`/g2生图` 与 `/g2视频` 改为完整提示词直传，不再解析数量、时长或比例前缀；新增关闭、参数整理、提示词优化三种模式，以及独立的 AstrBot 整理/优化供应商选择器。图片支持 `1k`/`2k` 与七种比例；视频支持 `6s`/`10s`/`15s`、`480p`/`720p`/`1080p` 与七种比例。整理/优化模型输出严格校验，失败时终止请求而不静默降级。
+- **`/g2面板` 管理面板（ADMIN）**：新增 `core/admin_client.py` 只读管理客户端（独立 aiohttp 会话、`asyncio.Lock` 保护的 token 轮换、401→refresh→单次重放、`connect_timeout_seconds` + 固定 30s 管理读超时），只允许账号摘要、图片/视频统计、审计摘要与审计列表五个 GET；管理请求按 `api_base_url` 的 scheme+authority 同源拼接，忽略 `/v1` 后缀。
+- **面板配置**：`connection_settings` 增加 `admin_username`/`admin_password`（与 Client Key 相互独立，仅面板使用，不入日志与 `redacted_summary`）；`advanced_settings` 增加 `panel_period`（`24h`/`7d`/`30d`/`90d`，默认 `7d`）与 `panel_sections`（五块中文多选，默认全选，可置空）。顶层仍为 4 个分组。
+- **面板聚合与渲染**：`core/panel_models.py` 提供防御式 DTO（缺字段→0、未知 key 忽略）、`Decimal` 成本换算（`1e8 ticks = $1`）、本地按 `createdAt` 切窗的 `aggregate_models`；`core/panel_renderer.py` 输出纯文本，最多显示 20 个模型并标注省略/截断。`GrokService.build_panel` 走独立 `_panel_preflight()`（不复用 `_preflight`/`missing_capability`，因此**不要求 Client Key**），完整报告缓存 60 秒，逐块顺序抓取、单块失败不阻断其余块。
+- 审计逐条只保留 `createdAt`/`statusCode`/`errorCode`/`durationMs`/`totalTokens`/`modelPublicId`/`modelUpstreamModel`，游标分页上限 5000 行并显式标记截断；账号邮箱、Client Key 名、请求 ID 与原始审计行不进入 `PanelReport`。
+- **面板图片与定时推送**：`/g2面板` 现通过 AstrBot HTML-to-image 渲染 1280x720（16:9）卡片，T2I 失败退回文本；新增 Lolicon 非 R18/排除 AI 横向背景、缓存回退、固定 UMO 模板列表、会话订阅命令、Cron 与从午夜对齐的间隔推送。同一 UMO 在同一分钟只发送一次，定时路径不调用主 LLM。
+
+### Removed
+
+- **破坏性变更：`/g2状态` 与别名 `/grok2状态` 已移除**，由 `/g2面板`（别名 `/grok2面板`）替代，不保留兼容别名。同时删除 `GrokService.status()` 与 `StatusReport`。
+
 ### Fixed
 
 - 命令注册：handler 参数从 `*runtime_args: Any` 改为 `GreedyStr`，消除 `Any cannot be instantiated` 导入报错，确保多词参数正确合并。
@@ -16,7 +29,6 @@
 - 媒体归档：`save_media=true` 时成功文件移入 `archive/` 子目录保留，`cleanup_expired` 跳过 `archive/`，保留文件不再被启动清理误删（此前文档承诺 archive/ 但代码未实现）。
 - 会话并发 guard：即时检查同 UMO 锁占用，立即返回 `media_job_busy` 而非排队等待；空闲锁从字典回收。
 - 访问控制：群聊中用户黑/白名单现在也生效（之前仅群聊忽略用户白名单）。
-- 状态可见性：`StatusReport` 增加 `error_code` 字段，模型请求失败时显示"模型列表: 连接失败"而非 0 个模型。
 - 搜索来源合并：遍历所有完成态 Web/X 搜索输出，累计来源，不再第一个 call 提前 return。
 - 搜索来源展示：`max_search_sources=0` 时不再输出空的“来源”标题；FunctionTool 也遵守来源显示和数量配置。
 - `HTTPTransport.close()` 不再 `except: pass`，关闭失败记录 `transport_close_failed` 日志。
@@ -32,7 +44,7 @@
 
 - 默认代理地址 `client_proxy_url` 从 `http://127.0.0.1:3067` 改为空字符串（用户不再需代理时手动清空）。
 - `/g2帮助` 改为动态输出能力状态（可用/未配置，不泄露密钥或凭据）。
-- 配置注入：`connect_timeout_seconds`、`search_timeout_seconds`、`image_timeout_seconds`、`video_create_timeout_seconds`、`video_poll_timeout_seconds`、`video_poll_interval_seconds`、`download_timeout_seconds`、`max_input_image_mb`、`model_retry_count`、`video_retry_count`、`retry_base_delay_seconds`、`retry_excluded_errors`、`debug_mode` 从 `PluginConfig` 完整注入 transport/client/media，不再硬编码。
+- 配置注入：`connect_timeout_seconds`、`search_timeout_seconds`、`image_timeout_seconds`、`video_create_timeout_seconds`、`video_poll_timeout_seconds`、`video_poll_interval_seconds`、`download_timeout_seconds`、`max_input_image_mb`、`model_retry_count`、`video_retry_count`、`retry_base_delay_seconds`、`retry_excluded_errors` 从 `PluginConfig` 完整注入 transport/client/media，不再硬编码。
 - **远端重试分组**：搜索、生图、改图、模型目录和图片下载共用 `model_retry_count`；视频创建、状态轮询和视频下载使用 `video_retry_count`。两项均为不含首次请求的额外次数，默认 `2`。
 - **默认重试范围**：空的 `retry_excluded_errors` 会重试远端 HTTP、网络、JSON 与远端响应结构错误，包含生成 POST；可用英文逗号排除 HTTP 状态码或稳定错误码。生成请求可能重复生成或扣费。
 - **视频轮询超时**：新增 `video_poll_timeout_seconds` 作为每次状态查询的单次超时，移除 `video_max_wait_seconds` 的插件侧总等待上限；重试不再裁剪任何单次超时。
@@ -41,10 +53,9 @@
 - **搜索工具与思考强度**：默认同时开启 `web_search` 与 `x_search`；`grok-chat-*` 自动禁用 X 搜索并保留 Web 搜索。`search_reasoning_effort` 新增 `auto`（省略该字段、由远端选择），当前模型不支持所选强度时同样省略，不影响候选回退。
 - **搜索路径边界**：`/g2搜索` 始终直接请求 grok2api 并强制当前全局启用的 Web/X 搜索，不经 AstrBot 主模型改写；`grok2api_web_search` 保持为由主模型决定调用的 Tool。
 - **媒体进度**：`send_video_progress` 更名为 `send_media_progress`，覆盖生图、改图和视频；进度提示发送失败不取消已接受的任务。
-- **可观测性**：媒体任务增加安全的开始/完成/失败日志；`debug_mode` 下 JSON HTTP 每次尝试记录相对路径、状态、耗时和重试性，网络失败使用状态 `0`。
+- **可观测性**：媒体、搜索、HTTP 请求和消息交付默认记录安全的开始/完成/失败日志；JSON HTTP 每次尝试记录相对路径、状态、耗时和重试性，网络失败使用状态 `0`。
 - **模型目录缓存**：`GET /v1/models` 结果缓存 300 秒，并发刷新只发一个 GET，失败不返回过期目录。
 - **严格搜索回退**：每个远端结果先按当前候选的重试策略处理；仅 `model_not_found`/`model_not_allowed`/`search_not_performed` 在重试耗尽后切换下一候选，其他错误立即抛出；耗尽抛 `search_models_exhausted`。
-- **状态命令升级**：`/g2状态` 输出搜索候选顺序、当前可见/不可见候选、模型目录状态（只做目录 GET，不执行搜索探针）。
 - **安全错误码**：transport 从错误体有界读取（64 KiB）只保留 `model_not_found`/`model_not_allowed`，其余用稳定映射，杜绝错误体泄漏。
 - 未知命令异常不再 `logger.warning("命令异常: %s", exc)` 打印完整异常字符串，改为 `safe_log` 只记录 `exception_type`。
 

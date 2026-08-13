@@ -7,32 +7,44 @@ NOTE: 不使用 ``from __future__ import annotations``。AstrBot 的
 做身份比较；PEP 563 字符串化会把它变成字符串，导致 GreedyStr 参数不被识别。
 """
 
+import asyncio
+import datetime as dt
 import logging
+import shutil
 from pathlib import Path
 from typing import Any
 
 from astrbot.api import AstrBotConfig
 from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.api.event.filter import PermissionType
+from astrbot.api.message_components import Image, Plain
 from astrbot.api.star import Context, Star, StarTools
 from astrbot.core.star.filter.command import GreedyStr
 
+from .core.admin_client import AdminClient
 from .core.client import Grok2APIClient
-from .core.command_parser import (
-    parse_image_command,
-    parse_video_command,
-    validate_search_query,
-)
+from .core.command_parser import validate_search_query
 from .core.config import PluginConfig
 from .core.errors import PluginError
 from .core.media import MediaWorkspace
 from .core.observability import safe_log
-from .core.sender import DeliveryAdapter
+from .core.panel_background import PanelBackgroundProvider
+from .core.panel_card import build_panel_card_data, panel_render_spec
+from .core.panel_renderer import format_panel_text
+from .core.panel_schedule import (
+    PanelSubscriptionStore,
+    interval_due,
+    merge_panel_targets,
+    validate_umo,
+)
+from .core.prompt_processor import PromptProcessor
+from .core.sender import DeliveryAdapter, DeliveryError
 from .core.service import GrokService
 from .core.tools import SearchToolPolicy, build_search_tool
 from .core.transport import HTTPTransport
 
 TOOL_NAME = "grok2api_web_search"
+_PANEL_JOB_PREFIX = "grok2api_sub:panel:"
 
 
 class Grok2APISubPlugin(Star):
@@ -44,6 +56,16 @@ class Grok2APISubPlugin(Star):
         self._plugin_config: PluginConfig | None = None
         self._service: GrokService | None = None
         self._transport: HTTPTransport | None = None
+        self._admin_client: AdminClient | None = None
+        self._workspace: MediaWorkspace | None = None
+        self._sender: DeliveryAdapter | None = None
+        self._panel_background: PanelBackgroundProvider | None = None
+        self._panel_subscriptions = PanelSubscriptionStore(
+            self.data_dir / "panel_subscriptions.json"
+        )
+        self._panel_job_ids: list[str] = []
+        self._panel_schedule_lock = asyncio.Lock()
+        self._panel_sent_minutes: dict[str, int] = {}
         self._tool_registered = False
 
     # -- lifecycle ---------------------------------------------------------
@@ -56,14 +78,32 @@ class Grok2APISubPlugin(Star):
                 max_input_bytes=cfg.max_input_image_mb * 1024 * 1024,
             )
             await workspace.initialize()
+            self._workspace = workspace
+            self._panel_background = PanelBackgroundProvider(
+                self.data_dir / "panel_background.jpg",
+                proxy_url=cfg.client_proxy_url,
+                verify_tls=cfg.verify_tls,
+                connect_timeout_seconds=cfg.connect_timeout_seconds,
+                max_bytes=cfg.max_image_download_mb * 1024 * 1024,
+            )
             self._transport = HTTPTransport(
                 cfg.api_base_url,
                 cfg.client_api_key,
                 verify_tls=cfg.verify_tls,
                 proxy_url=cfg.client_proxy_url,
                 connect_timeout_seconds=cfg.connect_timeout_seconds,
-                debug_mode=cfg.debug_mode,
             )
+            # 独立只读管理客户端：/g2面板 不依赖 Client Key。
+            self._admin_client = None
+            if cfg.has_admin_credentials:
+                self._admin_client = AdminClient(
+                    cfg.api_base_url,
+                    cfg.admin_username,
+                    cfg.admin_password,
+                    verify_tls=cfg.verify_tls,
+                    proxy_url=cfg.client_proxy_url,
+                    connect_timeout_seconds=cfg.connect_timeout_seconds,
+                )
             client = Grok2APIClient(
                 self._transport,
                 search_timeout=cfg.search_timeout_seconds,
@@ -78,10 +118,19 @@ class Grok2APISubPlugin(Star):
                 retry_excluded_errors=cfg.retry_excluded_errors,
             )
             sender = DeliveryAdapter(workspace)
-            self._service = GrokService(cfg, client, workspace, sender)
+            self._sender = sender
+            self._service = GrokService(
+                cfg,
+                client,
+                workspace,
+                sender,
+                admin_client=self._admin_client,
+                prompt_processor=PromptProcessor(self.context, cfg),
+            )
             removed = await workspace.cleanup_expired(cfg.temp_retention_hours)
             if cfg.enable_llm_search_tool and cfg.capability_enabled("search"):
                 self._register_search_tool()
+            await self._register_panel_jobs()
             safe_log(logging.INFO, "plugin_initialized", capability="all")
             if removed:
                 safe_log(logging.INFO, "startup_cleanup", cleanup_count=removed)
@@ -96,8 +145,10 @@ class Grok2APISubPlugin(Star):
 
     async def terminate(self) -> None:
         self._unregister_search_tool()
+        await self._remove_panel_jobs()
         service = self._service
         self._service = None
+        self._admin_client = None
         if service is not None:
             try:
                 await service.close()
@@ -118,6 +169,19 @@ class Grok2APISubPlugin(Star):
                     error_code="transport_close_failed",
                     exception_type=type(exc).__name__,
                 )
+        if self._panel_background is not None:
+            try:
+                await self._panel_background.close()
+            except Exception as exc:  # noqa: BLE001
+                safe_log(
+                    logging.WARNING,
+                    "plugin_terminate_failed",
+                    error_code="background_close_failed",
+                    exception_type=type(exc).__name__,
+                )
+            self._panel_background = None
+        self._workspace = None
+        self._sender = None
 
     # -- tool registration -------------------------------------------------
     def _register_search_tool(self) -> None:
@@ -160,21 +224,22 @@ class Grok2APISubPlugin(Star):
     async def g2_search(self, event: AstrMessageEvent, query: GreedyStr):
         """联网搜索：/g2搜索 <问题>，返回正文与来源。"""
         event.stop_event()
+        safe_log(logging.INFO, "command_started", operation="search")
         try:
             service = self._require_service(event)
             result = await service.search(event, validate_search_query(str(query)), required=True)
             await self._send(event, service.format_search(result))
+            safe_log(logging.INFO, "command_completed", operation="search")
         except Exception as exc:  # noqa: BLE001
             await self._send_error(event, exc)
 
     @filter.command("g2生图", alias={"grok2生图"})
     async def g2_generate_image(self, event: AstrMessageEvent, arguments: GreedyStr):
-        """生成图片：/g2生图 [数量] <提示词>。"""
+        """生成图片：/g2生图 <提示词>。"""
         event.stop_event()
         try:
             service = self._require_service(event)
-            cmd = parse_image_command(str(arguments), max_count=self._cfg.max_images_per_request)
-            await service.deliver_generated_images(event, cmd.prompt, cmd.count)
+            await service.deliver_generated_images(event, validate_search_query(str(arguments)))
         except Exception as exc:  # noqa: BLE001
             await self._send_error(event, exc)
 
@@ -190,65 +255,63 @@ class Grok2APISubPlugin(Star):
 
     @filter.command("g2视频", alias={"grok2视频"})
     async def g2_generate_video(self, event: AstrMessageEvent, arguments: GreedyStr):
-        """生成视频：/g2视频 [时长] [比例] <提示词>，可附带首帧图片。"""
+        """生成视频：/g2视频 <提示词>，可附带首帧图片。"""
         event.stop_event()
         try:
             service = self._require_service(event)
-            command = parse_video_command(str(arguments))
-            await service.deliver_video(event, command)
+            await service.deliver_video(event, validate_search_query(str(arguments)))
         except Exception as exc:  # noqa: BLE001
             await self._send_error(event, exc)
 
     @filter.permission_type(PermissionType.ADMIN)
-    @filter.command("g2状态", alias={"grok2状态"})
-    async def g2_status(self, event: AstrMessageEvent):
-        """查看 Grok2API 配置与模型连通状态，仅 AstrBot 管理员可用。"""
+    @filter.command("g2面板", alias={"grok2面板"})
+    async def g2_panel(self, event: AstrMessageEvent):
+        """发送所选管理数据块：/g2面板（仅 AstrBot 管理员）。"""
         event.stop_event()
         try:
-            service = self._require_service(event)
-            report = await service.status(event)
-            caps = "、".join(report.configured_capabilities) or "无"
-            base = report.api_base_url or "未配置"
-            key = "已配置" if report.client_key_configured else "未配置"
+            report = await self._require_service(event).build_panel(event)
+            await self._send_panel_to_event(event, report)
+        except Exception as exc:  # noqa: BLE001
+            await self._send_error(event, exc)
 
-            def _fmt_models(models: tuple[str, ...]) -> str:
-                if not models:
-                    return "无"
-                shown = " -> ".join(models[:8])
-                if len(models) > 8:
-                    shown += f" 等 {len(models)} 个"
-                return shown
+    @filter.permission_type(PermissionType.ADMIN)
+    @filter.command("g2面板订阅", alias={"grok2面板订阅"})
+    async def g2_panel_subscribe(self, event: AstrMessageEvent):
+        """Subscribe the current UMO to configured scheduled panel pushes."""
+        event.stop_event()
+        try:
+            created = await self._panel_subscriptions.subscribe(str(event.unified_msg_origin))
+            message = "面板定时推送已订阅" if created else "当前会话已订阅面板定时推送"
+            await self._send(event, message)
+        except Exception as exc:  # noqa: BLE001
+            await self._send_error(event, exc)
 
-            if report.error_code:
-                if report.catalog_available:
-                    catalog_line = f"已获取（{len(report.visible_models)} 个模型）"
-                elif report.error_code in ("api_base_url_missing", "client_key_missing"):
-                    catalog_line = f"未检查（{report.error_code}）"
-                else:
-                    catalog_line = f"连接失败（{report.error_code}）"
-            else:
-                catalog_line = f"已获取（{len(report.visible_models)} 个模型）"
+    @filter.permission_type(PermissionType.ADMIN)
+    @filter.command("g2面板退订", alias={"grok2面板退订"})
+    async def g2_panel_unsubscribe(self, event: AstrMessageEvent):
+        """Remove the current UMO from configured scheduled panel pushes."""
+        event.stop_event()
+        try:
+            removed = await self._panel_subscriptions.unsubscribe(str(event.unified_msg_origin))
+            message = "面板定时推送已退订" if removed else "当前会话未订阅面板定时推送"
+            await self._send(event, message)
+        except Exception as exc:  # noqa: BLE001
+            await self._send_error(event, exc)
 
-            if report.catalog_available:
-                available_line = _fmt_models(report.available_search_models) or "无"
-                unavailable_line = _fmt_models(report.unavailable_search_models) or "无"
-            else:
-                available_line = "未检查"
-                unavailable_line = "未检查"
-
-            lines = [
-                "Grok2API Sub 状态：",
-                f"- Base URL: {base}",
-                f"- TLS 校验: {'开' if report.tls_verified else '关'}",
-                f"- Client Key: {key}",
-                f"- 已启用能力: {caps}",
-                f"- 搜索候选: {_fmt_models(report.configured_search_models)}",
-                f"- 当前可见候选: {available_line}",
-                f"- 当前不可见候选: {unavailable_line}",
-                f"- 模型目录: {catalog_line}",
-                f"- 接口耗时: {report.latency_ms} ms",
-            ]
-            await self._send(event, "\n".join(lines))
+    @filter.permission_type(PermissionType.ADMIN)
+    @filter.command("g2面板订阅列表", alias={"grok2面板订阅列表"})
+    async def g2_panel_subscriptions(self, event: AstrMessageEvent):
+        """Show only safe subscription counts, never full UMO values."""
+        event.stop_event()
+        try:
+            current = validate_umo(str(event.unified_msg_origin))
+            dynamic = await self._panel_subscriptions.targets()
+            text = (
+                f"当前会话：{'已订阅' if current in dynamic else '未订阅'}\n"
+                f"命令订阅会话数：{len(dynamic)}\n"
+                f"固定配置目标数：{len(self._cfg.panel_push_targets)}"
+            )
+            await self._send(event, text)
         except Exception as exc:  # noqa: BLE001
             await self._send_error(event, exc)
 
@@ -294,6 +357,296 @@ class Grok2APISubPlugin(Star):
         )
         return tool_allowed_for_event(event, policy, cfg)
 
+    # -- panel scheduling -------------------------------------------------
+    async def _register_panel_jobs(self) -> None:
+        """Register non-persistent handlers again after every plugin reload."""
+        cfg = self._cfg
+        manager = self.context.cron_manager
+        await self._remove_panel_jobs()
+        await self._remove_stale_panel_jobs(manager)
+        if not cfg.panel_cron_enabled and not cfg.panel_interval_enabled:
+            return
+        if cfg.panel_cron_enabled:
+            job = await manager.add_basic_job(
+                name=f"{_PANEL_JOB_PREFIX}cron",
+                cron_expression=cfg.panel_cron_expression,
+                handler=self._run_scheduled_panel,
+                description="Grok2API panel scheduled push",
+                payload={"trigger": "cron"},
+                persistent=False,
+            )
+            self._panel_job_ids.append(job.job_id)
+        if cfg.panel_interval_enabled:
+            job = await manager.add_basic_job(
+                name=f"{_PANEL_JOB_PREFIX}interval",
+                cron_expression="* * * * *",
+                handler=self._run_scheduled_panel,
+                description="Grok2API panel interval push",
+                payload={"trigger": "interval"},
+                persistent=False,
+            )
+            self._panel_job_ids.append(job.job_id)
+        if self._panel_job_ids:
+            safe_log(
+                logging.INFO,
+                "panel_schedule_registered",
+                operation="panel_schedule",
+                target_count=len(self._panel_job_ids),
+            )
+
+    async def _remove_panel_jobs(self) -> None:
+        """Remove this instance's non-persistent jobs without touching others."""
+        if not self._panel_job_ids:
+            return
+        manager = self.context.cron_manager
+        for job_id in self._panel_job_ids:
+            try:
+                await manager.delete_job(job_id)
+            except Exception as exc:  # noqa: BLE001
+                safe_log(
+                    logging.WARNING,
+                    "panel_schedule_remove_failed",
+                    operation="panel_schedule",
+                    error_code="job_remove_failed",
+                    exception_type=type(exc).__name__,
+                )
+        self._panel_job_ids.clear()
+
+    async def _remove_stale_panel_jobs(self, manager) -> None:
+        """Remove orphaned non-persistent jobs left by a prior plugin reload."""
+        try:
+            jobs = await manager.list_jobs("basic")
+        except Exception as exc:  # noqa: BLE001
+            safe_log(
+                logging.WARNING,
+                "panel_schedule_list_failed",
+                operation="panel_schedule",
+                error_code="job_list_failed",
+                exception_type=type(exc).__name__,
+            )
+            return
+        for job in jobs:
+            if job.persistent or not job.name.startswith(_PANEL_JOB_PREFIX):
+                continue
+            try:
+                await manager.delete_job(job.job_id)
+            except Exception as exc:  # noqa: BLE001
+                safe_log(
+                    logging.WARNING,
+                    "panel_schedule_remove_failed",
+                    operation="panel_schedule",
+                    error_code="job_remove_failed",
+                    exception_type=type(exc).__name__,
+                )
+
+    async def _run_scheduled_panel(self, *, trigger: str) -> None:
+        """Build once and send once per target in each natural minute."""
+        cfg = self._cfg
+        now = dt.datetime.now().astimezone()
+        if trigger == "interval" and not interval_due(now, cfg.panel_interval_minutes):
+            return
+        async with self._panel_schedule_lock:
+            targets = merge_panel_targets(
+                cfg.panel_push_targets,
+                await self._panel_subscriptions.targets(),
+            )
+            if not targets:
+                return
+            marker = int(now.timestamp() // 60)
+            pending = tuple(
+                target for target in targets if self._panel_sent_minutes.get(target) != marker
+            )
+            if not pending:
+                return
+            for target in pending:
+                self._panel_sent_minutes[target] = marker
+            self._panel_sent_minutes = {
+                target: sent_at
+                for target, sent_at in self._panel_sent_minutes.items()
+                if sent_at >= marker - 1
+            }
+            started = dt.datetime.now().timestamp()
+            safe_log(
+                logging.INFO,
+                "panel_push_started",
+                operation="panel_push",
+                trigger=trigger,
+                target_count=len(pending),
+            )
+            image_path: Path | None = None
+            try:
+                report = await self._require_service(None).build_panel(None)
+                image_path = await self._render_panel_image(report)
+                if image_path is not None:
+                    await self._send_panel_image_to_targets(pending, image_path)
+                else:
+                    await self._send_panel_text_to_targets(pending, format_panel_text(report))
+            except Exception as exc:  # noqa: BLE001
+                safe_log(
+                    logging.WARNING,
+                    "panel_push_failed",
+                    operation="panel_push",
+                    trigger=trigger,
+                    target_count=len(pending),
+                    error_code=exc.code if isinstance(exc, PluginError) else "panel_push_failed",
+                    exception_type=type(exc).__name__,
+                )
+                return
+            finally:
+                if image_path is not None:
+                    await self._workspace_or_raise().finalize_delivery([image_path], success=False)
+            safe_log(
+                logging.INFO,
+                "panel_push_completed",
+                operation="panel_push",
+                trigger=trigger,
+                target_count=len(pending),
+                elapsed_ms=int((dt.datetime.now().timestamp() - started) * 1000),
+            )
+
+    # -- panel rendering and delivery ------------------------------------
+    async def _send_panel_to_event(self, event: AstrMessageEvent, report) -> None:
+        image_path = await self._render_panel_image(report)
+        if image_path is None:
+            await self._send(event, format_panel_text(report))
+            return
+        try:
+            await self._sender_or_raise().send_images(event, [image_path])
+        finally:
+            await self._workspace_or_raise().finalize_delivery([image_path], success=False)
+
+    async def _render_panel_image(self, report) -> Path | None:
+        if not self._cfg.panel_t2i_enabled:
+            return None
+        provider = self._panel_background
+        if provider is None:
+            return None
+        background = await provider.get_background(self._cfg.panel_background_tags)
+        safe_log(
+            logging.INFO,
+            "panel_background_ready",
+            operation="panel_render",
+            background_source=background.source,
+        )
+        try:
+            template, options = panel_render_spec(self._cfg.panel_resolution)
+            rendered = await self.html_render(
+                template,
+                build_panel_card_data(
+                    report,
+                    background_image=background.data_url,
+                    background_source=background.source,
+                ),
+                return_url=False,
+                options=options,
+            )
+            source = Path(rendered)
+            if not source.is_file() or source.stat().st_size == 0:
+                raise OSError("empty renderer output")
+            await asyncio.to_thread(self._validate_rendered_image, source)
+            destination = self._workspace_or_raise().allocate_image_path()
+            await asyncio.to_thread(shutil.copyfile, source, destination)
+            return self._workspace_or_raise().validate_delivery_path(destination)
+        except Exception as exc:  # noqa: BLE001
+            safe_log(
+                logging.WARNING,
+                "panel_render_failed",
+                operation="panel_render",
+                error_code="panel_render_failed",
+                exception_type=type(exc).__name__,
+            )
+            return None
+
+    @staticmethod
+    def _validate_rendered_image(path: Path) -> None:
+        """Reject a T2I error payload saved with an image filename."""
+        from PIL import Image
+
+        try:
+            with Image.open(path) as image:
+                image.verify()
+        except (OSError, ValueError) as exc:
+            raise OSError("invalid renderer image") from exc
+
+    async def _send_panel_image_to_targets(
+        self,
+        targets: tuple[str, ...],
+        image_path: Path,
+    ) -> None:
+        for target in targets:
+            if not self._target_platform_available(target):
+                self._log_panel_target_unavailable()
+                continue
+            try:
+                sent = await self.context.send_message(target, self._image_chain(image_path))
+            except Exception as exc:  # noqa: BLE001
+                safe_log(
+                    logging.WARNING,
+                    "panel_target_send_failed",
+                    operation="panel_push",
+                    error_code="target_send_failed",
+                    exception_type=type(exc).__name__,
+                )
+                continue
+            if not sent:
+                safe_log(
+                    logging.WARNING,
+                    "panel_target_send_failed",
+                    operation="panel_push",
+                    error_code="target_not_available",
+                )
+
+    async def _send_panel_text_to_targets(self, targets: tuple[str, ...], text: str) -> None:
+        for target in targets:
+            if not self._target_platform_available(target):
+                self._log_panel_target_unavailable()
+                continue
+            try:
+                sent = await self.context.send_message(target, self._text_chain(text))
+            except Exception as exc:  # noqa: BLE001
+                safe_log(
+                    logging.WARNING,
+                    "panel_target_send_failed",
+                    operation="panel_push",
+                    error_code="target_send_failed",
+                    exception_type=type(exc).__name__,
+                )
+                continue
+            if not sent:
+                safe_log(
+                    logging.WARNING,
+                    "panel_target_send_failed",
+                    operation="panel_push",
+                    error_code="target_not_available",
+                )
+
+    def _target_platform_available(self, target: str) -> bool:
+        """Avoid AstrBot's missing-platform warning, which includes full UMO."""
+        platform_name = target.split(":", 1)[0]
+        platforms = getattr(getattr(self.context, "platform_manager", None), "platform_insts", ())
+        return any(platform.meta().id == platform_name for platform in platforms)
+
+    @staticmethod
+    def _log_panel_target_unavailable() -> None:
+        safe_log(
+            logging.WARNING,
+            "panel_target_send_failed",
+            operation="panel_push",
+            error_code="target_not_available",
+        )
+
+    @staticmethod
+    def _image_chain(path: Path):
+        from astrbot.core.message.message_event_result import MessageChain
+
+        return MessageChain(chain=[Image.fromFileSystem(str(path))])
+
+    @staticmethod
+    def _text_chain(text: str):
+        from astrbot.core.message.message_event_result import MessageChain
+
+        return MessageChain(chain=[Plain(text)])
+
     # -- helpers -----------------------------------------------------------
     @property
     def _cfg(self) -> PluginConfig:
@@ -305,6 +658,16 @@ class Grok2APISubPlugin(Star):
         if self._service is None:
             raise PluginError("插件初始化失败，请查看日志", code="not_initialized")
         return self._service
+
+    def _workspace_or_raise(self) -> MediaWorkspace:
+        if self._workspace is None:
+            raise PluginError("插件工作区未初始化", code="not_initialized")
+        return self._workspace
+
+    def _sender_or_raise(self) -> DeliveryAdapter:
+        if self._sender is None:
+            raise PluginError("插件发送器未初始化", code="not_initialized")
+        return self._sender
 
     def _build_help_text(self) -> str:
         try:
@@ -336,27 +699,60 @@ class Grok2APISubPlugin(Star):
             "/g2生图 [数量] <提示词> — 生成图片\n"
             "/g2改图 <编辑要求> — 编辑当前或回复图片\n"
             "/g2视频 [时长] [比例] <提示词> — 生成视频\n"
-            "/g2状态 — 查看配置与模型（管理员）\n"
+            "/g2面板 — 发送所选管理数据块（管理员）\n"
+            "/g2面板订阅 — 订阅当前会话的定时面板推送（管理员）\n"
+            "/g2面板退订 — 退订当前会话的定时面板推送（管理员）\n"
+            "/g2面板订阅列表 — 查看订阅数量（管理员）\n"
             "/g2帮助 — 本帮助\n"
-            "别名：/grok2搜索、/grok2生图、/grok2改图、/grok2视频、/grok2状态、/grok2帮助"
+            "别名：/grok2搜索、/grok2生图、/grok2改图、/grok2视频、/grok2面板、/grok2帮助"
             + ("\n" + "\n".join(status_lines) if status_lines else "")
         )
 
     async def _send(self, event: AstrMessageEvent, text: str) -> None:
         sender = getattr(event, "send", None)
-        if sender is not None:
-            from astrbot.core.message.message_event_result import MessageChain
+        if sender is None:
+            safe_log(
+                logging.WARNING,
+                "message_send_failed",
+                operation="message_send",
+                error_code="send_unsupported",
+                exception_type="missing_sender",
+            )
+            raise DeliveryError("事件不支持发送")
+        from astrbot.core.message.message_event_result import MessageChain
 
+        try:
             await sender(MessageChain().message(text))
+        except DeliveryError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            safe_log(
+                logging.WARNING,
+                "message_send_failed",
+                operation="message_send",
+                error_code="send_failed",
+                exception_type=type(exc).__name__,
+            )
+            raise DeliveryError("消息发送失败") from exc
+        safe_log(logging.INFO, "message_sent", operation="message_send", sent_chars=len(text))
 
     async def _send_error(self, event: AstrMessageEvent, exc: Exception) -> None:
         if isinstance(exc, PluginError):
             msg = exc.user_message
+            safe_log(
+                logging.WARNING,
+                "command_failed",
+                operation="command",
+                error_code=exc.code,
+                exception_type=type(exc).__name__,
+                ambiguous=exc.ambiguous,
+            )
         else:
             msg = "处理失败，请稍后再试"
             safe_log(
                 logging.WARNING,
                 "command_failed",
+                operation="command",
                 error_code="unknown",
                 exception_type=type(exc).__name__,
             )

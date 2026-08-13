@@ -16,6 +16,8 @@ Schema 顶层只有 4 个 `object` 分组：`connection_settings`、`capability_
 | `client_api_key` | string | `""` | 运行配置保存，禁止写日志 |
 | `verify_tls` | bool | `true` | 生产保持开启 |
 | `client_proxy_url` | string | `""` | AstrBot 到 grok2api 的代理；只允许 http/https；允许认证但日志只显示协议/主机/端口 |
+| `admin_username` | string | `""` | 管理面登录用户名；与搜索 Client Key 相互独立，仅 `/g2面板` 使用；不写日志 |
+| `admin_password` | string | `""` | 管理面登录密码；**泄露即有权读取上游账号与聚合数据（仅 bot 主人接线）**；不写日志 |
 
 ## 能力设置（capability_settings）
 
@@ -28,13 +30,14 @@ Schema 顶层只有 4 个 `object` 分组：`connection_settings`、`capability_
 | `image_model` | string | `""` | 必填后才启用生图 |
 | `image_edit_model` | string | `""` | 必填后才启用改图 |
 | `video_model` | string | `""` | 必填后才启用视频 |
+| `prompt_processing.mode` | string | `off` | `off` 原文直传；`extract` 调用整理模型，仅补全参数；`enhance` 调用优化模型，改写提示词并补全参数 |
+| `prompt_processing.extract_provider_id` | string | `""` | AstrBot 原生供应商选择器；仅整理模式使用，必须选择已配置文本模型 |
+| `prompt_processing.enhance_provider_id` | string | `""` | AstrBot 原生供应商选择器；仅优化模式使用，可与整理模型不同 |
 | `enable_llm_search_tool` | bool | `true` | 会话级暴露搜索 Tool；是否调用仍由 AstrBot 主模型决定 |
 | `show_search_sources` | bool | `true` | 手动命令输出与 Tool 返回内容是否包含结构化来源 |
 | `max_search_sources` | int | `5` | 0–10；`0` 不输出来源段，也不向 Tool 返回来源 |
 | `max_search_output_chars` | int | `6000` | 500–20000，Unicode 字符截断并标记 |
-| `video_resolution` | string | `""` | `""`、`480p`、`720p` |
 | `image_response_format` | string | `b64_json` | `b64_json`、`url`；无论哪种都落盘后发送 |
-| `max_images_per_request` | int | `4` | 1–10；QQ Official 运行时仍固定上限 4 |
 | `send_media_progress` | bool | `true` | 生图、改图、视频在任务锁取得后各发一次尽力而为的进度提示；提示发送失败不取消任务 |
 
 ## 访问控制（access_settings）
@@ -57,9 +60,20 @@ Schema 顶层只有 4 个 `object` 分组：`connection_settings`、`capability_
 | `video_poll_timeout_seconds` | int | `30` | 1–600；每次视频状态查询的整体超时 |
 | `video_poll_interval_seconds` | int | `3` | 1–30 |
 | `download_timeout_seconds` | int | `300` | 30–1800 |
+| `prompt_processing_timeout_seconds` | int | `15` | 1–60；整理/优化模型超时、调用失败或输出非 JSON 时，本次媒体生成终止，不会静默改为直传 |
 | `max_input_image_mb` | int | `12` | 1–24，为 32 MiB JSON 请求体留 Base64 膨胀空间 |
 | `max_image_download_mb` | int | `25` | 1–100 |
 | `max_video_download_mb` | int | `190` | 1–200，低于 QQ Official 200 MiB 硬上限 |
+| `panel_period` | string | `7d` | 请求审计汇总与本地按模型统计的共用区间，仅 `24h`/`7d`/`30d`/`90d` |
+| `panel_sections` | list[string] | 全选 | `/g2面板` 获取并发送的数据块多选，中文选项顺序即输出顺序；选项：`账号池`、`图片库`、`视频库`、`请求审计汇总`、`按模型统计`；置空则面板不发任何请求 |
+| `panel_t2i_enabled` | bool | `true` | 面板优先使用 AstrBot 全局已配置的 HTML-to-image 服务；关闭时固定发送纯文本 |
+| `panel_resolution` | string | `1080p` | 面板图片分辨率：`720p`（1280x720）、`1080p`（1920x1080）或 `1440p`（2560x1440） |
+| `panel_background_tags` | text | `""` | Lolicon 背景图标签，每行一个；留空随机取图，每次发送随机选一行；标签不进入日志或摘要 |
+| `panel_push_targets` | template_list | `[]` | 固定推送 UMO；每项填写 `platform:message_type:session_id` 与启用状态，完整 UMO 不写日志或 `redacted_summary()` |
+| `panel_cron_enabled` | bool | `false` | 启用五段 Cron 定时推送 |
+| `panel_cron_expression` | string | `0 9 * * *` | 分、时、日、月、周五段 Cron 表达式 |
+| `panel_interval_enabled` | bool | `false` | 启用从本地每日 `00:00` 对齐的间隔推送 |
+| `panel_interval_minutes` | int | `30` | 1--1440 分钟；例如 30 分钟在每个整点和半点触发 |
 | `max_concurrent_searches` | int | `4` | 1–16 |
 | `max_concurrent_media_jobs` | int | `2` | 1–8 |
 | `model_retry_count` | int | `2` | 0–5；搜索、生图、改图、模型目录和图片下载的额外重试次数，不含首次请求 |
@@ -68,13 +82,14 @@ Schema 顶层只有 4 个 `object` 分组：`connection_settings`、`capability_
 | `retry_excluded_errors` | string | `""` | 英文逗号分隔的 HTTP 状态码或稳定错误码；留空表示不排除远端错误，例如 `400,401,403,404,422,auth_error,model_not_found,invalid_json,network_error` |
 | `save_media` | bool | `false` | false 发送后删除；true 成功文件移到 `archive/` 保留 |
 | `temp_retention_hours` | int | `24` | 1–168 |
-| `debug_mode` | bool | `false` | 额外记录模型选择和每次 JSON HTTP 尝试的相对路径、状态、耗时与重试性；不记录 URL、请求体或凭据 |
 
 ## 自愈与拒绝
 
 - 安全自愈：URL 末尾 `/` 去除、ID 转字符串、列表去重、search_models 去空白/忽略空项/去重。
 - 拒绝：非法协议、userinfo/query/fragment、越界值、非法 options、中文逗号、超 12 个模型、超 255 字符模型名，抛配置错误。
 - `enable_web_search` 与 `enable_x_search` 同时关闭不属于配置错误，但会明确禁用搜索能力，避免发出没有工具的 Responses 请求。
+- 面板背景请求固定为 Lolicon `r18=0`、`excludeAI=true` 和横向比例区间；API 请求与图片下载均显式使用 `client_proxy_url`、`verify_tls`，不读取环境代理。刷新失败时复用 `panel_background.jpg` 缓存；无缓存时由卡片 CSS 使用默认背景。
+- Cron 与间隔任务可同时启用。固定 UMO 和 `/g2面板订阅` 创建的 UMO 会合并去重；同一 UMO 在同一自然分钟最多有一次发送尝试。
 - 仅开启 X 搜索而候选全为 `grok-chat-*` 时同样明确禁用搜索能力；chat 模型不会收到没有可用工具的请求。
 - 每次尝试只使用该操作自己的单次超时。视频等待不再设置插件侧总时长，而是以 `video_poll_timeout_seconds`、`video_poll_interval_seconds` 和 `video_retry_count` 持续轮询远端终态。
 - 远端 HTTP、网络、JSON 解析和远端响应结构错误默认都可重试，包含生成 POST；这可能重复生成或重复扣费。需要避免某类错误重试时，加入 `retry_excluded_errors`。本地输入校验、媒体大小限制、路径校验和平台消息发送不会被自动重放。
@@ -82,5 +97,5 @@ Schema 顶层只有 4 个 `object` 分组：`connection_settings`、`capability_
 ## 安全约束
 
 - 管理员 JWT、账号 SSO/OAuth、QQ AppID/AppSecret 均不应填入插件。
-- 代理 URL 允许认证，但日志与 `/g2状态` 只显示协议、主机、端口。
-- `redacted_summary()` 只返回 `client_api_key_configured`，绝不返回 Key 本体。
+- 代理 URL 允许认证，但日志只显示协议、主机、端口。
+- `redacted_summary()` 只返回 `client_api_key_configured` 与 `admin_configured`，绝不返回 Key、管理密码或明文凭据本体。

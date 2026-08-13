@@ -53,6 +53,8 @@ def test_connection_group_items(schema):
         "client_api_key",
         "verify_tls",
         "client_proxy_url",
+        "admin_username",
+        "admin_password",
     }
 
 
@@ -70,9 +72,8 @@ def test_capability_group_has_search_models(schema):
         "show_search_sources",
         "max_search_sources",
         "max_search_output_chars",
-        "video_resolution",
         "image_response_format",
-        "max_images_per_request",
+        "prompt_processing",
         "send_media_progress",
     }
 
@@ -80,6 +81,14 @@ def test_capability_group_has_search_models(schema):
 def test_search_reasoning_effort_supports_auto(schema):
     options = schema["capability_settings"]["items"]["search_reasoning_effort"]["options"]
     assert options[0] == "auto"
+
+
+def test_prompt_processing_uses_astrbot_provider_selectors(schema):
+    items = schema["capability_settings"]["items"]["prompt_processing"]["items"]
+    assert items["mode"]["options"] == ["off", "extract", "enhance"]
+    assert items["mode"]["default"] == "off"
+    assert items["extract_provider_id"]["_special"] == "select_provider"
+    assert items["enhance_provider_id"]["_special"] == "select_provider"
 
 
 def test_access_group_items(schema):
@@ -102,6 +111,7 @@ def test_advanced_group_items(schema):
         "video_poll_timeout_seconds",
         "video_poll_interval_seconds",
         "download_timeout_seconds",
+        "prompt_processing_timeout_seconds",
         "max_input_image_mb",
         "max_image_download_mb",
         "max_video_download_mb",
@@ -113,5 +123,51 @@ def test_advanced_group_items(schema):
         "retry_excluded_errors",
         "save_media",
         "temp_retention_hours",
-        "debug_mode",
+        "panel_period",
+        "panel_sections",
+        "panel_t2i_enabled",
+        "panel_resolution",
+        "panel_background_tags",
+        "panel_push_targets",
+        "panel_cron_enabled",
+        "panel_cron_expression",
+        "panel_interval_enabled",
+        "panel_interval_minutes",
     }
+
+
+def test_panel_admin_credentials_default_empty(schema):
+    items = schema["connection_settings"]["items"]
+    assert items["admin_username"]["type"] == "string"
+    assert items["admin_username"]["default"] == ""
+    assert items["admin_password"]["type"] == "string"
+    assert items["admin_password"]["default"] == ""
+
+
+def test_panel_period_has_exactly_four_values(schema):
+    period = schema["advanced_settings"]["items"]["panel_period"]
+    assert set(period["options"]) == {"24h", "7d", "30d", "90d"}
+    assert period["default"] == "7d"
+
+
+def test_panel_resolution_has_three_profiles_and_defaults_to_1080p(schema):
+    resolution = schema["advanced_settings"]["items"]["panel_resolution"]
+    assert resolution["options"] == ["720p", "1080p", "1440p"]
+    assert resolution["default"] == "1080p"
+
+
+def test_panel_sections_is_list_with_five_chinese_options_in_order(schema):
+    sections = schema["advanced_settings"]["items"]["panel_sections"]
+    assert sections["type"] == "list"
+    assert sections["options"] == ["账号池", "图片库", "视频库", "请求审计汇总", "按模型统计"]
+    assert sections["default"] == ["账号池", "图片库", "视频库", "请求审计汇总", "按模型统计"]
+
+
+def test_panel_schedule_schema_uses_native_template_list_and_safe_defaults(schema):
+    items = schema["advanced_settings"]["items"]
+    assert items["panel_t2i_enabled"]["default"] is True
+    assert items["panel_background_tags"]["type"] == "text"
+    assert items["panel_push_targets"]["type"] == "template_list"
+    assert items["panel_push_targets"]["default"] == []
+    assert items["panel_cron_expression"]["default"] == "0 9 * * *"
+    assert items["panel_interval_minutes"]["default"] == 30

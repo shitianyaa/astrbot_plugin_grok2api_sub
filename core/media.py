@@ -63,6 +63,10 @@ class MediaWorkspace:
         safe = "".join(ch for ch in request_id if ch.isalnum() or ch in "-_") or "video"
         return ensure_inside(self.workspace / f"{safe}.mp4", self.workspace)
 
+    def allocate_image_path(self) -> Path:
+        """Allocate a temporary image path for a renderer-owned output."""
+        return self._new_uuid_path(".jpg")
+
     def validate_delivery_path(self, path: Path) -> Path:
         p = ensure_inside(path, self.workspace)
         if not p.is_file() or p.stat().st_size == 0:

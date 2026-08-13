@@ -1,6 +1,6 @@
 """AST/source-level contract tests for main.py.
 
-Verifies main.py only carries a Star subclass, the six command decorators, one
+Verifies main.py only carries a Star subclass, panel subscription commands, one
 tool registration, and that business logic avoids aiohttp/call_action/QQ HTTP.
 """
 # NOTE: tools.py now carries the FunctionTool; main.py exposes the commands.
@@ -21,14 +21,17 @@ def test_main_imports_permission_type():
     assert "PermissionType" in src
 
 
-def test_six_command_decorators_present():
+def test_panel_commands_are_present():
     src = _main_src()
     for cmd in (
         "g2搜索",
         "g2生图",
         "g2改图",
         "g2视频",
-        "g2状态",
+        "g2面板",
+        "g2面板订阅",
+        "g2面板退订",
+        "g2面板订阅列表",
         "g2帮助",
     ):
         assert cmd in src
@@ -36,8 +39,26 @@ def test_six_command_decorators_present():
 
 def test_aliases_present():
     src = _main_src()
-    for alias in ("grok2搜索", "grok2生图", "grok2改图", "grok2视频"):
+    for alias in (
+        "grok2搜索",
+        "grok2生图",
+        "grok2改图",
+        "grok2视频",
+        "grok2面板",
+        "grok2面板订阅",
+        "grok2面板退订",
+        "grok2面板订阅列表",
+    ):
         assert alias in src
+
+
+def test_old_status_removed():
+    """/g2状态 is fully removed and replaced by /g2面板."""
+    src = _main_src()
+    assert "g2状态" not in src
+    assert "grok2状态" not in src
+    assert "g2_status" not in src
+    assert "async def g2_panel" in src
 
 
 def test_commands_are_separate_methods():
@@ -47,7 +68,10 @@ def test_commands_are_separate_methods():
         "async def g2_generate_image",
         "async def g2_edit_image",
         "async def g2_generate_video",
-        "async def g2_status",
+        "async def g2_panel",
+        "async def g2_panel_subscribe",
+        "async def g2_panel_unsubscribe",
+        "async def g2_panel_subscriptions",
         "async def g2_help",
     ):
         assert name in src
@@ -62,22 +86,25 @@ def test_business_no_direct_aiohttp_or_call_action():
     assert "call_action" not in (REPO_ROOT / "core" / "service.py").read_text(encoding="utf-8")
 
 
-def test_g2_status_has_admin_decorator():
+def test_g2_panel_has_admin_decorator():
     src = _main_src()
-    idx = src.find("async def g2_status")
+    idx = src.find("async def g2_panel")
     region = src[idx - 300 : idx]
     assert "permission_type(PermissionType.ADMIN)" in region
 
 
 def test_handlers_take_runtime_args():
     src = _main_src()
-    # the six command handlers must not carry *runtime_args: Any (breaks GreedyStr)
+    # command handlers must not carry *runtime_args: Any (breaks GreedyStr)
     for name in (
         "g2_search",
         "g2_generate_image",
         "g2_edit_image",
         "g2_generate_video",
-        "g2_status",
+        "g2_panel",
+        "g2_panel_subscribe",
+        "g2_panel_unsubscribe",
+        "g2_panel_subscriptions",
         "g2_help",
     ):
         idx = src.find(f"async def {name}")
@@ -112,3 +139,11 @@ def test_imports_are_package_relative():
     src = _main_src()
     assert "from .core." in src
     assert "from astrbot.core.star.filter.command import GreedyStr" in src
+
+
+def test_media_commands_do_not_parse_legacy_prefix_parameters():
+    src = _main_src()
+    assert "parse_image_command" not in src
+    assert "parse_video_command" not in src
+    assert "deliver_generated_images(event, validate_search_query(str(arguments)))" in src
+    assert "deliver_video(event, validate_search_query(str(arguments)))" in src

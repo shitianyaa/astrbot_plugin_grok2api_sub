@@ -45,16 +45,18 @@ class VideoJob:
 
 
 @dataclass(frozen=True, slots=True)
-class ImageCommand:
+class ImageGenerationRequest:
     prompt: str
-    count: int = 1
+    aspect_ratio: str = ""
+    resolution: str = "1k"
 
 
 @dataclass(frozen=True, slots=True)
-class VideoCommand:
+class VideoGenerationRequest:
     prompt: str
     duration: int = 6
     aspect_ratio: str = ""
+    resolution: str = "720p"
 
 
 @dataclass(frozen=True, slots=True)
@@ -62,18 +64,3 @@ class AccessDecision:
     allowed: bool
     reason_code: str = ""
     user_message: str = ""
-
-
-@dataclass(frozen=True, slots=True)
-class StatusReport:
-    api_base_url: str
-    tls_verified: bool
-    client_key_configured: bool
-    configured_capabilities: tuple[str, ...]
-    visible_models: tuple[str, ...]
-    latency_ms: int
-    error_code: str = ""
-    configured_search_models: tuple[str, ...] = ()
-    available_search_models: tuple[str, ...] = ()
-    unavailable_search_models: tuple[str, ...] = ()
-    catalog_available: bool = False

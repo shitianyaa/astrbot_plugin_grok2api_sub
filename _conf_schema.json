@@ -33,6 +33,18 @@
         "type": "string",
         "default": "",
         "hint": "需要认证时可写 http://user:pass@host:port；日志与状态页只显示协议/主机/端口。示例 http://proxy.example:8080。"
+      },
+      "admin_username": {
+        "description": "grok2api 管理面登录用户名。仅用于 /g2面板 只读查询，绝不写入日志。",
+        "type": "string",
+        "default": "",
+        "hint": "仅 bot 主人接线。泄露即有权读取上游账号与聚合数据。"
+      },
+      "admin_password": {
+        "description": "grok2api 管理面登录密码。仅用于 /g2面板 只读查询，绝不写入日志。",
+        "type": "string",
+        "default": "",
+        "hint": "泄露即有权读取上游账号与聚合数据；务必只由 bot 主人填写。"
       }
     }
   },
@@ -109,13 +121,6 @@
         "slider": { "min": 500, "max": 20000, "step": 100 },
         "hint": "超出后追加 [内容已截断] 标记。"
       },
-      "video_resolution": {
-        "description": "视频分辨率。留空使用上游默认。",
-        "type": "string",
-        "default": "",
-        "options": ["", "480p", "720p"],
-        "hint": "仅 480p / 720p。"
-      },
       "image_response_format": {
         "description": "生图/改图响应格式。",
         "type": "string",
@@ -123,11 +128,32 @@
         "options": ["b64_json", "url"],
         "hint": "无论哪种都会先落盘再发送。"
       },
-      "max_images_per_request": {
-        "description": "单次生图最多张数。QQ Official 运行时仍固定上限 4。",
-        "type": "int",
-        "default": 4,
-        "slider": { "min": 1, "max": 10, "step": 1 }
+      "prompt_processing": {
+        "description": "提示词处理：关闭时完整直传；整理仅补全媒体参数；优化会重写提示词并补全参数。",
+        "type": "object",
+        "items": {
+          "mode": {
+            "description": "提示词处理模式。",
+            "type": "string",
+            "default": "off",
+            "options": ["off", "extract", "enhance"],
+            "hint": "off=原文直传；extract=仅提取时长、比例、分辨率；enhance=优化提示词与参数。"
+          },
+          "extract_provider_id": {
+            "description": "提示词整理模型。",
+            "type": "string",
+            "default": "",
+            "_special": "select_provider",
+            "hint": "仅在整理模式使用；从 AstrBot 已配置的文本供应商中选择。"
+          },
+          "enhance_provider_id": {
+            "description": "提示词优化模型。",
+            "type": "string",
+            "default": "",
+            "_special": "select_provider",
+            "hint": "仅在优化模式使用；可与整理模型选择不同供应商。"
+          }
+        }
       },
       "send_media_progress": {
         "description": "媒体生成前发送一次进度提示。",
@@ -209,6 +235,13 @@
         "default": 300,
         "slider": { "min": 30, "max": 1800, "step": 30 }
       },
+      "prompt_processing_timeout_seconds": {
+        "description": "提示词处理模型超时（秒）。",
+        "type": "int",
+        "default": 15,
+        "slider": { "min": 1, "max": 60, "step": 1 },
+        "hint": "整理或优化模型超时、调用失败或返回非预期 JSON 时，本次媒体生成会终止。"
+      },
       "max_input_image_mb": {
         "description": "改图输入图片最大体积（MiB）。",
         "type": "int",
@@ -277,10 +310,81 @@
         "default": 24,
         "slider": { "min": 1, "max": 168, "step": 1 }
       },
-      "debug_mode": {
-        "description": "调试模式。只增加状态码、耗时、request id 日志，不记录密钥/正文/媒体。",
+      "panel_period": {
+        "description": "/g2面板 使用的统计周期，同时作用于请求审计汇总与按模型统计。",
+        "type": "string",
+        "default": "7d",
+        "options": ["24h", "7d", "30d", "90d"],
+        "hint": "默认 7d；切换后需重载插件配置生效。"
+      },
+      "panel_sections": {
+        "description": "/g2面板 拉取并发送的数据块（多选）。空则表示已禁用面板数据。",
+        "type": "list",
+        "default": ["账号池", "图片库", "视频库", "请求审计汇总", "按模型统计"],
+        "options": ["账号池", "图片库", "视频库", "请求审计汇总", "按模型统计"],
+        "hint": "取消勾选的块不会被拉取；全部取消后 /g2面板 将提示未启用数据块且不发起管理请求。"
+      },
+      "panel_t2i_enabled": {
+        "description": "将 /g2面板 渲染为图片；关闭后改为纯文本发送。",
+        "type": "bool",
+        "default": true
+      },
+      "panel_resolution": {
+        "description": "/g2面板 图片分辨率。",
+        "type": "string",
+        "default": "1080p",
+        "options": ["720p", "1080p", "1440p"],
+        "hint": "1080p 兼顾清晰度与文件大小；1440p 更清晰但生成和发送开销更高。"
+      },
+      "panel_background_tags": {
+        "description": "Lolicon 背景图标签，每行一个；留空随机取图。每次面板发送随机选择一行。",
+        "type": "text",
+        "default": "",
+        "hint": "仅请求 R18=0、排除 AI、横向图片；获取失败时复用本地缓存背景。"
+      },
+      "panel_push_targets": {
+        "description": "固定推送目标。填写 AstrBot UMO（platform:message_type:session_id）；与命令订阅目标合并去重。",
+        "type": "template_list",
+        "templates": {
+          "umo_target": {
+            "name": "固定 UMO 目标",
+            "items": {
+              "umo": {
+                "description": "目标 UMO",
+                "type": "string",
+                "default": ""
+              },
+              "enabled": {
+                "description": "启用",
+                "type": "bool",
+                "default": true
+              }
+            }
+          }
+        },
+        "default": []
+      },
+      "panel_cron_enabled": {
+        "description": "启用 /g2面板 的 Cron 定时推送。",
         "type": "bool",
         "default": false
+      },
+      "panel_cron_expression": {
+        "description": "五段 Cron 表达式：分 时 日 月 周。",
+        "type": "string",
+        "default": "0 9 * * *",
+        "hint": "例如 0 9 * * * 表示每天 09:00。"
+      },
+      "panel_interval_enabled": {
+        "description": "启用从本地 00:00 起对齐的间隔推送。",
+        "type": "bool",
+        "default": false
+      },
+      "panel_interval_minutes": {
+        "description": "间隔推送分钟数，从每日 00:00 对齐计算。",
+        "type": "int",
+        "default": 30,
+        "slider": { "min": 1, "max": 1440, "step": 1 }
       }
     }
   }

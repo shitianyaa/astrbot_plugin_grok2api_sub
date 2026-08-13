@@ -50,16 +50,14 @@ def _cfg(**over) -> PluginConfig:
     return PluginConfig.from_astrbot(base)
 
 
-def test_transport_consumes_connect_timeout_and_debug():
+def test_transport_consumes_connect_timeout():
     cfg = _cfg()
     t = HTTPTransport(
         cfg.api_base_url,
         cfg.client_api_key,
         connect_timeout_seconds=cfg.connect_timeout_seconds,
-        debug_mode=cfg.debug_mode,
     )
     assert t._connect_timeout == 17
-    assert t._debug_mode is False
 
 
 def test_client_consumes_timeouts_attempts_delay():
@@ -123,7 +121,6 @@ def test_service_wiring_non_default(tmp_path):
         cfg.api_base_url,
         cfg.client_api_key,
         connect_timeout_seconds=cfg.connect_timeout_seconds,
-        debug_mode=cfg.debug_mode,
         session_factory=lambda: s,
     )
     c = Grok2APIClient(t, model_retry_count=cfg.model_retry_count)

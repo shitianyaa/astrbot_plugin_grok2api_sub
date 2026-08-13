@@ -151,7 +151,7 @@ class Grok2APIClient:
                 self._retry_base_delay,
                 self._retry_excluded_errors,
             ),
-            operation="搜索",
+            operation="search",
             response_parser=parse_search_response,
         )
         return data
@@ -163,6 +163,8 @@ class Grok2APIClient:
         *,
         model: str,
         count: int,
+        aspect_ratio: str = "",
+        resolution: str = "1k",
         response_format: str,
         api_base_url: str,
         max_download_bytes: int,
@@ -174,6 +176,10 @@ class Grok2APIClient:
             "response_format": response_format,
             "stream": False,
         }
+        if aspect_ratio:
+            payload["aspect_ratio"] = aspect_ratio
+        if resolution:
+            payload["resolution"] = resolution
         data = await self._transport.request_json(
             "POST",
             "/v1/images/generations",
@@ -185,14 +191,14 @@ class Grok2APIClient:
                 self._retry_base_delay,
                 self._retry_excluded_errors,
             ),
-            operation="生图",
+            operation="image",
             response_parser=lambda data: parse_image_response(
                 data,
                 max_bytes=max_download_bytes,
                 api_base_url=api_base_url,
             ),
         )
-        return data
+        return data[:count]
 
     async def edit_image(
         self,
@@ -223,7 +229,7 @@ class Grok2APIClient:
                 self._retry_base_delay,
                 self._retry_excluded_errors,
             ),
-            operation="改图",
+            operation="image_edit",
             response_parser=lambda data: parse_image_response(
                 data,
                 max_bytes=max_download_bytes,
@@ -263,7 +269,7 @@ class Grok2APIClient:
                 self._retry_base_delay,
                 self._retry_excluded_errors,
             ),
-            operation="创建视频",
+            operation="video_create",
             response_parser=_parse_created_video_request,
         )
         return data
@@ -281,7 +287,7 @@ class Grok2APIClient:
                 self._retry_base_delay,
                 self._retry_excluded_errors,
             ),
-            operation="查询视频",
+            operation="video_poll",
             response_parser=lambda data: parse_video_response(data, request_id=vid),
         )
         return data
