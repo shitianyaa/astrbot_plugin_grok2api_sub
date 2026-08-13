@@ -8,6 +8,7 @@ from core.observability import (
     operation_scope,
     safe_log,
     sanitize_diagnostic,
+    sanitize_prompt_json,
 )
 
 
@@ -34,6 +35,34 @@ def test_operation_scope_propagates_trace_id():
         assert len(tid) == 12
         assert current_trace_id() == tid
     assert current_trace_id() == ""
+
+
+def test_nested_operation_scope_reuses_outer_trace_id():
+    from core.observability import current_trace_id
+
+    with operation_scope("command") as outer:
+        with operation_scope("transport") as inner:
+            assert inner == outer
+            assert current_trace_id() == outer
+
+
+def test_prompt_json_keeps_resolved_fields_and_redacts_sensitive_fragments():
+    encoded = sanitize_prompt_json(
+        {
+            "prompt": (
+                "bright studio, g2a_live_secret, Authorization: Bearer abc.def.ghi, "
+                "password=hunter2, http://alice:proxy-pass@127.0.0.1:3067, "
+                "data:image/png;base64,AAAA"
+            ),
+            "aspect_ratio": "16:9",
+            "resolution": "2k",
+        }
+    )
+
+    assert '"aspect_ratio":"16:9"' in encoded
+    assert '"resolution":"2k"' in encoded
+    for secret in ("live_secret", "abc.def.ghi", "hunter2", "proxy-pass", "base64,"):
+        assert secret not in encoded
 
 
 def test_safe_log_ignores_unknown_fields():

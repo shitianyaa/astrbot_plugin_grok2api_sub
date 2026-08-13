@@ -60,6 +60,8 @@ python -m pip install -r requirements.txt
 | `prompt_processing.enhance_provider_id` | AstrBot 已配置的优化文本模型；仅 `enhance` 使用 |
 | `enable_llm_search_tool` | `true`（主模型按 Tool 描述自动搜索） |
 
+使用 `extract` 或 `enhance` 时，插件会在严格校验成功后将最终发送给 grok2api 的提示词与媒体参数 JSON 写入本地 `prompt_processing_resolved` 日志，方便管理员检查处理质量；不会回复给用户。直传模式和失败输出不记录，凭据、Bearer/JWT、密码/secret、代理 userinfo 与 Base64 始终脱敏。
+
 **访问控制（`access_settings`）**：`user_whitelist` / `user_blacklist` / `group_whitelist` / `group_blacklist`（空列表不限制）。
 
 **高级设置（`advanced_settings`）**：超时、并发、媒体大小、重试、`save_media` 等。

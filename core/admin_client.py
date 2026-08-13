@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from urllib.parse import urlsplit
 
 import aiohttp
@@ -40,6 +41,16 @@ _QUERY_PARAMS_BY_PATH = {
     "/api/admin/v1/request-audits": ("pagination", "cursor"),
 }
 
+_RESOURCE_BY_PATH = {
+    _LOGIN_PATH: "admin_login",
+    _REFRESH_PATH: "admin_refresh",
+    "/api/admin/v1/accounts/summary": "accounts_summary",
+    "/api/admin/v1/media/images/stats": "image_stats",
+    "/api/admin/v1/media/videos/stats": "video_stats",
+    "/api/admin/v1/request-audits/summary": "audit_summary",
+    "/api/admin/v1/request-audits": "audit_page",
+}
+
 
 def _parse_same_origin(base_url: str) -> str:
     """Return ``scheme://authority`` only, ignoring any Client Key ``/v1`` suffix.
@@ -63,6 +74,11 @@ def _validate_read_path(path: str) -> None:
         raise ConfigurationError("拒绝协议相对路径", code="bad_path")
     if path not in _READ_ONLY_PATHS:
         raise ConfigurationError(f"拒绝非白名单的管理路径: {path[:60]}", code="bad_path")
+
+
+def _resource_for_url(url: str) -> str:
+    """Map an allowlisted endpoint to a stable log label without recording URLs."""
+    return _RESOURCE_BY_PATH.get(urlsplit(url).path, "admin_unknown")
 
 
 def _check_params(path: str, params: dict | None) -> None:
@@ -134,19 +150,53 @@ class AdminClient:
         headers = {"Accept": "application/json"}
         if token is not None:
             headers = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
-        async with session.request(
-            method,
-            url,
-            headers=headers,
-            json=json_body,
-            params=params,
-            timeout=timeout,
-            proxy=self._proxy_url,
-        ) as resp:
-            if 200 <= resp.status < 300:
-                data = await resp.json()
-                return resp.status, data
-            return resp.status, None
+        resource = _resource_for_url(url)
+        started_at = time.monotonic()
+        safe_log(
+            logging.INFO,
+            "admin_request_started",
+            operation="admin_request",
+            method=method,
+            resource=resource,
+        )
+        status = 0
+        try:
+            async with session.request(
+                method,
+                url,
+                headers=headers,
+                json=json_body,
+                params=params,
+                timeout=timeout,
+                proxy=self._proxy_url,
+            ) as resp:
+                status = resp.status
+                data = await resp.json() if 200 <= status < 300 else None
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            safe_log(
+                logging.WARNING,
+                "admin_request_failed",
+                operation="admin_request",
+                method=method,
+                resource=resource,
+                status=status,
+                error_code="admin_request_exception",
+                exception_type=type(exc).__name__,
+                elapsed_ms=int((time.monotonic() - started_at) * 1000),
+            )
+            raise
+        safe_log(
+            logging.INFO if 200 <= status < 300 else logging.WARNING,
+            "admin_request_completed",
+            operation="admin_request",
+            method=method,
+            resource=resource,
+            status=status,
+            elapsed_ms=int((time.monotonic() - started_at) * 1000),
+        )
+        return status, data
 
     # -- auth state machine ---------------------------------------------------
     def _store_tokens(self, data: object, *, error_code: str) -> None:
@@ -192,6 +242,12 @@ class AdminClient:
 
     async def _recover_session(self) -> str:
         """Refresh once, or re-login if the refresh is rejected. Fatal on failure."""
+        safe_log(
+            logging.INFO,
+            "admin_session_recovery_started",
+            operation="admin_request",
+            result_status="refresh" if self._refresh_token is not None else "login",
+        )
         if self._refresh_token is not None:
             status, data = await self._call(
                 "POST",
@@ -203,11 +259,23 @@ class AdminClient:
             if 200 <= status < 300:
                 self._store_tokens(data, error_code="admin_session_expired")
                 assert self._access_token is not None
+                safe_log(
+                    logging.INFO,
+                    "admin_session_recovery_completed",
+                    operation="admin_request",
+                    result_status="refresh",
+                )
                 return self._access_token
             # Refresh rejected -> token rotated/revoked; fall through to re-login.
         self._refresh_token = None
         await self._login()
         assert self._access_token is not None
+        safe_log(
+            logging.INFO,
+            "admin_session_recovery_completed",
+            operation="admin_request",
+            result_status="login",
+        )
         return self._access_token
 
     async def _authed(self, method: str, path: str, *, params=None) -> dict:

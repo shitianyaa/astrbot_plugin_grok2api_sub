@@ -33,6 +33,8 @@ Schema 顶层只有 4 个 `object` 分组：`connection_settings`、`capability_
 | `prompt_processing.mode` | string | `off` | `off` 原文直传；`extract` 调用整理模型，仅补全参数；`enhance` 调用优化模型，改写提示词并补全参数 |
 | `prompt_processing.extract_provider_id` | string | `""` | AstrBot 原生供应商选择器；仅整理模式使用，必须选择已配置文本模型 |
 | `prompt_processing.enhance_provider_id` | string | `""` | AstrBot 原生供应商选择器；仅优化模式使用，可与整理模型不同 |
+
+启用 `extract` 或 `enhance` 后，处理成功且字段校验完成的最终请求 JSON 会写入本地 `prompt_processing_resolved` 日志，供管理员核对提示词与参数质量。该记录不会发送给聊天用户；`off` 模式、失败输出和未经校验的模型原文不会记录。Client Key、Bearer/JWT、密码/secret、代理 userinfo 与 Base64 仍会脱敏。
 | `enable_llm_search_tool` | bool | `true` | 会话级暴露搜索 Tool；是否调用仍由 AstrBot 主模型决定 |
 | `show_search_sources` | bool | `true` | 手动命令输出与 Tool 返回内容是否包含结构化来源 |
 | `max_search_sources` | int | `5` | 0–10；`0` 不输出来源段，也不向 Tool 返回来源 |

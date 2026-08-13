@@ -227,3 +227,16 @@ async def test_tool_calls_service_once_with_tuple_models():
     tool, ctx = _tool(service=svc)
     await tool.call(ctx, query="q")
     assert svc.calls == 1
+
+
+async def test_tool_logs_lengths_and_outcome_without_logging_query(monkeypatch):
+    events = []
+    monkeypatch.setattr(
+        "core.tools.safe_log", lambda _level, name, **fields: events.append((name, fields))
+    )
+    tool, ctx = _tool()
+    await tool.call(ctx, query="private search phrase")
+
+    assert [name for name, _fields in events] == ["search_tool_started", "search_tool_completed"]
+    assert events[0][1]["query_chars"] == len("private search phrase")
+    assert "private search phrase" not in str(events)

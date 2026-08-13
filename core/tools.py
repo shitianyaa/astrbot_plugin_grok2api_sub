@@ -9,6 +9,7 @@ calls ``event.send`` — it returns a structured JSON string for the model.
 from __future__ import annotations
 
 import json
+import logging
 from dataclasses import dataclass
 from typing import Any
 
@@ -19,6 +20,7 @@ from pydantic import ConfigDict, Field
 from pydantic.dataclasses import dataclass as pydataclass
 
 from .errors import PluginError
+from .observability import operation_scope, safe_log
 
 
 @dataclass(frozen=True, slots=True)
@@ -76,25 +78,72 @@ class Grok2APISearchTool(FunctionTool[AstrAgentContext]):
     ) -> ToolExecResult:
         query = str(kwargs.get("query") or "").strip()
         event = self._extract_event(context)
-        if not self.policy.allow():
-            return self._result(False, "", [], False, "搜索能力不可用")
-        if not query:
-            return self._result(False, "", [], False, "query_empty")
-        if event is None:
-            return self._result(False, "", [], False, "no_event_context")
-        try:
-            result = await self.service.search(event, query, required=True)
-        except PluginError as exc:
-            return self._result(False, "", [], False, exc.code)
-        except Exception:  # noqa: BLE001
-            return self._result(False, "", [], False, "search_error")
-        sources = []
-        if self.policy.show_sources and self.policy.max_sources > 0:
-            sources = [
-                {"url": source.url, "title": source.title}
-                for source in result.sources[: self.policy.max_sources]
-            ]
-        return self._result(True, result.text, sources, result.incomplete, "")
+        with operation_scope("search_tool"):
+            safe_log(
+                logging.INFO,
+                "search_tool_started",
+                operation="search_tool",
+                query_chars=len(query),
+            )
+            if not self.policy.allow():
+                safe_log(
+                    logging.WARNING,
+                    "search_tool_rejected",
+                    operation="search_tool",
+                    error_code="capability_unavailable",
+                )
+                return self._result(False, "", [], False, "搜索能力不可用")
+            if not query:
+                safe_log(
+                    logging.WARNING,
+                    "search_tool_rejected",
+                    operation="search_tool",
+                    error_code="query_empty",
+                )
+                return self._result(False, "", [], False, "query_empty")
+            if event is None:
+                safe_log(
+                    logging.WARNING,
+                    "search_tool_rejected",
+                    operation="search_tool",
+                    error_code="no_event_context",
+                )
+                return self._result(False, "", [], False, "no_event_context")
+            try:
+                result = await self.service.search(event, query, required=True)
+            except PluginError as exc:
+                safe_log(
+                    logging.WARNING,
+                    "search_tool_failed",
+                    operation="search_tool",
+                    error_code=exc.code,
+                    exception_type=type(exc).__name__,
+                )
+                return self._result(False, "", [], False, exc.code)
+            except Exception as exc:  # noqa: BLE001
+                safe_log(
+                    logging.WARNING,
+                    "search_tool_failed",
+                    operation="search_tool",
+                    error_code="search_error",
+                    exception_type=type(exc).__name__,
+                )
+                return self._result(False, "", [], False, "search_error")
+            sources = []
+            if self.policy.show_sources and self.policy.max_sources > 0:
+                sources = [
+                    {"url": source.url, "title": source.title}
+                    for source in result.sources[: self.policy.max_sources]
+                ]
+            safe_log(
+                logging.INFO,
+                "search_tool_completed",
+                operation="search_tool",
+                source_count=len(sources),
+                text_chars=len(result.text),
+                result_status="incomplete" if result.incomplete else "complete",
+            )
+            return self._result(True, result.text, sources, result.incomplete, "")
 
     def _extract_event(self, context) -> Any:
         inner = getattr(context, "context", None)

@@ -10,6 +10,7 @@ import asyncio
 import base64
 import io
 import json
+import logging
 import os
 import random
 import warnings
@@ -20,6 +21,7 @@ from urllib.parse import urlsplit
 import aiohttp
 
 from .errors import PluginError
+from .observability import safe_log
 
 _LOLICON_ENDPOINT = "https://api.lolicon.app/setu/v2"
 _MAX_PIXELS = 40_000_000
@@ -65,10 +67,24 @@ class PanelBackgroundProvider:
             try:
                 content = await self._refresh(tags)
                 return PanelBackground(self._as_data_url(content), "fresh")
-            except PanelBackgroundError:
+            except PanelBackgroundError as exc:
                 cached = await asyncio.to_thread(self._read_cache)
                 if cached is not None:
+                    safe_log(
+                        logging.WARNING,
+                        "panel_background_fallback",
+                        operation="panel_render",
+                        background_source="cache",
+                        error_code=exc.code,
+                    )
                     return PanelBackground(self._as_data_url(cached), "cache")
+                safe_log(
+                    logging.WARNING,
+                    "panel_background_fallback",
+                    operation="panel_render",
+                    background_source="default",
+                    error_code=exc.code,
+                )
                 return PanelBackground("", "default")
 
     async def close(self) -> None:

@@ -27,7 +27,7 @@ from .core.command_parser import validate_search_query
 from .core.config import PluginConfig
 from .core.errors import PluginError
 from .core.media import MediaWorkspace
-from .core.observability import safe_log
+from .core.observability import operation_scope, safe_log
 from .core.panel_background import PanelBackgroundProvider
 from .core.panel_card import build_panel_card_data, panel_render_spec
 from .core.panel_renderer import format_panel_text
@@ -224,105 +224,151 @@ class Grok2APISubPlugin(Star):
     async def g2_search(self, event: AstrMessageEvent, query: GreedyStr):
         """联网搜索：/g2搜索 <问题>，返回正文与来源。"""
         event.stop_event()
-        safe_log(logging.INFO, "command_started", operation="search")
-        try:
-            service = self._require_service(event)
-            result = await service.search(event, validate_search_query(str(query)), required=True)
-            await self._send(event, service.format_search(result))
-            safe_log(logging.INFO, "command_completed", operation="search")
-        except Exception as exc:  # noqa: BLE001
-            await self._send_error(event, exc)
+        with operation_scope("search"):
+            safe_log(logging.INFO, "command_started", operation="search")
+            try:
+                service = self._require_service(event)
+                result = await service.search(
+                    event, validate_search_query(str(query)), required=True
+                )
+                await self._send(event, service.format_search(result))
+                safe_log(logging.INFO, "command_completed", operation="search")
+            except Exception as exc:  # noqa: BLE001
+                await self._send_error(event, exc, operation="search")
 
     @filter.command("g2生图", alias={"grok2生图"})
     async def g2_generate_image(self, event: AstrMessageEvent, arguments: GreedyStr):
         """生成图片：/g2生图 <提示词>。"""
         event.stop_event()
-        try:
-            service = self._require_service(event)
-            await service.deliver_generated_images(event, validate_search_query(str(arguments)))
-        except Exception as exc:  # noqa: BLE001
-            await self._send_error(event, exc)
+        with operation_scope("image_generate"):
+            safe_log(logging.INFO, "command_started", operation="image_generate")
+            try:
+                service = self._require_service(event)
+                await service.deliver_generated_images(event, validate_search_query(str(arguments)))
+                safe_log(logging.INFO, "command_completed", operation="image_generate")
+            except Exception as exc:  # noqa: BLE001
+                await self._send_error(event, exc, operation="image_generate")
 
     @filter.command("g2改图", alias={"grok2改图"})
     async def g2_edit_image(self, event: AstrMessageEvent, prompt: GreedyStr):
         """编辑当前消息或回复中的首张图片：/g2改图 <编辑要求>。"""
         event.stop_event()
-        try:
-            service = self._require_service(event)
-            await service.deliver_edited_image(event, validate_search_query(str(prompt)))
-        except Exception as exc:  # noqa: BLE001
-            await self._send_error(event, exc)
+        with operation_scope("image_edit"):
+            safe_log(logging.INFO, "command_started", operation="image_edit")
+            try:
+                service = self._require_service(event)
+                await service.deliver_edited_image(event, validate_search_query(str(prompt)))
+                safe_log(logging.INFO, "command_completed", operation="image_edit")
+            except Exception as exc:  # noqa: BLE001
+                await self._send_error(event, exc, operation="image_edit")
 
     @filter.command("g2视频", alias={"grok2视频"})
     async def g2_generate_video(self, event: AstrMessageEvent, arguments: GreedyStr):
         """生成视频：/g2视频 <提示词>，可附带首帧图片。"""
         event.stop_event()
-        try:
-            service = self._require_service(event)
-            await service.deliver_video(event, validate_search_query(str(arguments)))
-        except Exception as exc:  # noqa: BLE001
-            await self._send_error(event, exc)
+        with operation_scope("video_generate"):
+            safe_log(logging.INFO, "command_started", operation="video_generate")
+            try:
+                service = self._require_service(event)
+                await service.deliver_video(event, validate_search_query(str(arguments)))
+                safe_log(logging.INFO, "command_completed", operation="video_generate")
+            except Exception as exc:  # noqa: BLE001
+                await self._send_error(event, exc, operation="video_generate")
 
     @filter.permission_type(PermissionType.ADMIN)
     @filter.command("g2面板", alias={"grok2面板"})
     async def g2_panel(self, event: AstrMessageEvent):
         """发送所选管理数据块：/g2面板（仅 AstrBot 管理员）。"""
         event.stop_event()
-        try:
-            report = await self._require_service(event).build_panel(event)
-            await self._send_panel_to_event(event, report)
-        except Exception as exc:  # noqa: BLE001
-            await self._send_error(event, exc)
+        with operation_scope("panel_build"):
+            safe_log(logging.INFO, "command_started", operation="panel_build")
+            try:
+                report = await self._require_service(event).build_panel(event)
+                await self._send_panel_to_event(event, report)
+                safe_log(logging.INFO, "command_completed", operation="panel_build")
+            except Exception as exc:  # noqa: BLE001
+                await self._send_error(event, exc, operation="panel_build")
 
     @filter.permission_type(PermissionType.ADMIN)
     @filter.command("g2面板订阅", alias={"grok2面板订阅"})
     async def g2_panel_subscribe(self, event: AstrMessageEvent):
         """Subscribe the current UMO to configured scheduled panel pushes."""
         event.stop_event()
-        try:
-            created = await self._panel_subscriptions.subscribe(str(event.unified_msg_origin))
-            message = "面板定时推送已订阅" if created else "当前会话已订阅面板定时推送"
-            await self._send(event, message)
-        except Exception as exc:  # noqa: BLE001
-            await self._send_error(event, exc)
+        with operation_scope("panel_subscription"):
+            safe_log(logging.INFO, "command_started", operation="panel_subscription")
+            try:
+                created = await self._panel_subscriptions.subscribe(str(event.unified_msg_origin))
+                message = "面板定时推送已订阅" if created else "当前会话已订阅面板定时推送"
+                await self._send(event, message)
+                safe_log(
+                    logging.INFO,
+                    "panel_subscription_changed",
+                    operation="panel_subscription",
+                    result_status="subscribed" if created else "already_subscribed",
+                )
+                safe_log(logging.INFO, "command_completed", operation="panel_subscription")
+            except Exception as exc:  # noqa: BLE001
+                await self._send_error(event, exc, operation="panel_subscription")
 
     @filter.permission_type(PermissionType.ADMIN)
     @filter.command("g2面板退订", alias={"grok2面板退订"})
     async def g2_panel_unsubscribe(self, event: AstrMessageEvent):
         """Remove the current UMO from configured scheduled panel pushes."""
         event.stop_event()
-        try:
-            removed = await self._panel_subscriptions.unsubscribe(str(event.unified_msg_origin))
-            message = "面板定时推送已退订" if removed else "当前会话未订阅面板定时推送"
-            await self._send(event, message)
-        except Exception as exc:  # noqa: BLE001
-            await self._send_error(event, exc)
+        with operation_scope("panel_subscription"):
+            safe_log(logging.INFO, "command_started", operation="panel_subscription")
+            try:
+                removed = await self._panel_subscriptions.unsubscribe(str(event.unified_msg_origin))
+                message = "面板定时推送已退订" if removed else "当前会话未订阅面板定时推送"
+                await self._send(event, message)
+                safe_log(
+                    logging.INFO,
+                    "panel_subscription_changed",
+                    operation="panel_subscription",
+                    result_status="unsubscribed" if removed else "not_subscribed",
+                )
+                safe_log(logging.INFO, "command_completed", operation="panel_subscription")
+            except Exception as exc:  # noqa: BLE001
+                await self._send_error(event, exc, operation="panel_subscription")
 
     @filter.permission_type(PermissionType.ADMIN)
     @filter.command("g2面板订阅列表", alias={"grok2面板订阅列表"})
     async def g2_panel_subscriptions(self, event: AstrMessageEvent):
         """Show only safe subscription counts, never full UMO values."""
         event.stop_event()
-        try:
-            current = validate_umo(str(event.unified_msg_origin))
-            dynamic = await self._panel_subscriptions.targets()
-            text = (
-                f"当前会话：{'已订阅' if current in dynamic else '未订阅'}\n"
-                f"命令订阅会话数：{len(dynamic)}\n"
-                f"固定配置目标数：{len(self._cfg.panel_push_targets)}"
-            )
-            await self._send(event, text)
-        except Exception as exc:  # noqa: BLE001
-            await self._send_error(event, exc)
+        with operation_scope("panel_subscription"):
+            safe_log(logging.INFO, "command_started", operation="panel_subscription")
+            try:
+                current = validate_umo(str(event.unified_msg_origin))
+                dynamic = await self._panel_subscriptions.targets()
+                text = (
+                    f"当前会话：{'已订阅' if current in dynamic else '未订阅'}\n"
+                    f"命令订阅会话数：{len(dynamic)}\n"
+                    f"固定配置目标数：{len(self._cfg.panel_push_targets)}"
+                )
+                await self._send(event, text)
+                safe_log(
+                    logging.INFO,
+                    "panel_subscription_listed",
+                    operation="panel_subscription",
+                    target_count=len(dynamic),
+                    candidate_count=len(self._cfg.panel_push_targets),
+                )
+                safe_log(logging.INFO, "command_completed", operation="panel_subscription")
+            except Exception as exc:  # noqa: BLE001
+                await self._send_error(event, exc, operation="panel_subscription")
 
     @filter.command("g2帮助", alias={"grok2帮助"})
     async def g2_help(self, event: AstrMessageEvent):
         """查看 Grok2API Sub 命令、参数、别名和当前能力状态。"""
         event.stop_event()
-        try:
-            await self._send(event, self._build_help_text())
-        except Exception as exc:  # noqa: BLE001
-            await self._send_error(event, exc)
+        with operation_scope("help"):
+            safe_log(logging.INFO, "command_started", operation="help")
+            try:
+                await self._send(event, self._build_help_text())
+                safe_log(logging.INFO, "command_completed", operation="help")
+            except Exception as exc:  # noqa: BLE001
+                await self._send_error(event, exc, operation="help")
 
     # -- LLM request hook: remove tool per-session when not allowed ---------
     @filter.on_llm_request()
@@ -391,7 +437,7 @@ class Grok2APISubPlugin(Star):
                 logging.INFO,
                 "panel_schedule_registered",
                 operation="panel_schedule",
-                target_count=len(self._panel_job_ids),
+                job_count=len(self._panel_job_ids),
             )
 
     async def _remove_panel_jobs(self) -> None:
@@ -441,68 +487,83 @@ class Grok2APISubPlugin(Star):
 
     async def _run_scheduled_panel(self, *, trigger: str) -> None:
         """Build once and send once per target in each natural minute."""
-        cfg = self._cfg
-        now = dt.datetime.now().astimezone()
-        if trigger == "interval" and not interval_due(now, cfg.panel_interval_minutes):
-            return
-        async with self._panel_schedule_lock:
-            targets = merge_panel_targets(
-                cfg.panel_push_targets,
-                await self._panel_subscriptions.targets(),
-            )
-            if not targets:
+        with operation_scope("panel_push"):
+            cfg = self._cfg
+            now = dt.datetime.now().astimezone()
+            if trigger == "interval" and not interval_due(now, cfg.panel_interval_minutes):
                 return
-            marker = int(now.timestamp() // 60)
-            pending = tuple(
-                target for target in targets if self._panel_sent_minutes.get(target) != marker
-            )
-            if not pending:
-                return
-            for target in pending:
-                self._panel_sent_minutes[target] = marker
-            self._panel_sent_minutes = {
-                target: sent_at
-                for target, sent_at in self._panel_sent_minutes.items()
-                if sent_at >= marker - 1
-            }
-            started = dt.datetime.now().timestamp()
-            safe_log(
-                logging.INFO,
-                "panel_push_started",
-                operation="panel_push",
-                trigger=trigger,
-                target_count=len(pending),
-            )
-            image_path: Path | None = None
-            try:
-                report = await self._require_service(None).build_panel(None)
-                image_path = await self._render_panel_image(report)
-                if image_path is not None:
-                    await self._send_panel_image_to_targets(pending, image_path)
-                else:
-                    await self._send_panel_text_to_targets(pending, format_panel_text(report))
-            except Exception as exc:  # noqa: BLE001
+            async with self._panel_schedule_lock:
+                targets = merge_panel_targets(
+                    cfg.panel_push_targets,
+                    await self._panel_subscriptions.targets(),
+                )
+                if not targets:
+                    return
+                marker = int(now.timestamp() // 60)
+                pending = tuple(
+                    target for target in targets if self._panel_sent_minutes.get(target) != marker
+                )
+                if not pending:
+                    return
+                for target in pending:
+                    self._panel_sent_minutes[target] = marker
+                self._panel_sent_minutes = {
+                    target: sent_at
+                    for target, sent_at in self._panel_sent_minutes.items()
+                    if sent_at >= marker - 1
+                }
+                started = dt.datetime.now().timestamp()
                 safe_log(
-                    logging.WARNING,
-                    "panel_push_failed",
+                    logging.INFO,
+                    "panel_push_started",
                     operation="panel_push",
                     trigger=trigger,
                     target_count=len(pending),
-                    error_code=exc.code if isinstance(exc, PluginError) else "panel_push_failed",
-                    exception_type=type(exc).__name__,
+                    attempted_count=len(pending),
                 )
-                return
-            finally:
-                if image_path is not None:
-                    await self._workspace_or_raise().finalize_delivery([image_path], success=False)
-            safe_log(
-                logging.INFO,
-                "panel_push_completed",
-                operation="panel_push",
-                trigger=trigger,
-                target_count=len(pending),
-                elapsed_ms=int((dt.datetime.now().timestamp() - started) * 1000),
-            )
+                image_path: Path | None = None
+                try:
+                    report = await self._require_service(None).build_panel(None)
+                    image_path = await self._render_panel_image(report)
+                    if image_path is not None:
+                        delivered, failed, unavailable = await self._send_panel_image_to_targets(
+                            pending, image_path
+                        )
+                    else:
+                        delivered, failed, unavailable = await self._send_panel_text_to_targets(
+                            pending, format_panel_text(report)
+                        )
+                except Exception as exc:  # noqa: BLE001
+                    safe_log(
+                        logging.WARNING,
+                        "panel_push_failed",
+                        operation="panel_push",
+                        trigger=trigger,
+                        target_count=len(pending),
+                        attempted_count=len(pending),
+                        error_code=exc.code
+                        if isinstance(exc, PluginError)
+                        else "panel_push_failed",
+                        exception_type=type(exc).__name__,
+                    )
+                    return
+                finally:
+                    if image_path is not None:
+                        await self._workspace_or_raise().finalize_delivery(
+                            [image_path], success=False
+                        )
+                safe_log(
+                    logging.INFO,
+                    "panel_push_completed",
+                    operation="panel_push",
+                    trigger=trigger,
+                    target_count=len(pending),
+                    attempted_count=len(pending),
+                    delivered_count=delivered,
+                    failed_count=failed,
+                    unavailable_count=unavailable,
+                    elapsed_ms=int((dt.datetime.now().timestamp() - started) * 1000),
+                )
 
     # -- panel rendering and delivery ------------------------------------
     async def _send_panel_to_event(self, event: AstrMessageEvent, report) -> None:
@@ -572,10 +633,12 @@ class Grok2APISubPlugin(Star):
         self,
         targets: tuple[str, ...],
         image_path: Path,
-    ) -> None:
+    ) -> tuple[int, int, int]:
+        delivered = failed = unavailable = 0
         for target in targets:
             if not self._target_platform_available(target):
                 self._log_panel_target_unavailable()
+                unavailable += 1
                 continue
             try:
                 sent = await self.context.send_message(target, self._image_chain(image_path))
@@ -587,6 +650,7 @@ class Grok2APISubPlugin(Star):
                     error_code="target_send_failed",
                     exception_type=type(exc).__name__,
                 )
+                failed += 1
                 continue
             if not sent:
                 safe_log(
@@ -595,11 +659,19 @@ class Grok2APISubPlugin(Star):
                     operation="panel_push",
                     error_code="target_not_available",
                 )
+                unavailable += 1
+                continue
+            delivered += 1
+        return delivered, failed, unavailable
 
-    async def _send_panel_text_to_targets(self, targets: tuple[str, ...], text: str) -> None:
+    async def _send_panel_text_to_targets(
+        self, targets: tuple[str, ...], text: str
+    ) -> tuple[int, int, int]:
+        delivered = failed = unavailable = 0
         for target in targets:
             if not self._target_platform_available(target):
                 self._log_panel_target_unavailable()
+                unavailable += 1
                 continue
             try:
                 sent = await self.context.send_message(target, self._text_chain(text))
@@ -611,6 +683,7 @@ class Grok2APISubPlugin(Star):
                     error_code="target_send_failed",
                     exception_type=type(exc).__name__,
                 )
+                failed += 1
                 continue
             if not sent:
                 safe_log(
@@ -619,6 +692,10 @@ class Grok2APISubPlugin(Star):
                     operation="panel_push",
                     error_code="target_not_available",
                 )
+                unavailable += 1
+                continue
+            delivered += 1
+        return delivered, failed, unavailable
 
     def _target_platform_available(self, target: str) -> bool:
         """Avoid AstrBot's missing-platform warning, which includes full UMO."""
@@ -736,13 +813,13 @@ class Grok2APISubPlugin(Star):
             raise DeliveryError("消息发送失败") from exc
         safe_log(logging.INFO, "message_sent", operation="message_send", sent_chars=len(text))
 
-    async def _send_error(self, event: AstrMessageEvent, exc: Exception) -> None:
+    async def _send_error(self, event: AstrMessageEvent, exc: Exception, *, operation: str) -> None:
         if isinstance(exc, PluginError):
             msg = exc.user_message
             safe_log(
                 logging.WARNING,
                 "command_failed",
-                operation="command",
+                operation=operation,
                 error_code=exc.code,
                 exception_type=type(exc).__name__,
                 ambiguous=exc.ambiguous,
@@ -752,7 +829,7 @@ class Grok2APISubPlugin(Star):
             safe_log(
                 logging.WARNING,
                 "command_failed",
-                operation="command",
+                operation=operation,
                 error_code="unknown",
                 exception_type=type(exc).__name__,
             )

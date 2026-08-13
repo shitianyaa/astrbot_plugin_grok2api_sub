@@ -152,6 +152,7 @@ async def test_scheduled_panel_deduplicates_same_target_in_one_minute(monkeypatc
 
     async def sent(targets, text):
         calls.append((targets, text))
+        return 1, 0, 0
 
     monkeypatch.setattr(plugin_module.dt, "datetime", FixedDateTime)
     monkeypatch.setattr(plugin, "_render_panel_image", no_image)
@@ -162,6 +163,57 @@ async def test_scheduled_panel_deduplicates_same_target_in_one_minute(monkeypatc
 
     assert len(calls) == 1
     assert calls[0][0] == ("onebot:group:123",)
+
+
+@pytest.mark.asyncio
+async def test_scheduled_panel_logs_actual_delivery_counts(monkeypatch, plugin_module):
+    import asyncio
+    from datetime import datetime
+    from types import SimpleNamespace
+
+    from astrbot_plugin_grok2api_sub.core.panel_models import PanelReport
+
+    class FixedDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return cls(2026, 8, 13, 9, 0, tzinfo=tz)
+
+    class Subscriptions:
+        async def targets(self):
+            return ("onebot:group:123", "onebot:group:456", "onebot:group:789")
+
+    class Service:
+        async def build_panel(self, _event):
+            return PanelReport(generated_at=0, period="7d", selected_sections=())
+
+    events = []
+    plugin = object.__new__(plugin_module.Grok2APISubPlugin)
+    plugin._plugin_config = SimpleNamespace(panel_interval_minutes=30, panel_push_targets=())
+    plugin._panel_schedule_lock = asyncio.Lock()
+    plugin._panel_subscriptions = Subscriptions()
+    plugin._panel_sent_minutes = {}
+    plugin._service = Service()
+
+    async def no_image(_report):
+        return None
+
+    async def partial_delivery(_targets, _text):
+        return 1, 1, 1
+
+    monkeypatch.setattr(plugin_module.dt, "datetime", FixedDateTime)
+    monkeypatch.setattr(
+        plugin_module, "safe_log", lambda _level, name, **fields: events.append((name, fields))
+    )
+    monkeypatch.setattr(plugin, "_render_panel_image", no_image)
+    monkeypatch.setattr(plugin, "_send_panel_text_to_targets", partial_delivery)
+
+    await plugin._run_scheduled_panel(trigger="cron")
+
+    completed = next(fields for name, fields in events if name == "panel_push_completed")
+    assert completed["attempted_count"] == 3
+    assert completed["delivered_count"] == 1
+    assert completed["failed_count"] == 1
+    assert completed["unavailable_count"] == 1
 
 
 @pytest.mark.asyncio

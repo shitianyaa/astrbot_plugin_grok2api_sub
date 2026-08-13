@@ -73,17 +73,20 @@ class PromptProcessor:
         data = await self._run_model("image", source_prompt)
         if self._config.prompt_processing_mode == "extract":
             self._require_exact_keys(data, {"aspect_ratio", "resolution"})
-            return ImageGenerationRequest(
+            request = ImageGenerationRequest(
                 prompt=source_prompt,
                 aspect_ratio=self._parse_aspect_ratio(data["aspect_ratio"]),
                 resolution=self._parse_image_resolution(data["resolution"]),
             )
-        self._require_exact_keys(data, {"prompt", "aspect_ratio", "resolution"})
-        return ImageGenerationRequest(
-            prompt=self._parse_prompt(data["prompt"]),
-            aspect_ratio=self._parse_aspect_ratio(data["aspect_ratio"]),
-            resolution=self._parse_image_resolution(data["resolution"]),
-        )
+        else:
+            self._require_exact_keys(data, {"prompt", "aspect_ratio", "resolution"})
+            request = ImageGenerationRequest(
+                prompt=self._parse_prompt(data["prompt"]),
+                aspect_ratio=self._parse_aspect_ratio(data["aspect_ratio"]),
+                resolution=self._parse_image_resolution(data["resolution"]),
+            )
+        self._log_resolved_request("image", request)
+        return request
 
     async def resolve_video(self, source_prompt: str) -> VideoGenerationRequest:
         if self._config.prompt_processing_mode == "off":
@@ -91,18 +94,46 @@ class PromptProcessor:
         data = await self._run_model("video", source_prompt)
         if self._config.prompt_processing_mode == "extract":
             self._require_exact_keys(data, {"duration", "aspect_ratio", "resolution"})
-            return VideoGenerationRequest(
+            request = VideoGenerationRequest(
                 prompt=source_prompt,
                 duration=self._parse_video_duration(data["duration"]),
                 aspect_ratio=self._parse_aspect_ratio(data["aspect_ratio"]),
                 resolution=self._parse_video_resolution(data["resolution"]),
             )
-        self._require_exact_keys(data, {"prompt", "duration", "aspect_ratio", "resolution"})
-        return VideoGenerationRequest(
-            prompt=self._parse_prompt(data["prompt"]),
-            duration=self._parse_video_duration(data["duration"]),
-            aspect_ratio=self._parse_aspect_ratio(data["aspect_ratio"]),
-            resolution=self._parse_video_resolution(data["resolution"]),
+        else:
+            self._require_exact_keys(data, {"prompt", "duration", "aspect_ratio", "resolution"})
+            request = VideoGenerationRequest(
+                prompt=self._parse_prompt(data["prompt"]),
+                duration=self._parse_video_duration(data["duration"]),
+                aspect_ratio=self._parse_aspect_ratio(data["aspect_ratio"]),
+                resolution=self._parse_video_resolution(data["resolution"]),
+            )
+        self._log_resolved_request("video", request)
+        return request
+
+    def _log_resolved_request(
+        self,
+        media_type: Literal["image", "video"],
+        request: ImageGenerationRequest | VideoGenerationRequest,
+    ) -> None:
+        payload: dict[str, object] = {
+            "prompt": request.prompt,
+            "aspect_ratio": request.aspect_ratio or None,
+            "resolution": request.resolution or ("720p" if media_type == "video" else "1k"),
+        }
+        if media_type == "video":
+            payload = {
+                "prompt": request.prompt,
+                "duration": request.duration or 6,
+                "aspect_ratio": request.aspect_ratio or None,
+                "resolution": request.resolution or "720p",
+            }
+        safe_log(
+            logging.INFO,
+            "prompt_processing_resolved",
+            operation=f"{media_type}_generate",
+            prompt_mode=self._config.prompt_processing_mode,
+            prompt_json=payload,
         )
 
     async def _run_model(

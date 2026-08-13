@@ -117,6 +117,26 @@ async def test_poll_transitions_to_done():
     assert len(s.calls) == 3
 
 
+async def test_poll_logs_only_changed_progress_states(monkeypatch):
+    events = []
+    monkeypatch.setattr(
+        "core.client.safe_log", lambda _level, name, **fields: events.append((name, fields))
+    )
+    c, s = _client()
+    s.push(
+        FakeResponse(200, body=json.dumps({"status": "pending", "progress": 30})),
+        FakeResponse(200, body=json.dumps({"status": "pending", "progress": 30})),
+        FakeResponse(200, body=json.dumps({"status": "done", "progress": 100})),
+    )
+
+    await c.wait_for_video("video_abc")
+
+    assert [(item[1]["result_status"], item[1]["poll_progress"]) for item in events] == [
+        ("pending", 30),
+        ("done", 100),
+    ]
+
+
 async def test_poll_failed_reports_clean_error():
     c, s = _client()
     s.push(

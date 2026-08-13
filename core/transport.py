@@ -184,21 +184,26 @@ class HTTPTransport:
         started_at: float | None = None,
         retryable: bool = False,
         operation: str = "",
+        bytes: int | None = None,
     ) -> None:
         """Log one request attempt's non-sensitive outcome."""
         elapsed_ms = int((time.monotonic() - started_at) * 1000) if started_at is not None else 0
         log_path = path if path.startswith("/v1/") or path == "/v1" else "[invalid_path]"
-        safe_log(
-            logging.INFO if not retryable else logging.WARNING,
-            "http_request_completed",
-            operation=operation,
-            method=method,
-            path=log_path,
-            attempt=attempt,
-            status=status,
-            elapsed_ms=elapsed_ms,
-            retryable=retryable,
-        )
+        level = logging.WARNING if retryable or status == 0 or status >= 400 else logging.INFO
+        if operation == "video_poll" and 200 <= status < 300:
+            level = logging.DEBUG
+        fields: dict[str, object] = {
+            "operation": operation,
+            "method": method,
+            "path": log_path,
+            "attempt": attempt,
+            "status": status,
+            "elapsed_ms": elapsed_ms,
+            "retryable": retryable,
+        }
+        if bytes is not None:
+            fields["bytes"] = bytes
+        safe_log(level, "http_request_completed", **fields)
 
     async def close(self) -> None:
         self._closed = True
@@ -237,7 +242,7 @@ class HTTPTransport:
             session = self._session_for()
             started_at = time.monotonic()
             safe_log(
-                logging.INFO,
+                logging.DEBUG if operation == "video_poll" else logging.INFO,
                 "http_request_started",
                 operation=operation,
                 method=method,
@@ -466,6 +471,7 @@ class HTTPTransport:
                         status=resp.status,
                         started_at=started_at,
                         operation="download",
+                        bytes=written,
                     )
                     return destination
             except (aiohttp.ClientError, asyncio.TimeoutError) as exc:

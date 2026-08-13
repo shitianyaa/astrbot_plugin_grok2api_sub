@@ -599,25 +599,62 @@ class GrokService:
         TTL makes no management call. Only complete, non-truncated reports are
         cached; failures and truncated model stats are rebuilt.
         """
-        self._panel_preflight()
-        admin = self._admin_client
-        if admin is None:
-            raise PluginError("管理客户端未初始化", code="admin_client_unavailable")
-        period = self._config.panel_period
-        sections = self._config.panel_sections
-        key = (period, sections)
-        cached = self._panel_cache.get(key)
-        if cached is not None and (time.monotonic() - cached.generated_at) < _PANEL_CACHE_TTL:
-            return replace(cached, cached=True)
-        report = await self._collect_panel(admin, period, sections)
-        if not report.errors and not (
-            (report.behavior is not None and report.behavior.truncated)
-            or (report.model is not None and report.model.truncated)
-        ):
-            self._panel_cache[key] = report
-        else:
-            self._panel_cache.pop(key, None)
-        return report
+        with operation_scope("panel_build"):
+            started_at = time.monotonic()
+            self._panel_preflight()
+            admin = self._admin_client
+            if admin is None:
+                raise PluginError("管理客户端未初始化", code="admin_client_unavailable")
+            period = self._config.panel_period
+            sections = self._config.panel_sections
+            key = (period, sections)
+            safe_log(
+                logging.INFO,
+                "panel_build_started",
+                operation="panel_build",
+                section_count=len(sections),
+            )
+            cached = self._panel_cache.get(key)
+            if cached is not None and (time.monotonic() - cached.generated_at) < _PANEL_CACHE_TTL:
+                safe_log(
+                    logging.INFO,
+                    "panel_build_completed",
+                    operation="panel_build",
+                    section_count=len(sections),
+                    result_status="cache",
+                    elapsed_ms=self._elapsed_ms(started_at),
+                )
+                return replace(cached, cached=True)
+            try:
+                report = await self._collect_panel(admin, period, sections)
+            except Exception as exc:  # noqa: BLE001
+                safe_log(
+                    logging.WARNING,
+                    "panel_build_failed",
+                    operation="panel_build",
+                    section_count=len(sections),
+                    error_code=exc.code if isinstance(exc, PluginError) else "panel_build_failed",
+                    exception_type=type(exc).__name__,
+                    elapsed_ms=self._elapsed_ms(started_at),
+                )
+                raise
+            if not report.errors and not (
+                (report.behavior is not None and report.behavior.truncated)
+                or (report.model is not None and report.model.truncated)
+            ):
+                self._panel_cache[key] = report
+            else:
+                self._panel_cache.pop(key, None)
+            safe_log(
+                logging.INFO,
+                "panel_build_completed",
+                operation="panel_build",
+                section_count=len(sections),
+                failed_count=len(report.errors),
+                result_status="partial" if report.errors else "fresh",
+                elapsed_ms=self._elapsed_ms(started_at),
+            )
+            return report
 
     async def _collect_panel(
         self, admin: AdminClient, period: str, sections: tuple[str, ...]

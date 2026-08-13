@@ -9,12 +9,14 @@ client owns the business-oriented wire contract.
 from __future__ import annotations
 
 import asyncio
+import logging
 import time
 from pathlib import Path
 from typing import Any
 
 from .errors import ProtocolError
 from .models import ImageResult, SearchResult, VideoJob
+from .observability import safe_log
 from .parsers import (
     build_search_payload,
     parse_image_response,
@@ -294,8 +296,20 @@ class Grok2APIClient:
 
     async def wait_for_video(self, request_id: str) -> VideoJob:
         vid = validate_request_id(request_id)
+        previous_state: tuple[str, int] | None = None
         while True:
             job = await self.get_video(vid)
+            state = (job.status, job.progress)
+            if state != previous_state:
+                safe_log(
+                    logging.INFO,
+                    "video_poll_progress",
+                    operation="video_poll",
+                    request_id=vid,
+                    result_status=job.status,
+                    poll_progress=job.progress,
+                )
+                previous_state = state
             if job.status in ("done", "failed"):
                 return job
             try:

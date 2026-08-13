@@ -25,7 +25,7 @@ models.py / errors.py / parsers.py / observability.py -> 不依赖 AstrBot
 
 - 三套固定 system prompt 分别用于图片参数、视频参数和通用媒体优化；用户内容以 JSON 数据体传给 `Context.llm_generate()`，而不是插入 system prompt。
 - 返回内容必须是无多余字段的 JSON。比例、图片 `1k/2k`、视频 `6/10/15` 秒和 `480p/720p/1080p` 逐项白名单校验；模型异常、工具调用响应、超时或格式错误都会在 grok2api 生成请求前终止本次命令。
-- `prompt_processor.py` 的日志仅记录模式、字符数、耗时、稳定错误码和异常类型，不记录提示词、provider 标识或模型响应正文。
+- `prompt_processor.py` 默认仅记录模式、字符数、耗时、稳定错误码和异常类型。用户启用 `extract` 或 `enhance` 且输出通过严格校验后，会额外写入一条本地 `prompt_processing_resolved`，包含实际发送的 `prompt` 与媒体参数 JSON，便于核对质量；直传模式、原始输入、失败输出和 provider 标识不记录。该 JSON 会继续脱敏 Client Key、Bearer/JWT、密码/secret 赋值、代理 userinfo 与 Base64。
 
 ## 管理面板安全域（`/g2面板`）
 

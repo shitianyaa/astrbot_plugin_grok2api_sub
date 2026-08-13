@@ -102,6 +102,56 @@ async def test_enhance_video_uses_selected_provider_and_returns_complete_request
     assert context.calls[0]["chat_provider_id"] == "fast-model"
 
 
+async def test_successful_processing_logs_only_the_final_validated_request(monkeypatch):
+    events = []
+    monkeypatch.setattr(
+        "core.prompt_processor.safe_log",
+        lambda _level, name, **fields: events.append((name, fields)),
+    )
+    context = Context(
+        _assistant(
+            {
+                "prompt": "bright cinematic city, wide composition",
+                "duration": 10,
+                "aspect_ratio": "16:9",
+                "resolution": "1080p",
+            }
+        )
+    )
+    await PromptProcessor(context, _config(mode="enhance")).resolve_video("city")
+
+    resolved = [fields for name, fields in events if name == "prompt_processing_resolved"]
+    assert resolved == [
+        {
+            "operation": "video_generate",
+            "prompt_mode": "enhance",
+            "prompt_json": {
+                "prompt": "bright cinematic city, wide composition",
+                "duration": 10,
+                "aspect_ratio": "16:9",
+                "resolution": "1080p",
+            },
+        }
+    ]
+
+
+async def test_invalid_processing_output_never_logs_a_resolved_request(monkeypatch):
+    events = []
+    monkeypatch.setattr(
+        "core.prompt_processor.safe_log",
+        lambda _level, name, **fields: events.append((name, fields)),
+    )
+    processor = PromptProcessor(
+        Context(_assistant({"aspect_ratio": "21:9", "resolution": "1k"})),
+        _config(mode="extract"),
+    )
+
+    with pytest.raises(PluginError):
+        await processor.resolve_image("cat")
+
+    assert "prompt_processing_resolved" not in [name for name, _fields in events]
+
+
 @pytest.mark.parametrize(
     "response",
     [

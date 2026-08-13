@@ -57,6 +57,25 @@ async def test_login_then_get_uses_bearer():
     await client.close()
 
 
+async def test_admin_request_logs_stable_resource_without_credentials(monkeypatch):
+    events = []
+    monkeypatch.setattr(
+        "core.admin_client.safe_log", lambda _level, name, **fields: events.append((name, fields))
+    )
+    client, session = _make()
+    session.push(
+        FakeResponse(200, body=_login_body()),
+        FakeResponse(200, body=_data_body('{"total":10}')),
+    )
+
+    await client.fetch_accounts_summary()
+
+    completed = [fields for name, fields in events if name == "admin_request_completed"]
+    assert [item["resource"] for item in completed] == ["admin_login", "accounts_summary"]
+    assert "admin-pass" not in str(events)
+    await client.close()
+
+
 async def test_access_only_login_then_get_uses_bearer():
     client, session = _make()
     session.push(
