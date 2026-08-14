@@ -20,10 +20,10 @@ def _default_raw() -> dict:
             "client_proxy_url": "",
         },
         "capability_settings": {
-            "search_models": ",".join(DEFAULT_SEARCH_MODELS),
-            "image_model": "",
-            "image_edit_model": "",
-            "video_model": "",
+            "search_models": "\n".join(DEFAULT_SEARCH_MODELS),
+            "image_models": "",
+            "image_edit_models": "",
+            "video_models": "",
             "enable_llm_search_tool": True,
             "show_search_sources": True,
             "max_search_sources": 5,
@@ -92,12 +92,12 @@ def _raises(**over) -> None:
 
 # -- search_models parsing -------------------------------------------------
 def test_search_models_are_trimmed_deduplicated_and_ordered():
-    cfg = _cfg(capability_settings={"search_models": " grok-4.5, grok-chat-fast,,grok-4.5 "})
+    cfg = _cfg(capability_settings={"search_models": " grok-4.5\n grok-chat-fast\n\ngrok-4.5 "})
     assert cfg.search_models == ("grok-4.5", "grok-chat-fast")
 
 
 def test_empty_search_models_explicitly_disable_search():
-    cfg = _cfg(capability_settings={"search_models": "  ,  "})
+    cfg = _cfg(capability_settings={"search_models": "  \n  "})
     assert cfg.search_models == ()
     assert cfg.missing_capability("search") == "未配置搜索模型"
 
@@ -105,8 +105,9 @@ def test_empty_search_models_explicitly_disable_search():
 @pytest.mark.parametrize(
     "value",
     [
+        "grok-4.5,grok-chat-fast",
         "grok-4.5，grok-chat-fast",
-        ",".join(f"model-{i}" for i in range(13)),
+        "\n".join(f"model-{i}" for i in range(13)),
         "x" * 256,
         ["grok-4.5"],
     ],
@@ -125,13 +126,15 @@ def test_empty_remote_connection_can_initialize_as_disabled_capability():
 
 def test_default_search_models_order():
     assert DEFAULT_SEARCH_MODELS == (
-        "grok-4.5",
-        "grok-4.3",
-        "grok-4.20-0309-reasoning",
-        "grok-4.20-0309-non-reasoning",
-        "grok-4.20-multi-agent-0309",
-        "grok-build-0.1",
         "grok-chat-fast",
+        "grok-build-0.1",
+        "grok-4.3",
+        "grok-4.5",
+        "grok-4.6",
+        "grok-composer-2.5-fast",
+        "grok-4.20-0309-non-reasoning",
+        "grok-4.20-0309-reasoning",
+        "grok-4.20-multi-agent-0309",
     )
     c = _cfg()
     assert c.search_models == DEFAULT_SEARCH_MODELS
@@ -151,6 +154,7 @@ def test_defaults():
     assert c.video_poll_timeout_seconds == 30
     assert c.image_response_format == "b64_json"
     assert c.prompt_processing_mode == "off"
+    assert c.prompt_force_enhance_with_reference_image is False
     assert c.prompt_processing_timeout_seconds == 15
     assert c.save_media is False
     assert c.enable_web_search is True
@@ -167,7 +171,7 @@ def test_auto_search_reasoning_effort_is_accepted():
 
 def test_empty_models_do_not_block_startup():
     c = _cfg(
-        capability_settings={"search_models": "", "image_model": ""},
+        capability_settings={"search_models": "", "image_models": ""},
         connection_settings={"api_base_url": "", "client_api_key": ""},
     )
     assert c.missing_capability("search") is not None
@@ -236,6 +240,18 @@ def test_prompt_processing_config_accepts_independent_providers():
     assert c.prompt_enhance_provider_id == "large-model"
 
 
+def test_prompt_processing_reference_image_override_is_configurable():
+    c = _cfg(
+        capability_settings={"prompt_processing": {"force_enhance_with_reference_image": True}}
+    )
+
+    assert c.prompt_force_enhance_with_reference_image is True
+
+    _raises(
+        capability_settings={"prompt_processing": {"force_enhance_with_reference_image": "true"}}
+    )
+
+
 def test_reject_bool_as_int():
     _raises(advanced_settings={"prompt_processing_timeout_seconds": True})  # type: ignore[call-overload]
 
@@ -275,7 +291,7 @@ def test_search_requires_at_least_one_enabled_search_tool():
 def test_x_search_only_is_unavailable_for_chat_only_candidates():
     c = _cfg(
         capability_settings={
-            "search_models": "grok-chat-fast,grok-chat-auto",
+            "search_models": "grok-chat-fast\ngrok-chat-auto",
             "enable_web_search": False,
             "enable_x_search": True,
         }

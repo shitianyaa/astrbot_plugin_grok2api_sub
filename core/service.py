@@ -28,7 +28,7 @@ from .errors import (
     SearchNotPerformedError,
 )
 from .media import MediaWorkspace
-from .models import SearchResult
+from .models import ImageResult, SearchResult
 from .observability import operation_scope, safe_log
 from .panel_models import (
     ModelSection,
@@ -344,6 +344,131 @@ class GrokService:
             show_sources=self._config.show_search_sources,
         )
 
+    # -- image generation with model fallback -----------------------------
+    async def _generate_image_with_fallback(
+        self,
+        request: Any,
+        models: tuple[str, ...],
+        started_at: float,
+    ) -> tuple[ImageResult, ...]:
+        """Try image models in order, advancing on model_not_found/allowed."""
+        if not models:
+            raise PluginError("未配置生图模型", code="capability_unavailable")
+        for index, model in enumerate(models):
+            try:
+                safe_log(
+                    logging.INFO,
+                    "media_job_model_attempt",
+                    operation="image_generate",
+                    model=model,
+                    model_index=index,
+                )
+                return await self._client.generate_images(
+                    request.prompt,
+                    model=model,
+                    count=1,
+                    aspect_ratio=request.aspect_ratio,
+                    resolution=request.resolution,
+                    response_format=self._config.image_response_format,
+                    api_base_url=self._config.api_base_url,
+                    max_download_bytes=self._config.max_image_download_mb * 1024 * 1024,
+                )
+            except APIError as exc:
+                if exc.code in {"model_not_found", "model_not_allowed"}:
+                    safe_log(
+                        logging.WARNING,
+                        "media_job_model_skipped",
+                        operation="image_generate",
+                        model=model,
+                        model_index=index,
+                        error_code=exc.code,
+                    )
+                    continue
+                raise
+        raise PluginError("所有生图模型均不可用", code="media_models_exhausted")
+
+    async def _edit_image_with_fallback(
+        self,
+        prompt: str,
+        data_url: str,
+        models: tuple[str, ...],
+        started_at: float,
+    ) -> tuple[ImageResult, ...]:
+        """Try image edit models in order, advancing on model_not_found/allowed."""
+        if not models:
+            raise PluginError("未配置改图模型", code="capability_unavailable")
+        for index, model in enumerate(models):
+            try:
+                safe_log(
+                    logging.INFO,
+                    "media_job_model_attempt",
+                    operation="image_edit",
+                    model=model,
+                    model_index=index,
+                )
+                return await self._client.edit_image(
+                    prompt,
+                    data_url,
+                    model=model,
+                    response_format=self._config.image_response_format,
+                    api_base_url=self._config.api_base_url,
+                    max_download_bytes=self._config.max_image_download_mb * 1024 * 1024,
+                )
+            except APIError as exc:
+                if exc.code in {"model_not_found", "model_not_allowed"}:
+                    safe_log(
+                        logging.WARNING,
+                        "media_job_model_skipped",
+                        operation="image_edit",
+                        model=model,
+                        model_index=index,
+                        error_code=exc.code,
+                    )
+                    continue
+                raise
+        raise PluginError("所有改图模型均不可用", code="media_models_exhausted")
+
+    async def _create_video_with_fallback(
+        self,
+        request: Any,
+        image_data_url: str,
+        models: tuple[str, ...],
+        started_at: float,
+    ) -> str:
+        """Try video models in order, advancing on model_not_found/allowed."""
+        if not models:
+            raise PluginError("未配置视频模型", code="capability_unavailable")
+        for index, model in enumerate(models):
+            try:
+                safe_log(
+                    logging.INFO,
+                    "media_job_model_attempt",
+                    operation="video_generate",
+                    model=model,
+                    model_index=index,
+                )
+                return await self._client.create_video(
+                    request.prompt,
+                    model=model,
+                    duration=request.duration,
+                    aspect_ratio=request.aspect_ratio,
+                    resolution=request.resolution,
+                    image_data_url=image_data_url,
+                )
+            except APIError as exc:
+                if exc.code in {"model_not_found", "model_not_allowed"}:
+                    safe_log(
+                        logging.WARNING,
+                        "media_job_model_skipped",
+                        operation="video_generate",
+                        model=model,
+                        model_index=index,
+                        error_code=exc.code,
+                    )
+                    continue
+                raise
+        raise PluginError("所有视频模型均不可用", code="media_models_exhausted")
+
     # -- images ------------------------------------------------------------
     async def deliver_generated_images(self, event: Any, prompt: str) -> None:
         operation = "image_generate"
@@ -361,7 +486,7 @@ class GrokService:
                         logging.INFO,
                         "media_job_started",
                         operation=operation,
-                        model=self._config.image_model,
+                        model=self._config.image_models[0] if self._config.image_models else "",
                         media_count=1,
                     )
                     await self._send_media_progress(
@@ -370,15 +495,10 @@ class GrokService:
                         "正在生成图片，请稍候…",
                     )
                     stage = "generate"
-                    results = await self._client.generate_images(
-                        request.prompt,
-                        model=self._config.image_model,
-                        count=1,
-                        aspect_ratio=request.aspect_ratio,
-                        resolution=request.resolution,
-                        response_format=self._config.image_response_format,
-                        api_base_url=self._config.api_base_url,
-                        max_download_bytes=self._config.max_image_download_mb * 1024 * 1024,
+                    results = await self._generate_image_with_fallback(
+                        request,
+                        self._config.image_models,
+                        started_at,
                     )
                     for result in results:
                         if result.content:
@@ -399,7 +519,6 @@ class GrokService:
                         logging.INFO,
                         "media_job_completed",
                         operation=operation,
-                        model=self._config.image_model,
                         media_count=len(paths),
                         elapsed_ms=self._elapsed_ms(started_at),
                     )
@@ -425,22 +544,28 @@ class GrokService:
                 stage = "input"
                 try:
                     data_url = await self._find_input_image(event)
+                    stage = "prompt_processing"
+                    resolved_prompt = await self._resolve_image_edit_prompt(prompt)
                     safe_log(
                         logging.INFO,
                         "media_job_started",
                         operation=operation,
-                        model=self._config.image_edit_model,
+                        model=self._config.image_edit_models[0]
+                        if self._config.image_edit_models
+                        else "",
                         media_count=1,
                     )
-                    await self._send_media_progress(event, operation, "正在编辑图片，请稍候…")
+                    await self._send_media_progress(
+                        event,
+                        operation,
+                        self._media_progress_text(operation, has_reference_image=True),
+                    )
                     stage = "generate"
-                    results = await self._client.edit_image(
-                        prompt,
+                    results = await self._edit_image_with_fallback(
+                        resolved_prompt,
                         data_url,
-                        model=self._config.image_edit_model,
-                        response_format=self._config.image_response_format,
-                        api_base_url=self._config.api_base_url,
-                        max_download_bytes=self._config.max_image_download_mb * 1024 * 1024,
+                        self._config.image_edit_models,
+                        started_at,
                     )
                     for result in results[:1]:
                         if result.content:
@@ -461,7 +586,6 @@ class GrokService:
                         logging.INFO,
                         "media_job_completed",
                         operation=operation,
-                        model=self._config.image_edit_model,
                         media_count=len(paths),
                         elapsed_ms=self._elapsed_ms(started_at),
                     )
@@ -491,7 +615,9 @@ class GrokService:
         raise ProtocolError("请附带或回复一张图片", code="no_input_image")
 
     # -- video -------------------------------------------------------------
-    async def deliver_video(self, event: Any, prompt: str) -> None:
+    async def deliver_video(
+        self, event: Any, prompt: str, *, reference_image_url: str = ""
+    ) -> None:
         operation = "video_generate"
         with operation_scope(operation):
             self._preflight(event, "video")
@@ -500,37 +626,40 @@ class GrokService:
                 await lock.acquire()
                 paths: list[Path] = []
                 started_at = time.monotonic()
-                stage = "prompt_processing"
+                stage = "input"
                 try:
-                    request = await self._resolve_video_request(prompt)
+                    image_data_url = await self._resolve_video_reference_image(
+                        event, reference_image_url
+                    )
+                    stage = "prompt_processing"
+                    request = await self._resolve_video_request(
+                        prompt, has_reference_image=bool(image_data_url)
+                    )
                     safe_log(
                         logging.INFO,
                         "media_job_started",
                         operation=operation,
-                        model=self._config.video_model,
+                        model=self._config.video_models[0] if self._config.video_models else "",
                         media_count=1,
                     )
-                    await self._send_media_progress(event, operation, "视频正在生成，请稍候…")
-                    image_data_url = ""
-                    try:
-                        image_data_url = await self._find_input_image(event)
-                    except ProtocolError:
-                        image_data_url = ""
-
+                    await self._send_media_progress(
+                        event,
+                        operation,
+                        self._media_progress_text(
+                            operation, has_reference_image=bool(image_data_url)
+                        ),
+                    )
                     stage = "generate"
-                    request_id = await self._client.create_video(
-                        request.prompt,
-                        model=self._config.video_model,
-                        duration=request.duration,
-                        aspect_ratio=request.aspect_ratio,
-                        resolution=request.resolution,
-                        image_data_url=image_data_url,
+                    request_id = await self._create_video_with_fallback(
+                        request,
+                        image_data_url,
+                        self._config.video_models,
+                        started_at,
                     )
                     safe_log(
                         logging.INFO,
                         "video_created",
                         operation=operation,
-                        model=self._config.video_model,
                         request_id=request_id,
                     )
                     stage = "poll"
@@ -552,7 +681,6 @@ class GrokService:
                         logging.INFO,
                         "media_job_completed",
                         operation=operation,
-                        model=self._config.video_model,
                         media_count=1,
                         request_id=request_id,
                         elapsed_ms=self._elapsed_ms(started_at),
@@ -574,12 +702,46 @@ class GrokService:
             return ImageGenerationRequest(prompt=prompt)
         return await self._prompt_processor.resolve_image(prompt)
 
-    async def _resolve_video_request(self, prompt: str):
+    async def _resolve_image_edit_prompt(self, prompt: str) -> str:
+        if self._prompt_processor is None:
+            return prompt
+        return await self._prompt_processor.resolve_image_edit(prompt, has_reference_image=True)
+
+    async def _resolve_video_reference_image(self, event: Any, reference_image_url: str) -> str:
+        if reference_image_url:
+            return reference_image_url
+        try:
+            return await self._find_input_image(event)
+        except ProtocolError as exc:
+            if exc.code != "no_input_image":
+                raise
+            return ""
+
+    async def _resolve_video_request(self, prompt: str, *, has_reference_image: bool):
         if self._prompt_processor is None:
             from .models import VideoGenerationRequest
 
             return VideoGenerationRequest(prompt=prompt)
-        return await self._prompt_processor.resolve_video(prompt)
+        return await self._prompt_processor.resolve_video(
+            prompt, has_reference_image=has_reference_image
+        )
+
+    def _media_progress_text(self, operation: str, *, has_reference_image: bool) -> str:
+        text = "正在编辑图片，请稍候…" if operation == "image_edit" else "视频正在生成，请稍候…"
+        if has_reference_image and self._reference_prompt_is_enhanced():
+            return (
+                f"{text} 检测到参考图，AI 提示词优化仅依据文字，无法识别参考图内容，"
+                "结果可能与参考图不完全一致。"
+            )
+        return text
+
+    def _reference_prompt_is_enhanced(self) -> bool:
+        if self._prompt_processor is None:
+            return False
+        return (
+            self._config.prompt_force_enhance_with_reference_image
+            or self._config.prompt_processing_mode == "enhance"
+        )
 
     def _release_session_lock(self, event: Any, lock: asyncio.Lock) -> None:
         """Release the session lock and clean up the dict entry if idle."""

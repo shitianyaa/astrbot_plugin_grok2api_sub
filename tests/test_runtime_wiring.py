@@ -22,9 +22,9 @@ def _cfg(**over) -> PluginConfig:
         },
         "capability_settings": {
             "search_models": "grok-4.5",
-            "image_model": "grok-imagine-image",
-            "image_edit_model": "grok-imagine-image",
-            "video_model": "grok-imagine-video",
+            "image_models": "grok-imagine-image",
+            "image_edit_models": "grok-imagine-image",
+            "video_models": "grok-imagine-video",
         },
         "advanced_settings": {
             # non-defaults we assert flow through to runtime components

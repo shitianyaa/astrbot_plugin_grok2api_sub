@@ -21,10 +21,11 @@ models.py / errors.py / parsers.py / observability.py -> 不依赖 AstrBot
 
 ## 媒体提示词处理
 
-`/g2生图` 与 `/g2视频` 接收命令后的整段文本，不再将数字、时长或比例前缀当作命令参数。`PromptProcessor` 在服务层发起 grok2api 请求前解析模式：`off` 直接保留原提示词，`extract` 调用配置的 AstrBot 整理供应商且只接受媒体参数，`enhance` 调用独立的优化供应商并可替换提示词。
+`/g2生图`、`/g2改图` 与 `/g2视频` 接收命令后的整段文本，不再将数字、时长或比例前缀当作命令参数。`PromptProcessor` 在服务层发起 grok2api 请求前解析模式：`off` 直接保留原提示词，`extract` 调用配置的 AstrBot 整理供应商且只接受媒体参数，`enhance` 调用独立的优化供应商并可替换提示词。改图没有可用媒体参数，因此全局 `extract` 保留其原提示词。
 
-- 三套固定 system prompt 分别用于图片参数、视频参数和通用媒体优化；用户内容以 JSON 数据体传给 `Context.llm_generate()`，而不是插入 system prompt。
+- 三套固定 system prompt 分别用于图片参数、视频参数和通用媒体优化；用户内容以 JSON 数据体传给 `Context.llm_generate()`，而不是插入 system prompt。带参考图的改图/视频仅额外传入 `reference_image_present` 布尔值，绝不传入图片、data URL、外链 URL 或签名 query。
 - 返回内容必须是无多余字段的 JSON。比例、图片 `1k/2k`、视频 `6/10/15` 秒和 `480p/720p/1080p` 逐项白名单校验；模型异常、工具调用响应、超时或格式错误都会在 grok2api 生成请求前终止本次命令。
+- `prompt_processing.force_enhance_with_reference_image=true` 时，检测到改图消息图片或视频消息图片/显式 URL 参考图会强制使用 `enhance`；优化 prompt 明确禁止模型推测参考图的视觉内容。
 - `prompt_processor.py` 默认仅记录模式、字符数、耗时、稳定错误码和异常类型。用户启用 `extract` 或 `enhance` 且输出通过严格校验后，会额外写入一条本地 `prompt_processing_resolved`，包含实际发送的 `prompt` 与媒体参数 JSON，便于核对质量；直传模式、原始输入、失败输出和 provider 标识不记录。该 JSON 会继续脱敏 Client Key、Bearer/JWT、密码/secret 赋值、代理 userinfo 与 Base64。
 
 ## 管理面板安全域（`/g2面板`）
@@ -83,7 +84,7 @@ Provider；无论选哪个 Provider，插件都以完成态 `web_search_call` �
 
 ## 多模型搜索回退矩阵
 
-`capability_settings.search_models` 按英文逗号、左侧优先配置有序候选。每次搜索
+`capability_settings.search_models` 按多行、上方优先配置有序候选。每次搜索
 都从配置第一项开始，**不**根据历史成功率/延迟/费用动态排序，**不**把成功模型
 写回配置。
 

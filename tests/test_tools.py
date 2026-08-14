@@ -198,7 +198,7 @@ def test_policy_has_model_from_empty_search_models_disables():
 def test_policy_has_model_from_nonempty_search_models_enables():
     from tests.test_service import _cfg
 
-    cfg = _cfg(capability_settings={"search_models": "grok-chat-fast,grok-4.5"})
+    cfg = _cfg(capability_settings={"search_models": "grok-chat-fast\ngrok-4.5"})
     policy = SearchToolPolicy(
         enabled=cfg.enabled,
         enable_tool=cfg.enable_llm_search_tool,

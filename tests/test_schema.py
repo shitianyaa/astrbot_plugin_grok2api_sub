@@ -38,8 +38,9 @@ def test_remote_connection_defaults_are_empty(schema):
 def test_search_model_default_order_is_stable(schema):
     value = schema["capability_settings"]["items"]["search_models"]["default"]
     assert value == (
-        "grok-4.5,grok-4.3,grok-4.20-0309-reasoning,grok-4.20-0309-non-reasoning,"
-        "grok-4.20-multi-agent-0309,grok-build-0.1,grok-chat-fast"
+        "grok-chat-fast\ngrok-build-0.1\ngrok-4.3\ngrok-4.5\ngrok-4.6\n"
+        "grok-composer-2.5-fast\ngrok-4.20-0309-non-reasoning\n"
+        "grok-4.20-0309-reasoning\ngrok-4.20-multi-agent-0309"
     )
     assert "search_model" not in schema
     assert "config_schema_version" not in schema
@@ -65,9 +66,9 @@ def test_capability_group_has_search_models(schema):
         "enable_web_search",
         "enable_x_search",
         "search_reasoning_effort",
-        "image_model",
-        "image_edit_model",
-        "video_model",
+        "image_models",
+        "image_edit_models",
+        "video_models",
         "enable_llm_search_tool",
         "show_search_sources",
         "max_search_sources",
@@ -89,6 +90,12 @@ def test_prompt_processing_uses_astrbot_provider_selectors(schema):
     assert items["mode"]["default"] == "off"
     assert items["extract_provider_id"]["_special"] == "select_provider"
     assert items["enhance_provider_id"]["_special"] == "select_provider"
+    assert items["force_enhance_with_reference_image"] == {
+        "description": "检测到参考图时强制使用提示词优化。",
+        "type": "bool",
+        "default": False,
+        "hint": "仅对改图的消息图片和视频的消息图片或 --image-url 生效；开启后覆盖全局模式。",
+    }
 
 
 def test_access_group_items(schema):

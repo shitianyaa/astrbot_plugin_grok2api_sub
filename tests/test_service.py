@@ -19,7 +19,7 @@ from core.errors import (
     SearchNotPerformedError,
 )
 from core.media import MediaWorkspace
-from core.models import SearchResult
+from core.models import SearchResult, VideoGenerationRequest
 from core.platform import PlatformKind
 from core.sender import DeliveryAdapter
 from core.service import GrokService
@@ -36,9 +36,9 @@ def _cfg(**over) -> PluginConfig:
         },
         "capability_settings": {
             "search_models": "grok-4.5",
-            "image_model": "grok-imagine-image",
-            "image_edit_model": "grok-imagine-image",
-            "video_model": "grok-imagine-video",
+            "image_models": "grok-imagine-image",
+            "image_edit_models": "grok-imagine-image",
+            "video_models": "grok-imagine-video",
         },
     }
     # deep merge overrides into groups
@@ -329,7 +329,8 @@ async def test_service_forwards_resolved_image_and_video_parameters(tmp_path):
                 prompt="enhanced image", aspect_ratio="9:16", resolution="2k"
             )
 
-        async def resolve_video(self, _prompt):
+        async def resolve_video(self, _prompt, *, has_reference_image):
+            assert has_reference_image is False
             return VideoGenerationRequest(
                 prompt="enhanced video", duration=10, aspect_ratio="16:9", resolution="1080p"
             )
@@ -420,6 +421,66 @@ async def test_deliver_edited_image_requires_input(tmp_path):
         await svc.deliver_edited_image(FakeEvent(), "make red")
 
 
+async def test_deliver_edited_image_uses_reference_aware_prompt_processor(tmp_path):
+    class Processor:
+        def __init__(self):
+            self.calls = []
+
+        async def resolve_image_edit(self, prompt, *, has_reference_image):
+            self.calls.append((prompt, has_reference_image))
+            return "enhanced red treatment"
+
+    ws = MediaWorkspace(tmp_path)
+    s = FakeSession()
+    image = base64.b64encode(_png_bytes()).decode()
+    s.push(FakeResponse(200, body=json.dumps({"data": [{"b64_json": image}]})))
+    cfg = _cfg(
+        capability_settings={
+            "send_media_progress": False,
+            "prompt_processing": {"force_enhance_with_reference_image": True},
+        }
+    )
+    processor = Processor()
+    client = Grok2APIClient(
+        HTTPTransport(cfg.api_base_url, cfg.client_api_key, sleep=_noop, session_factory=lambda: s)
+    )
+    svc = GrokService(cfg, client, ws, DeliveryAdapter(ws), prompt_processor=processor)
+    svc._find_input_image = AsyncMock(return_value="data:image/png;base64,AAAA")
+
+    await svc.deliver_edited_image(FakeEvent(), "变红")
+
+    assert processor.calls == [("变红", True)]
+    assert s.calls[0]["json"]["prompt"] == "enhanced red treatment"
+
+
+async def test_reference_enhancement_warning_uses_existing_single_progress_message(tmp_path):
+    class Processor:
+        async def resolve_image_edit(self, prompt, *, has_reference_image):
+            assert prompt == "变红"
+            assert has_reference_image is True
+            return "enhanced red treatment"
+
+    ws = MediaWorkspace(tmp_path)
+    s = FakeSession()
+    image = base64.b64encode(_png_bytes()).decode()
+    s.push(FakeResponse(200, body=json.dumps({"data": [{"b64_json": image}]})))
+    cfg = _cfg(
+        capability_settings={"prompt_processing": {"force_enhance_with_reference_image": True}}
+    )
+    client = Grok2APIClient(
+        HTTPTransport(cfg.api_base_url, cfg.client_api_key, sleep=_noop, session_factory=lambda: s)
+    )
+    svc = GrokService(cfg, client, ws, DeliveryAdapter(ws), prompt_processor=Processor())
+    svc._find_input_image = AsyncMock(return_value="data:image/png;base64,AAAA")
+    event = FakeEvent()
+
+    await svc.deliver_edited_image(event, "变红")
+
+    assert len(event.sent) == 2
+    assert "AI" in event.sent[0].chain[0].text
+    assert "参考图" in event.sent[0].chain[0].text
+
+
 # -- video delivery --------------------------------------------------------
 async def test_deliver_video_full_flow(tmp_path):
     ws = MediaWorkspace(tmp_path)
@@ -436,6 +497,81 @@ async def test_deliver_video_full_flow(tmp_path):
     # video file cleaned up after send (save_media=false)
     leftover = [p for p in ws.workspace.iterdir() if p.suffix in (".mp4", ".part")]
     assert leftover == []
+
+
+async def test_deliver_video_prefers_explicit_url_and_hides_it_from_logs(tmp_path, monkeypatch):
+    class Processor:
+        def __init__(self):
+            self.calls = []
+
+        async def resolve_video(self, prompt, *, has_reference_image):
+            self.calls.append((prompt, has_reference_image))
+            return VideoGenerationRequest(prompt="enhanced dance", duration=6)
+
+    ws = MediaWorkspace(tmp_path)
+    s = FakeSession()
+    s.push(FakeResponse(200, body=json.dumps({"request_id": "video_abc"})))
+    s.push(FakeResponse(200, body=json.dumps({"status": "done", "progress": 100})))
+    s.responses.append(_StreamResp([b"fake-mp4"]))
+    cfg = _cfg(capability_settings={"send_media_progress": False})
+    client = Grok2APIClient(
+        HTTPTransport(cfg.api_base_url, cfg.client_api_key, sleep=_noop, session_factory=lambda: s)
+    )
+    processor = Processor()
+    svc = GrokService(cfg, client, ws, DeliveryAdapter(ws), prompt_processor=processor)
+    svc._find_input_image = AsyncMock(side_effect=AssertionError("must not read attached image"))
+    events = []
+    monkeypatch.setattr(
+        "core.service.safe_log", lambda _level, name, **fields: events.append((name, fields))
+    )
+    url = "https://cdn.example.test/ref.jpg?X-Amz-Signature=synthetic"
+
+    await svc.deliver_video(FakeEvent(), "让他跳舞", reference_image_url=url)
+
+    assert processor.calls == [("让他跳舞", True)]
+    assert s.calls[0]["json"]["image"] == {"url": url}
+    assert all(url not in repr(fields) for _name, fields in events)
+
+
+async def test_deliver_video_without_reference_uses_global_path_and_omits_image(tmp_path):
+    class Processor:
+        def __init__(self):
+            self.calls = []
+
+        async def resolve_video(self, prompt, *, has_reference_image):
+            self.calls.append((prompt, has_reference_image))
+            return VideoGenerationRequest(prompt=prompt, duration=6)
+
+    ws = MediaWorkspace(tmp_path)
+    s = FakeSession()
+    s.push(FakeResponse(200, body=json.dumps({"request_id": "video_abc"})))
+    s.push(FakeResponse(200, body=json.dumps({"status": "done", "progress": 100})))
+    s.responses.append(_StreamResp([b"fake-mp4"]))
+    cfg = _cfg(capability_settings={"send_media_progress": False})
+    client = Grok2APIClient(
+        HTTPTransport(cfg.api_base_url, cfg.client_api_key, sleep=_noop, session_factory=lambda: s)
+    )
+    processor = Processor()
+    svc = GrokService(cfg, client, ws, DeliveryAdapter(ws), prompt_processor=processor)
+
+    await svc.deliver_video(FakeEvent(), "让他跳舞")
+
+    assert processor.calls == [("让他跳舞", False)]
+    assert "image" not in s.calls[0]["json"]
+
+
+async def test_deliver_video_propagates_invalid_reference_image_error(tmp_path):
+    ws = MediaWorkspace(tmp_path)
+    s = FakeSession()
+    svc, _ = _make_service(ws, session=s)
+    failure = ProtocolError("图片格式无效", code="bad_input_image")
+    svc._find_input_image = AsyncMock(side_effect=failure)
+
+    with pytest.raises(ProtocolError) as caught:
+        await svc.deliver_video(FakeEvent(), "让他跳舞")
+
+    assert caught.value is failure
+    assert s.calls == []
 
 
 async def test_deliver_video_keeps_file_when_save_media(tmp_path):
@@ -541,7 +677,7 @@ def _search_result(model: str) -> SearchResult:
 
 def _make_scripted_service(tmp_path, client, search_models, **capability_overrides):
     capability_settings = {
-        "search_models": ",".join(search_models),
+        "search_models": "\n".join(search_models),
         **capability_overrides,
     }
     cfg = _cfg(capability_settings=capability_settings)

@@ -16,7 +16,7 @@ ruff format --check .
 
 | 文件 | 覆盖 |
 |---|---|
-| `tests/test_config.py` | 4 分组配置解析、`search_models` 解析（去空白/去重/上限/中文逗号拒绝）、Web/X 开关与思考强度、默认值、脱敏 |
+| `tests/test_config.py` | 4 分组配置解析、`search_models` 解析（去空白/去重/上限/逗号拒绝）、Web/X 开关与思考强度、默认值、脱敏 |
 | `tests/test_schema.py` | `_conf_schema.json` 顶层恰好 4 个 `object` 分组、远端默认空、默认模型顺序稳定 |
 | `tests/test_transport.py` | 认证头、同源相对路径、重试矩阵、`.part` 原子下载、Retry-After、安全模型错误码提取（64 KiB 有界、只保留 model_not_found/model_not_allowed） |
 | `tests/test_search.py` | Responses Web/X 搜索工具组合、`reasoning` 请求契约与 parser |

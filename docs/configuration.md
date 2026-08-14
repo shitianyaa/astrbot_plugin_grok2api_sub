@@ -23,24 +23,26 @@ Schema 顶层只有 4 个 `object` 分组：`connection_settings`、`capability_
 
 | 配置键 | 类型 | 默认值 | 校验/说明 |
 |---|---|---:|---|
-| `search_models` | string | `grok-4.5,grok-4.3,grok-4.20-0309-reasoning,grok-4.20-0309-non-reasoning,grok-4.20-multi-agent-0309,grok-build-0.1,grok-chat-fast` | 英文逗号分隔，**左侧优先**，最多 12 个，每项 ≤255 字符，按首次出现保序去重；中文逗号 `，` 直接报配置错误；留空禁用搜索 |
+| `search_models` | text | `grok-chat-fast`、`grok-build-0.1`、`grok-4.3`、`grok-4.5`、`grok-4.6`、`grok-composer-2.5-fast`、`grok-4.20-0309-non-reasoning`、`grok-4.20-0309-reasoning`、`grok-4.20-multi-agent-0309` | 多行文本，每行一个，**上方优先**，最多 12 个，每项 ≤255 字符，按首次出现保序去重；英文或中文逗号均直接报配置错误；留空禁用搜索 |
 | `enable_web_search` | bool | `true` | 是否将 `web_search` 工具传给远端 Responses；与 X 搜索不能同时关闭 |
 | `enable_x_search` | bool | `true` | 是否将 `x_search` 工具传给远端 Responses；`grok-chat-*` 不支持该工具，会自动保留已启用的 Web 搜索；与 Web 搜索不能同时关闭 |
 | `search_reasoning_effort` | string | `high` | `auto`、`none`、`low`、`medium`、`high`、`xhigh`；`auto` 不发送 `reasoning` 字段，由远端选择；已知模型不支持所选值或自定义模型时也省略该字段，保留该候选的搜索机会 |
-| `image_model` | string | `""` | 必填后才启用生图 |
-| `image_edit_model` | string | `""` | 必填后才启用改图 |
-| `video_model` | string | `""` | 必填后才启用视频 |
+| `image_models` | text | `grok-imagine-image-lite`、`grok-imagine-image`、`grok-imagine-image-quality` | 多行文本，每行一个，**上方优先**，最多 12 个；英文或中文逗号均直接报配置错误；留空禁用生图 |
+| `image_edit_models` | text | `grok-imagine-image-lite`、`grok-imagine-image`、`grok-imagine-image-quality` | 多行文本，每行一个，**上方优先**，最多 12 个；英文或中文逗号均直接报配置错误；留空禁用改图 |
+| `video_models` | text | `grok-imagine-video` | 多行文本，每行一个，最多 12 个；英文或中文逗号均直接报配置错误；留空禁用视频 |
 | `prompt_processing.mode` | string | `off` | `off` 原文直传；`extract` 调用整理模型，仅补全参数；`enhance` 调用优化模型，改写提示词并补全参数 |
 | `prompt_processing.extract_provider_id` | string | `""` | AstrBot 原生供应商选择器；仅整理模式使用，必须选择已配置文本模型 |
 | `prompt_processing.enhance_provider_id` | string | `""` | AstrBot 原生供应商选择器；仅优化模式使用，可与整理模型不同 |
+| `prompt_processing.force_enhance_with_reference_image` | bool | `false` | 仅检测到改图消息图片或视频消息图片/显式 `--image-url` 时生效；`true` 强制 `enhance` 并覆盖全局模式，其他情况遵循全局模式 |
 
-启用 `extract` 或 `enhance` 后，处理成功且字段校验完成的最终请求 JSON 会写入本地 `prompt_processing_resolved` 日志，供管理员核对提示词与参数质量。该记录不会发送给聊天用户；`off` 模式、失败输出和未经校验的模型原文不会记录。Client Key、Bearer/JWT、密码/secret、代理 userinfo 与 Base64 仍会脱敏。
 | `enable_llm_search_tool` | bool | `true` | 会话级暴露搜索 Tool；是否调用仍由 AstrBot 主模型决定 |
 | `show_search_sources` | bool | `true` | 手动命令输出与 Tool 返回内容是否包含结构化来源 |
 | `max_search_sources` | int | `5` | 0–10；`0` 不输出来源段，也不向 Tool 返回来源 |
 | `max_search_output_chars` | int | `6000` | 500–20000，Unicode 字符截断并标记 |
 | `image_response_format` | string | `b64_json` | `b64_json`、`url`；无论哪种都落盘后发送 |
 | `send_media_progress` | bool | `true` | 生图、改图、视频在任务锁取得后各发一次尽力而为的进度提示；提示发送失败不取消任务 |
+
+启用 `extract` 或 `enhance` 后，处理成功且字段校验完成的最终请求 JSON 会写入本地 `prompt_processing_resolved` 日志，供管理员核对提示词与参数质量。该记录不会发送给聊天用户；`off` 模式、失败输出和未经校验的模型原文不会记录。Client Key、Bearer/JWT、密码/secret、代理 userinfo 与 Base64 仍会脱敏。参考图强制优化不把消息图片、data URL 或显式 URL 传给文本模型；模型只接收“是否存在参考图”的布尔上下文。
 
 ## 访问控制（access_settings）
 
@@ -88,7 +90,7 @@ Schema 顶层只有 4 个 `object` 分组：`connection_settings`、`capability_
 ## 自愈与拒绝
 
 - 安全自愈：URL 末尾 `/` 去除、ID 转字符串、列表去重、search_models 去空白/忽略空项/去重。
-- 拒绝：非法协议、userinfo/query/fragment、越界值、非法 options、中文逗号、超 12 个模型、超 255 字符模型名，抛配置错误。
+- 拒绝：非法协议、userinfo/query/fragment、越界值、非法 options、模型列表中的英文或中文逗号、超 12 个模型、超 255 字符模型名，抛配置错误。
 - `enable_web_search` 与 `enable_x_search` 同时关闭不属于配置错误，但会明确禁用搜索能力，避免发出没有工具的 Responses 请求。
 - 面板背景请求固定为 Lolicon `r18=0`、`excludeAI=true` 和横向比例区间；API 请求与图片下载均显式使用 `client_proxy_url`、`verify_tls`，不读取环境代理。刷新失败时复用 `panel_background.jpg` 缓存；无缓存时由卡片 CSS 使用默认背景。
 - Cron 与间隔任务可同时启用。固定 UMO 和 `/g2面板订阅` 创建的 UMO 会合并去重；同一 UMO 在同一自然分钟最多有一次发送尝试。

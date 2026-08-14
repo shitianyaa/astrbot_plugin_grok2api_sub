@@ -53,10 +53,10 @@
     "type": "object",
     "items": {
       "search_models": {
-        "description": "联网搜索模型候选，英文逗号分隔，左侧优先，最多 12 个。留空则搜索能力不可用。",
-        "type": "string",
-        "default": "grok-4.5,grok-4.3,grok-4.20-0309-reasoning,grok-4.20-0309-non-reasoning,grok-4.20-multi-agent-0309,grok-build-0.1,grok-chat-fast",
-        "hint": "使用英文逗号 , 分隔，按首次出现保序去重。左侧模型优先；远端失败先按重试设置重试，只有 model_not_found/model_not_allowed/search_not_performed 耗尽后才切换下一个。"
+        "description": "联网搜索模型候选，每行一个，上方优先，最多 12 个。留空则搜索能力不可用。",
+        "type": "text",
+        "default": "grok-chat-fast\ngrok-build-0.1\ngrok-4.3\ngrok-4.5\ngrok-4.6\ngrok-composer-2.5-fast\ngrok-4.20-0309-non-reasoning\ngrok-4.20-0309-reasoning\ngrok-4.20-multi-agent-0309",
+        "hint": "每行填写一个模型名，按上方优先。远端失败先按重试设置重试，只有 model_not_found/model_not_allowed/search_not_performed 耗尽后才切换下一行。"
       },
       "enable_web_search": {
         "description": "启用 Web 联网搜索。",
@@ -77,23 +77,23 @@
         "options": ["auto", "none", "low", "medium", "high", "xhigh"],
         "hint": "默认 high；auto 表示不发送 reasoning 参数，由远端自动选择。当前候选模型不支持所选强度时也会省略该参数。"
       },
-      "image_model": {
-        "description": "文生图模型。留空则生图不可用。",
-        "type": "string",
-        "default": "",
-        "hint": "例如 grok-imagine-image。"
+      "image_models": {
+        "description": "文生图模型候选，每行一个，上方优先，最多 12 个。留空则生图不可用。",
+        "type": "text",
+        "default": "grok-imagine-image-lite\ngrok-imagine-image\ngrok-imagine-image-quality",
+        "hint": "每行填写一个模型名，按上方优先。远端失败先按重试设置重试，只有 model_not_found/model_not_allowed 耗尽后才切换下一行。"
       },
-      "image_edit_model": {
-        "description": "改图模型。留空则改图不可用。",
-        "type": "string",
-        "default": "",
-        "hint": "例如 grok-imagine-image。"
+      "image_edit_models": {
+        "description": "改图模型候选，每行一个，上方优先，最多 12 个。留空则改图不可用。",
+        "type": "text",
+        "default": "grok-imagine-image-lite\ngrok-imagine-image\ngrok-imagine-image-quality",
+        "hint": "每行填写一个模型名，按上方优先。远端失败先按重试设置重试，只有 model_not_found/model_not_allowed 耗尽后才切换下一行。"
       },
-      "video_model": {
-        "description": "生视频模型。留空则视频不可用。",
-        "type": "string",
-        "default": "",
-        "hint": "例如 grok-imagine-video。"
+      "video_models": {
+        "description": "生视频模型候选，每行一个，上方优先，最多 12 个。留空则视频不可用。",
+        "type": "text",
+        "default": "grok-imagine-video",
+        "hint": "每行填写一个模型名，按上方优先。远端失败先按重试设置重试，只有 model_not_found/model_not_allowed 耗尽后才切换下一行。"
       },
       "enable_llm_search_tool": {
         "description": "会话级注册联网搜索 Tool。",
@@ -152,6 +152,12 @@
             "default": "",
             "_special": "select_provider",
             "hint": "仅在优化模式使用；可与整理模型选择不同供应商。"
+          },
+          "force_enhance_with_reference_image": {
+            "description": "检测到参考图时强制使用提示词优化。",
+            "type": "bool",
+            "default": false,
+            "hint": "仅对改图的消息图片和视频的消息图片或 --image-url 生效；开启后覆盖全局模式。"
           }
         }
       },

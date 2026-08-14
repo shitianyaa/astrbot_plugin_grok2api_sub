@@ -5,11 +5,17 @@ from __future__ import annotations
 import logging
 
 from core.observability import (
+    ALLOWED_FIELDS,
     operation_scope,
     safe_log,
     sanitize_diagnostic,
     sanitize_prompt_json,
 )
+
+
+def test_media_model_log_fields_are_allowlisted_without_dead_alias():
+    assert {"model", "model_index"} <= ALLOWED_FIELDS
+    assert "model_models" not in ALLOWED_FIELDS
 
 
 def test_sanitize_strips_secrets():

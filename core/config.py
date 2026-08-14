@@ -27,14 +27,27 @@ PROMPT_MAX_CHARS = 4000
 PROMPT_MIN_CHARS = 1
 
 DEFAULT_SEARCH_MODELS = (
-    "grok-4.5",
-    "grok-4.3",
-    "grok-4.20-0309-reasoning",
-    "grok-4.20-0309-non-reasoning",
-    "grok-4.20-multi-agent-0309",
-    "grok-build-0.1",
     "grok-chat-fast",
+    "grok-build-0.1",
+    "grok-4.3",
+    "grok-4.5",
+    "grok-4.6",
+    "grok-composer-2.5-fast",
+    "grok-4.20-0309-non-reasoning",
+    "grok-4.20-0309-reasoning",
+    "grok-4.20-multi-agent-0309",
 )
+DEFAULT_IMAGE_MODELS = (
+    "grok-imagine-image-lite",
+    "grok-imagine-image",
+    "grok-imagine-image-quality",
+)
+DEFAULT_IMAGE_EDIT_MODELS = (
+    "grok-imagine-image-lite",
+    "grok-imagine-image",
+    "grok-imagine-image-quality",
+)
+DEFAULT_VIDEO_MODELS = ("grok-imagine-video",)
 MAX_SEARCH_MODELS = 12
 MAX_MODEL_ID_CHARS = 255
 
@@ -66,29 +79,29 @@ def _section(mapping: Mapping[str, object], key: str) -> Mapping[str, object]:
     return value
 
 
-def parse_search_models(value: object) -> tuple[str, ...]:
-    """Parse a comma-separated English search-model list into an ordered tuple.
+def parse_text_model_list(key: str, value: object) -> tuple[str, ...]:
+    """Parse a multi-line model list into an ordered tuple.
 
-    Whitespace is trimmed, empty items and duplicates are ignored, matching is
+    Whitespace is trimmed, empty lines and duplicates are ignored, matching is
     case-sensitive, first-occurrence order is preserved. At most 12 candidates,
-    each at most 255 chars. Chinese commas are rejected outright.
+    each at most 255 chars. Comma-delimited values are rejected outright.
     """
     if not isinstance(value, str):
-        _fail("capability_settings.search_models", "必须是英文逗号分隔的字符串")
-    if "，" in value:
-        _fail("capability_settings.search_models", "请使用英文逗号 , 分隔")
+        _fail(key, "必须是多行文本")
+    if "," in value or "，" in value:
+        _fail(key, "模型列表每行一个，不支持逗号分隔")
     result: list[str] = []
     seen: set[str] = set()
-    for raw in value.split(","):
+    for raw in value.splitlines():
         model = raw.strip()
         if not model or model in seen:
             continue
         if len(model) > MAX_MODEL_ID_CHARS:
-            _fail("capability_settings.search_models", "单个模型名不能超过 255 个字符")
+            _fail(key, "单个模型名不能超过 255 个字符")
         seen.add(model)
         result.append(model)
     if len(result) > MAX_SEARCH_MODELS:
-        _fail("capability_settings.search_models", "最多配置 12 个模型")
+        _fail(key, "最多配置 12 个模型")
     return tuple(result)
 
 
@@ -312,9 +325,9 @@ class PluginConfig:
     client_proxy_url: str
 
     search_models: tuple[str, ...]
-    image_model: str
-    image_edit_model: str
-    video_model: str
+    image_models: tuple[str, ...]
+    image_edit_models: tuple[str, ...]
+    video_models: tuple[str, ...]
 
     enable_web_search: bool
     enable_x_search: bool
@@ -342,6 +355,7 @@ class PluginConfig:
     prompt_processing_mode: str
     prompt_extract_provider_id: str
     prompt_enhance_provider_id: str
+    prompt_force_enhance_with_reference_image: bool
     prompt_processing_timeout_seconds: int
 
     model_retry_count: int
@@ -429,9 +443,9 @@ class PluginConfig:
                 return "当前搜索模型不支持已启用的搜索工具"
             return None
         key = {
-            "image": "image_model",
-            "image_edit": "image_edit_model",
-            "video": "video_model",
+            "image": "image_models",
+            "image_edit": "image_edit_models",
+            "video": "video_models",
         }.get(capability)
         if key is None:
             return f"未知能力 {capability}"
@@ -459,10 +473,13 @@ class PluginConfig:
             "enable_web_search": self.enable_web_search,
             "enable_x_search": self.enable_x_search,
             "search_reasoning_effort": self.search_reasoning_effort,
-            "image_model": self.image_model,
-            "image_edit_model": self.image_edit_model,
-            "video_model": self.video_model,
+            "image_models": self.image_models,
+            "image_edit_models": self.image_edit_models,
+            "video_models": self.video_models,
             "prompt_processing_mode": self.prompt_processing_mode,
+            "prompt_force_enhance_with_reference_image": (
+                self.prompt_force_enhance_with_reference_image
+            ),
             "prompt_extract_provider_configured": bool(self.prompt_extract_provider_id),
             "prompt_enhance_provider_configured": bool(self.prompt_enhance_provider_id),
             "admin_configured": self.has_admin_credentials,
@@ -546,12 +563,22 @@ class PluginConfig:
                 1,
                 1440,
             ),
-            search_models=parse_search_models(
-                g(cap, "search_models", default=",".join(DEFAULT_SEARCH_MODELS))
+            search_models=parse_text_model_list(
+                "capability_settings.search_models",
+                g(cap, "search_models", default="\n".join(DEFAULT_SEARCH_MODELS)),
             ),
-            image_model=str(g(cap, "image_model", "")).strip(),
-            image_edit_model=str(g(cap, "image_edit_model", "")).strip(),
-            video_model=str(g(cap, "video_model", "")).strip(),
+            image_models=parse_text_model_list(
+                "capability_settings.image_models",
+                g(cap, "image_models", default="\n".join(DEFAULT_IMAGE_MODELS)),
+            ),
+            image_edit_models=parse_text_model_list(
+                "capability_settings.image_edit_models",
+                g(cap, "image_edit_models", default="\n".join(DEFAULT_IMAGE_EDIT_MODELS)),
+            ),
+            video_models=parse_text_model_list(
+                "capability_settings.video_models",
+                g(cap, "video_models", default="\n".join(DEFAULT_VIDEO_MODELS)),
+            ),
             enable_web_search=_bool_flag(
                 "capability_settings.enable_web_search", g(cap, "enable_web_search"), True
             ),
@@ -665,6 +692,11 @@ class PluginConfig:
                 "capability_settings.prompt_processing.enhance_provider_id",
                 g(prompt_processing, "enhance_provider_id", ""),
             ),
+            prompt_force_enhance_with_reference_image=_bool_flag(
+                "capability_settings.prompt_processing.force_enhance_with_reference_image",
+                g(prompt_processing, "force_enhance_with_reference_image"),
+                False,
+            ),
             prompt_processing_timeout_seconds=_to_int(
                 "advanced_settings.prompt_processing_timeout_seconds",
                 g(adv, "prompt_processing_timeout_seconds", 15),
@@ -711,4 +743,4 @@ class PluginConfig:
 
 
 def version() -> str:
-    return "v0.1.0"
+    return "v0.1.1"

@@ -74,6 +74,23 @@ async def test_create_sends_optional_fields_when_present():
     assert body["image"] == {"url": "data:image/png;base64,AA"}
 
 
+async def test_create_preserves_explicit_https_reference_url():
+    c, s = _client()
+    s.push(FakeResponse(200, body=json.dumps({"request_id": "video_abc"})))
+    url = "https://cdn.example.test/ref.jpg?X-Amz-Signature=synthetic&expires=123"
+
+    await c.create_video(
+        "cat",
+        model="m",
+        duration=6,
+        aspect_ratio="",
+        resolution="",
+        image_data_url=url,
+    )
+
+    assert s.calls[0]["json"]["image"] == {"url": url}
+
+
 @pytest.mark.parametrize("bad", ["../etc/passwd", "a/b", "video/x..", "a b", "ok\n"])
 async def test_create_rejects_bad_request_id(bad):
     c, s = _client(video_retry_count=0)

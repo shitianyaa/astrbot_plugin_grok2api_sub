@@ -23,7 +23,7 @@ from astrbot.core.star.filter.command import GreedyStr
 
 from .core.admin_client import AdminClient
 from .core.client import Grok2APIClient
-from .core.command_parser import validate_search_query
+from .core.command_parser import parse_media_command, validate_search_query
 from .core.config import PluginConfig
 from .core.errors import PluginError
 from .core.media import MediaWorkspace
@@ -54,6 +54,11 @@ _ERROR_HINTS: dict[str, str] = {
     "prompt_processing_provider_failed": "智能改写提示词失败，请检查提示词改写模型的配置",
     "prompt_processing_provider_missing": "请先配置提示词改写模型，或关闭智能改写",
     "search_models_exhausted": "所有搜索模型都不可用，请确认搜索模型配置或稍后重试",
+    "image_url_missing": "图片 URL 参数缺少地址",
+    "image_url_duplicate": "图片 URL 参数只能提供一次",
+    "image_url_invalid": "图片 URL 格式无效",
+    "image_url_too_long": "图片 URL 长度超出限制",
+    "image_url_unsupported": "当前命令不支持图片 URL",
 }
 
 
@@ -267,20 +272,26 @@ class Grok2APISubPlugin(Star):
             safe_log(logging.INFO, "command_started", operation="image_edit")
             try:
                 service = self._require_service(event)
-                await service.deliver_edited_image(event, validate_search_query(str(prompt)))
+                parsed = parse_media_command(str(prompt), allow_reference_image_url=False)
+                await service.deliver_edited_image(event, parsed.prompt)
                 safe_log(logging.INFO, "command_completed", operation="image_edit")
             except Exception as exc:  # noqa: BLE001
                 await self._send_error(event, exc, operation="image_edit")
 
     @filter.command("g2视频", alias={"grok2视频"})
     async def g2_generate_video(self, event: AstrMessageEvent, arguments: GreedyStr):
-        """生成视频：/g2视频 <提示词>，可附带首帧图片。"""
+        """生成视频：/g2视频 [--image-url HTTPS_URL] <提示词>，可附带首帧图片。"""
         event.stop_event()
         with operation_scope("video_generate"):
             safe_log(logging.INFO, "command_started", operation="video_generate")
             try:
                 service = self._require_service(event)
-                await service.deliver_video(event, validate_search_query(str(arguments)))
+                parsed = parse_media_command(str(arguments), allow_reference_image_url=True)
+                await service.deliver_video(
+                    event,
+                    parsed.prompt,
+                    reference_image_url=parsed.reference_image_url,
+                )
                 safe_log(logging.INFO, "command_completed", operation="video_generate")
             except Exception as exc:  # noqa: BLE001
                 await self._send_error(event, exc, operation="video_generate")

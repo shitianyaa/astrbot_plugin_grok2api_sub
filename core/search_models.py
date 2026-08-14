@@ -11,12 +11,14 @@ from __future__ import annotations
 from typing import Final
 
 _REASONING_EFFORTS_BY_MODEL: Final = {
+    "grok-4.6": frozenset({"low", "medium", "high"}),
     "grok-4.5": frozenset({"low", "medium", "high"}),
     "grok-4.3": frozenset({"none", "low", "medium", "high"}),
     "grok-4.20-0309-reasoning": frozenset({"low", "medium", "high"}),
     "grok-4.20-0309-non-reasoning": frozenset({"none"}),
     "grok-4.20-multi-agent-0309": frozenset({"low", "medium", "high", "xhigh"}),
     "grok-build-0.1": frozenset({"none"}),
+    "grok-composer-2.5-fast": frozenset({"low", "medium", "high"}),
 }
 
 

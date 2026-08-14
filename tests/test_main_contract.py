@@ -141,9 +141,12 @@ def test_imports_are_package_relative():
     assert "from astrbot.core.star.filter.command import GreedyStr" in src
 
 
-def test_media_commands_do_not_parse_legacy_prefix_parameters():
+def test_media_commands_use_shared_explicit_reference_image_parser():
     src = _main_src()
     assert "parse_image_command" not in src
     assert "parse_video_command" not in src
     assert "deliver_generated_images(event, validate_search_query(str(arguments)))" in src
-    assert "deliver_video(event, validate_search_query(str(arguments)))" in src
+    assert "parse_media_command" in src
+    assert "allow_reference_image_url=False" in src
+    assert "allow_reference_image_url=True" in src
+    assert "reference_image_url=parsed.reference_image_url" in src
