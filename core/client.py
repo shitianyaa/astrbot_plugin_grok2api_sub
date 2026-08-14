@@ -302,7 +302,7 @@ class Grok2APIClient:
             state = (job.status, job.progress)
             if state != previous_state:
                 safe_log(
-                    logging.INFO,
+                    logging.DEBUG,
                     "video_poll_progress",
                     operation="video_poll",
                     request_id=vid,

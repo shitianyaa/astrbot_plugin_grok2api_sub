@@ -27,7 +27,7 @@ from .errors import (
     ProtocolError,
     SearchNotPerformedError,
 )
-from .media import MediaWorkspace
+from .media import MediaWorkspace, closest_aspect_ratio
 from .models import ImageResult, SearchResult
 from .observability import operation_scope, safe_log
 from .panel_models import (
@@ -251,7 +251,7 @@ class GrokService:
             visible, _ = partition_visible_models(configured, catalog)
             candidates = visible or ()
             safe_log(
-                logging.INFO,
+                logging.DEBUG,
                 "model_catalog_loaded",
                 operation="search",
                 catalog_count=len(catalog),
@@ -329,7 +329,7 @@ class GrokService:
 
     def _log_model_selected(self, model: str, index: int) -> None:
         safe_log(
-            logging.INFO,
+            logging.DEBUG,
             "search_model_selected",
             model=model,
             model_index=index,
@@ -357,7 +357,7 @@ class GrokService:
         for index, model in enumerate(models):
             try:
                 safe_log(
-                    logging.INFO,
+                    logging.DEBUG,
                     "media_job_model_attempt",
                     operation="image_generate",
                     model=model,
@@ -400,7 +400,7 @@ class GrokService:
         for index, model in enumerate(models):
             try:
                 safe_log(
-                    logging.INFO,
+                    logging.DEBUG,
                     "media_job_model_attempt",
                     operation="image_edit",
                     model=model,
@@ -441,7 +441,7 @@ class GrokService:
         for index, model in enumerate(models):
             try:
                 safe_log(
-                    logging.INFO,
+                    logging.DEBUG,
                     "media_job_model_attempt",
                     operation="video_generate",
                     model=model,
@@ -558,7 +558,7 @@ class GrokService:
                     await self._send_media_progress(
                         event,
                         operation,
-                        self._media_progress_text(operation, has_reference_image=True),
+                        self._media_progress_text(operation),
                     )
                     stage = "generate"
                     results = await self._edit_image_with_fallback(
@@ -599,20 +599,28 @@ class GrokService:
                 finally:
                     self._release_session_lock(event, lock)
 
-    async def _find_input_image(self, event: Any) -> str:
+    def _find_input_image_component(self, event: Any) -> object:
         """First Image component in the current chain, else the Reply chain."""
         from astrbot.api.message_components import Image, Reply
 
         chain = getattr(getattr(event, "message_obj", None), "message", None) or []
         for comp in chain:
             if isinstance(comp, Image):
-                return await self._workspace.image_component_to_data_url(comp)
+                return comp
         for comp in chain:
             if isinstance(comp, Reply) and comp.chain:
                 for sub in comp.chain:
                     if isinstance(sub, Image):
-                        return await self._workspace.image_component_to_data_url(sub)
+                        return sub
         raise ProtocolError("请附带或回复一张图片", code="no_input_image")
+
+    async def _find_input_image(self, event: Any) -> str:
+        component = self._find_input_image_component(event)
+        return await self._workspace.image_component_to_data_url(component)
+
+    async def _find_input_normalized_image(self, event: Any):
+        component = self._find_input_image_component(event)
+        return await self._workspace.image_component_to_normalized_image(component)
 
     # -- video -------------------------------------------------------------
     async def deliver_video(
@@ -628,12 +636,15 @@ class GrokService:
                 started_at = time.monotonic()
                 stage = "input"
                 try:
-                    image_data_url = await self._resolve_video_reference_image(
-                        event, reference_image_url
-                    )
+                    (
+                        image_data_url,
+                        reference_aspect_ratio,
+                    ) = await self._resolve_video_reference_image(event, reference_image_url)
                     stage = "prompt_processing"
                     request = await self._resolve_video_request(
-                        prompt, has_reference_image=bool(image_data_url)
+                        prompt,
+                        has_reference_image=bool(image_data_url),
+                        reference_aspect_ratio=reference_aspect_ratio,
                     )
                     safe_log(
                         logging.INFO,
@@ -645,9 +656,7 @@ class GrokService:
                     await self._send_media_progress(
                         event,
                         operation,
-                        self._media_progress_text(
-                            operation, has_reference_image=bool(image_data_url)
-                        ),
+                        self._media_progress_text(operation),
                     )
                     stage = "generate"
                     request_id = await self._create_video_with_fallback(
@@ -657,7 +666,7 @@ class GrokService:
                         started_at,
                     )
                     safe_log(
-                        logging.INFO,
+                        logging.DEBUG,
                         "video_created",
                         operation=operation,
                         request_id=request_id,
@@ -707,41 +716,42 @@ class GrokService:
             return prompt
         return await self._prompt_processor.resolve_image_edit(prompt, has_reference_image=True)
 
-    async def _resolve_video_reference_image(self, event: Any, reference_image_url: str) -> str:
+    async def _resolve_video_reference_image(
+        self, event: Any, reference_image_url: str
+    ) -> tuple[str, str]:
         if reference_image_url:
-            return reference_image_url
+            return reference_image_url, ""
         try:
-            return await self._find_input_image(event)
+            image = await self._find_input_normalized_image(event)
         except ProtocolError as exc:
             if exc.code != "no_input_image":
                 raise
-            return ""
+            return "", ""
+        return image.data_url, closest_aspect_ratio(
+            image.width,
+            image.height,
+            self._config.video_aspect_ratios,
+        )
 
-    async def _resolve_video_request(self, prompt: str, *, has_reference_image: bool):
+    async def _resolve_video_request(
+        self,
+        prompt: str,
+        *,
+        has_reference_image: bool,
+        reference_aspect_ratio: str,
+    ):
         if self._prompt_processor is None:
             from .models import VideoGenerationRequest
 
-            return VideoGenerationRequest(prompt=prompt)
+            return VideoGenerationRequest(prompt=prompt, aspect_ratio=reference_aspect_ratio)
         return await self._prompt_processor.resolve_video(
-            prompt, has_reference_image=has_reference_image
+            prompt,
+            has_reference_image=has_reference_image,
+            reference_aspect_ratio=reference_aspect_ratio,
         )
 
-    def _media_progress_text(self, operation: str, *, has_reference_image: bool) -> str:
-        text = "正在编辑图片，请稍候…" if operation == "image_edit" else "视频正在生成，请稍候…"
-        if has_reference_image and self._reference_prompt_is_enhanced():
-            return (
-                f"{text} 检测到参考图，AI 提示词优化仅依据文字，无法识别参考图内容，"
-                "结果可能与参考图不完全一致。"
-            )
-        return text
-
-    def _reference_prompt_is_enhanced(self) -> bool:
-        if self._prompt_processor is None:
-            return False
-        return (
-            self._config.prompt_force_enhance_with_reference_image
-            or self._config.prompt_processing_mode == "enhance"
-        )
+    def _media_progress_text(self, operation: str) -> str:
+        return "正在编辑图片，请稍候…" if operation == "image_edit" else "视频正在生成，请稍候…"
 
     def _release_session_lock(self, event: Any, lock: asyncio.Lock) -> None:
         """Release the session lock and clean up the dict entry if idle."""

@@ -5,10 +5,14 @@
 <img src="https://count.getloli.com/@astrbot-plugin-grok2api-sub?name=astrbot-plugin-grok2api-sub&theme=booru-jaypee&padding=6&offset=0&align=top&scale=1&pixelated=1&darkmode=auto" alt="count" />
 
 ![AstrBot](https://img.shields.io/badge/AstrBot-plugin-5865f2?style=flat-square)
-![Version](https://img.shields.io/badge/version-0.1.1-22c55e?style=flat-square)
+![Version](https://img.shields.io/badge/version-0.1.2-22c55e?style=flat-square)
 ![Python](https://img.shields.io/badge/Python-3.10%2B-3776ab?style=flat-square)
 ![Platform](https://img.shields.io/badge/platform-OneBot%20%2F%20QQ%20Official-f97316?style=flat-square)
 ![License](https://img.shields.io/badge/license-MIT-3b82f6?style=flat-square)
+
+<br>
+
+<img src="logo.png" alt="Grok2API Sub 助手 Logo" width="180">
 
 </div>
 
@@ -79,7 +83,7 @@ python -m pip install -r requirements.txt
 | `prompt_processing.mode` | `off`（原提示词直接传上游）；可选 `extract`（仅补全参数）或 `enhance`（优化提示词和参数） |
 | `prompt_processing.extract_provider_id` | AstrBot 已配置的整理文本模型；仅 `extract` 使用 |
 | `prompt_processing.enhance_provider_id` | AstrBot 已配置的优化文本模型；仅 `enhance` 使用 |
-| `prompt_processing.force_enhance_with_reference_image` | `false`；检测到改图消息图片或视频消息图片/`--image-url` 时强制使用 `enhance`，其余情况遵循 `prompt_processing.mode` |
+| `prompt_processing.disable_prompt_processing_with_reference_image` | `false`；仅有改图消息图片、视频消息图片或视频 `--image-url` 时生效。关闭时遵循 `prompt_processing.mode`；开启后参考图请求原提示词直传且不调用提示词处理模型 |
 | `enable_llm_search_tool` | `true`（主模型按 Tool 描述自动搜索） |
 
 使用 `extract` 或 `enhance` 时，插件会在严格校验成功后将最终发送给 grok2api 的提示词与媒体参数 JSON 写入本地 `prompt_processing_resolved` 日志，方便管理员检查处理质量；不会回复给用户。直传模式和失败输出不记录，凭据、Bearer/JWT、密码/secret、代理 userinfo 与 Base64 始终脱敏。
@@ -106,7 +110,7 @@ python -m pip install -r requirements.txt
 | `/g2搜索 <问题>` | `/grok2搜索` | 访问规则 | 强制执行全局已启用的 Web/X 搜索，直接返回远端正文和来源，不调用本地 LLM 改写 |
 | `/g2生图 <提示词>` | `/grok2生图` | 访问规则 | 整段提示词直传或按模式处理，每次生成 1 张；图片默认 `1k` |
 | `/g2改图 <编辑要求>` | `/grok2改图` | 访问规则 | 编辑当前或回复消息中的第一张图片 |
-| `/g2视频 [--image-url <HTTPS_URL>] <提示词>` | `/grok2视频` | 访问规则 | 整段提示词直传或按模式处理；默认 `6s`、`720p`，可附带首帧或显式 URL 参考图 |
+| `/g2视频 [--image-url <HTTPS_URL>] <提示词>` | `/grok2视频` | 访问规则 | 整段提示词直传或按模式处理；默认 `6s`、`720p`，消息/回复参考图会自动匹配最近支持比例，也可显式传入 URL 参考图 |
 | `/g2面板` | `/grok2面板` | AstrBot ADMIN | 按所选块发送账号/媒体/审计/模型聚合，不要求 Client Key |
 | `/g2面板订阅` | `/grok2面板订阅` | AstrBot ADMIN | 订阅当前会话的定时面板推送 |
 | `/g2面板退订` | `/grok2面板退订` | AstrBot ADMIN | 退订当前会话的定时面板推送 |
@@ -133,8 +137,8 @@ grok2api 并发送远端结果。`grok2api_web_search` 则是给 AstrBot 主模�
 - 图片/视频会立即下载到本地再发送；原结果 URL 不作为永久存档。
 - QQ Official 单次最多生成/发送 **4** 张图片；超出在调用 API 前拒绝。
 - 改图只接受当前消息或回复链中的图片，不接受任意本地路径、用户输入 URL 或 `file_id`。
-- 视频可用 `/g2视频 --image-url <HTTPS_URL> <提示词>` 或 `--image-url=<HTTPS_URL>` 显式传入参考图。仅接受外部 HTTPS 域名，不接受 userinfo、fragment、单标签主机、`localhost`、`.local` 或 IP 字面量；插件不下载、不记录 URL，也不将其交给提示词模型。上游服务负责最终下载、重定向与网络访问安全。
-- 参考图强制优化开启后，AI 只会依据文字优化提示词，无法识别参考图内容；任务进度提示会说明结果可能与参考图不完全一致。
+- 视频可用 `/g2视频 --image-url <HTTPS_URL> <提示词>` 或 `--image-url=<HTTPS_URL>` 显式传入参考图。仅接受外部 HTTPS 域名，不接受 userinfo、fragment、单标签主机、`localhost`、`.local` 或 IP 字面量；插件不下载、不记录 URL，也不将其交给提示词模型，因此不会自动读取外链图片比例。上游服务负责最终下载、重定向与网络访问安全。
+- `prompt_processing.disable_prompt_processing_with_reference_image` 关闭时完全遵循全局模式；开启且检测到参考图时，改图/视频均使用原提示词且不调用提示词处理模型。消息或回复中的视频参考图会在未解析比例时自动填入最接近的支持比例；该行为不额外发送用户提示。
 - 视频时长 1–15 秒；比例仅 `1:1`、`16:9`、`9:16`、`4:3`、`3:4`、`3:2`、`2:3`。
 - `send_media_progress` 默认开启；生图、改图、视频在开始远端任务前各提示一次，提示发送失败不会取消任务。
 - 发送异常时交付状态可能不确定，插件不自动重发。
@@ -155,6 +159,12 @@ ruff check .
 ```
 
 详见 [docs/testing.md](docs/testing.md) 与 [docs/architecture.md](docs/architecture.md)。
+
+## 致谢
+
+- [chenyme/grok2api](https://github.com/chenyme/grok2api)：兼容 API 与管理面 API 的集成目标。
+- [Xyanxhu](https://github.com/Xyanxhu)：管理面板主题设计参考。
+- [PeeGayhub Telegram 表情包系列](https://t.me/addstickers/PeeGayhub)：插件图标借鉴了该系列表情包风格；图标素材由 GPT 生成。
 
 ## License
 

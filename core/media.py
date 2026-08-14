@@ -16,6 +16,8 @@ import time
 import uuid
 import warnings
 from collections.abc import Sequence
+from dataclasses import dataclass
+from math import log
 from pathlib import Path
 
 from .errors import ConfigurationError, MediaLimitError, NotSupportedError, ProtocolError
@@ -25,6 +27,35 @@ logger = logging.getLogger("astrbot_plugin_grok2api_sub.media")
 
 MAX_PIXELS = 40_000_000
 _SAFE_EXT = (".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".mp4", ".part")
+
+
+@dataclass(frozen=True, slots=True)
+class NormalizedImage:
+    """A validated, re-encoded input image with its original dimensions."""
+
+    data_url: str
+    width: int
+    height: int
+
+
+def closest_aspect_ratio(width: int, height: int, candidates: Sequence[str]) -> str:
+    """Return the supported ratio nearest to an image without changing orientation."""
+    if width <= 0 or height <= 0:
+        return ""
+    source_ratio = width / height
+    best = ""
+    best_distance = float("inf")
+    for candidate in candidates:
+        try:
+            numerator, denominator = candidate.split(":", 1)
+            candidate_ratio = int(numerator) / int(denominator)
+            distance = abs(log(source_ratio / candidate_ratio))
+        except (TypeError, ValueError, ZeroDivisionError):
+            continue
+        if distance < best_distance:
+            best = candidate
+            best_distance = distance
+    return best
 
 
 def ensure_inside(path: Path, root: Path) -> Path:
@@ -76,6 +107,10 @@ class MediaWorkspace:
     # -- image input normalization ----------------------------------------
     async def image_component_to_data_url(self, component: object) -> str:
         """Convert an AstrBot Image component to a normalized PNG/JPEG data URL."""
+        return (await self.image_component_to_normalized_image(component)).data_url
+
+    async def image_component_to_normalized_image(self, component: object) -> NormalizedImage:
+        """Normalize a message image and retain dimensions for local consumers."""
         convert = getattr(component, "convert_to_base64", None)
         if convert is None:
             raise NotSupportedError("消息中的图片组件缺少内容，无法改图", code="no_image_content")
@@ -100,7 +135,7 @@ class MediaWorkspace:
             raise MediaLimitError("输入图片过大，超出大小限制", code="input_image_too_large")
         return await self._normalize_image_bytes(content)
 
-    async def _normalize_image_bytes(self, content: bytes) -> str:
+    async def _normalize_image_bytes(self, content: bytes) -> NormalizedImage:
         from PIL import Image, ImageFile
 
         # Save and restore process-global state to avoid side effects
@@ -110,7 +145,7 @@ class MediaWorkspace:
         ImageFile.LOAD_TRUNCATED_IMAGES = False
         try:
 
-            def _work() -> str:
+            def _work() -> NormalizedImage:
                 if len(content) == 0:
                     raise MediaLimitError("图片内容为空", code="empty_image")
                 with warnings.catch_warnings():
@@ -130,6 +165,7 @@ class MediaWorkspace:
                         raise ProtocolError("图片损坏或格式不支持", code="bad_image") from exc
                     # verify() closes the file; re-open for conversion
                     img = Image.open(__import__("io").BytesIO(content))
+                    width, height = img.size
                     if img.mode not in ("RGB", "RGBA"):
                         img = img.convert("RGBA" if "A" in img.mode else "RGB")
                     if img.size[0] * img.size[1] > self.max_pixels:
@@ -143,7 +179,11 @@ class MediaWorkspace:
                         img.save(out_io, format="JPEG", quality=90)
                         mime = "image/jpeg"
                     data = out_io.getvalue()
-                    return f"data:{mime};base64,{base64.b64encode(data).decode()}"
+                    return NormalizedImage(
+                        data_url=f"data:{mime};base64,{base64.b64encode(data).decode()}",
+                        width=width,
+                        height=height,
+                    )
 
             return await asyncio.to_thread(_work)
         finally:

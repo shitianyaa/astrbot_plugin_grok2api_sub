@@ -7,6 +7,7 @@ plugin dir) and that all commands register with ``GreedyStr`` params and no
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 import pytest
@@ -79,7 +80,7 @@ async def test_send_reports_success(monkeypatch, plugin_module):
     events = []
     monkeypatch.setattr(
         "astrbot_plugin_grok2api_sub.main.safe_log",
-        lambda _level, name, **fields: events.append((name, fields)),
+        lambda level, name, **fields: events.append((level, name, fields)),
     )
 
     class Event:
@@ -94,8 +95,9 @@ async def test_send_reports_success(monkeypatch, plugin_module):
     await plugin._send(event, "result")
 
     assert len(event.sent) == 1
-    assert [name for name, _fields in events] == ["message_sent"]
-    assert events[0][1]["sent_chars"] == 6
+    assert [name for _level, name, _fields in events] == ["message_sent"]
+    assert events[0][0] == logging.DEBUG
+    assert events[0][2]["sent_chars"] == 6
 
 
 @pytest.mark.asyncio

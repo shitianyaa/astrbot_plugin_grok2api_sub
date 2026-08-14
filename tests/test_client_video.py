@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 
 import pytest
 
@@ -137,7 +138,7 @@ async def test_poll_transitions_to_done():
 async def test_poll_logs_only_changed_progress_states(monkeypatch):
     events = []
     monkeypatch.setattr(
-        "core.client.safe_log", lambda _level, name, **fields: events.append((name, fields))
+        "core.client.safe_log", lambda level, name, **fields: events.append((level, name, fields))
     )
     c, s = _client()
     s.push(
@@ -148,10 +149,11 @@ async def test_poll_logs_only_changed_progress_states(monkeypatch):
 
     await c.wait_for_video("video_abc")
 
-    assert [(item[1]["result_status"], item[1]["poll_progress"]) for item in events] == [
+    assert [(item[2]["result_status"], item[2]["poll_progress"]) for item in events] == [
         ("pending", 30),
         ("done", 100),
     ]
+    assert [item[0] for item in events] == [logging.DEBUG, logging.DEBUG]
 
 
 async def test_poll_failed_reports_clean_error():

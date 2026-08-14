@@ -355,7 +355,7 @@ class PluginConfig:
     prompt_processing_mode: str
     prompt_extract_provider_id: str
     prompt_enhance_provider_id: str
-    prompt_force_enhance_with_reference_image: bool
+    prompt_disable_processing_with_reference_image: bool
     prompt_processing_timeout_seconds: int
 
     model_retry_count: int
@@ -477,8 +477,8 @@ class PluginConfig:
             "image_edit_models": self.image_edit_models,
             "video_models": self.video_models,
             "prompt_processing_mode": self.prompt_processing_mode,
-            "prompt_force_enhance_with_reference_image": (
-                self.prompt_force_enhance_with_reference_image
+            "prompt_disable_processing_with_reference_image": (
+                self.prompt_disable_processing_with_reference_image
             ),
             "prompt_extract_provider_configured": bool(self.prompt_extract_provider_id),
             "prompt_enhance_provider_configured": bool(self.prompt_enhance_provider_id),
@@ -692,9 +692,9 @@ class PluginConfig:
                 "capability_settings.prompt_processing.enhance_provider_id",
                 g(prompt_processing, "enhance_provider_id", ""),
             ),
-            prompt_force_enhance_with_reference_image=_bool_flag(
-                "capability_settings.prompt_processing.force_enhance_with_reference_image",
-                g(prompt_processing, "force_enhance_with_reference_image"),
+            prompt_disable_processing_with_reference_image=_bool_flag(
+                "capability_settings.prompt_processing.disable_prompt_processing_with_reference_image",
+                g(prompt_processing, "disable_prompt_processing_with_reference_image"),
                 False,
             ),
             prompt_processing_timeout_seconds=_to_int(
@@ -743,4 +743,4 @@ class PluginConfig:
 
 
 def version() -> str:
-    return "v0.1.1"
+    return "v0.1.2"

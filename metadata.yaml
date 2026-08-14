@@ -1,7 +1,7 @@
 name: astrbot_plugin_grok2api_sub
 display_name: Grok2API Sub 助手
 desc: 通过 grok2api Client Key 提供联网搜索、生图、改图和生视频，同时支持 OneBot/NapCat 与 QQ Official。
-version: v0.1.1
+version: v0.1.2
 author: shitianyaa
 repo: https://github.com/shitianyaa/astrbot_plugin_grok2api_sub
 astrbot_version: ">=4.26.0,<5"

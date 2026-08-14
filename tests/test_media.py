@@ -10,14 +10,16 @@ from pathlib import Path
 import pytest
 
 from core.errors import ConfigurationError, MediaLimitError, ProtocolError
-from core.media import MediaWorkspace, ensure_inside
+from core.media import MediaWorkspace, closest_aspect_ratio, ensure_inside
 from core.models import ImageResult
 
+VIDEO_ASPECT_RATIOS = ("1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3")
 
-def _png_bytes() -> bytes:
+
+def _png_bytes(*, size: tuple[int, int] = (10, 10)) -> bytes:
     from PIL import Image
 
-    img = Image.new("RGB", (10, 10), (255, 0, 0))
+    img = Image.new("RGB", size, (255, 0, 0))
     buf = io.BytesIO()
     img.save(buf, format="PNG")
     return buf.getvalue()
@@ -73,6 +75,28 @@ async def test_image_component_to_data_url(ws):
     assert url.startswith("data:image/")
     assert "png" in url or "jpeg" in url
     assert url.startswith("data:image/png") or url.startswith("data:image/jpeg")
+
+
+async def test_image_component_to_normalized_image_preserves_dimensions(ws):
+    image = await ws.image_component_to_normalized_image(
+        ImageResult_to_component(_png_bytes(size=(1280, 2816)))
+    )
+
+    assert image.data_url.startswith("data:image/")
+    assert (image.width, image.height) == (1280, 2816)
+
+
+@pytest.mark.parametrize(
+    ("size", "expected"),
+    [
+        ((1280, 2816), "9:16"),
+        ((2816, 1280), "16:9"),
+        ((1000, 1000), "1:1"),
+        ((1200, 800), "3:2"),
+    ],
+)
+def test_closest_aspect_ratio_uses_nearest_supported_ratio(size, expected):
+    assert closest_aspect_ratio(*size, VIDEO_ASPECT_RATIOS) == expected
 
 
 def ImageResult_to_component(png: bytes):

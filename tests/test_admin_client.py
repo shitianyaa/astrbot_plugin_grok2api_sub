@@ -60,7 +60,8 @@ async def test_login_then_get_uses_bearer():
 async def test_admin_request_logs_stable_resource_without_credentials(monkeypatch):
     events = []
     monkeypatch.setattr(
-        "core.admin_client.safe_log", lambda _level, name, **fields: events.append((name, fields))
+        "core.admin_client.safe_log",
+        lambda level, name, **fields: events.append((level, name, fields)),
     )
     client, session = _make()
     session.push(
@@ -70,8 +71,11 @@ async def test_admin_request_logs_stable_resource_without_credentials(monkeypatc
 
     await client.fetch_accounts_summary()
 
-    completed = [fields for name, fields in events if name == "admin_request_completed"]
-    assert [item["resource"] for item in completed] == ["admin_login", "accounts_summary"]
+    completed = [
+        (level, fields) for level, name, fields in events if name == "admin_request_completed"
+    ]
+    assert [item["resource"] for _level, item in completed] == ["admin_login", "accounts_summary"]
+    assert [level for level, _item in completed] == [logging.DEBUG, logging.DEBUG]
     assert "admin-pass" not in str(events)
     await client.close()
 

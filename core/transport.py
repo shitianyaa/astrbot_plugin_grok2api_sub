@@ -189,9 +189,7 @@ class HTTPTransport:
         """Log one request attempt's non-sensitive outcome."""
         elapsed_ms = int((time.monotonic() - started_at) * 1000) if started_at is not None else 0
         log_path = path if path.startswith("/v1/") or path == "/v1" else "[invalid_path]"
-        level = logging.WARNING if retryable or status == 0 or status >= 400 else logging.INFO
-        if operation == "video_poll" and 200 <= status < 300:
-            level = logging.DEBUG
+        level = logging.WARNING if retryable or status == 0 or status >= 400 else logging.DEBUG
         fields: dict[str, object] = {
             "operation": operation,
             "method": method,
@@ -242,7 +240,7 @@ class HTTPTransport:
             session = self._session_for()
             started_at = time.monotonic()
             safe_log(
-                logging.DEBUG if operation == "video_poll" else logging.INFO,
+                logging.DEBUG,
                 "http_request_started",
                 operation=operation,
                 method=method,
@@ -397,7 +395,7 @@ class HTTPTransport:
             written = 0
             started_at = time.monotonic()
             safe_log(
-                logging.INFO,
+                logging.DEBUG,
                 "http_request_started",
                 operation="download",
                 method="GET",

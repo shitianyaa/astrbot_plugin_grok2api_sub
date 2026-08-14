@@ -6,6 +6,7 @@ import asyncio
 import json
 import logging
 import time
+from dataclasses import replace
 from typing import Any, Literal
 
 from .config import PluginConfig
@@ -119,11 +120,23 @@ class PromptProcessor:
         return prompt
 
     async def resolve_video(
-        self, source_prompt: str, *, has_reference_image: bool = False
+        self,
+        source_prompt: str,
+        *,
+        has_reference_image: bool = False,
+        reference_aspect_ratio: str = "",
     ) -> VideoGenerationRequest:
         mode = self._effective_mode(has_reference_image=has_reference_image)
+        validated_reference_aspect_ratio = (
+            self._parse_aspect_ratio(reference_aspect_ratio)
+            if has_reference_image and reference_aspect_ratio
+            else ""
+        )
         if mode == "off":
-            return VideoGenerationRequest(prompt=source_prompt)
+            return VideoGenerationRequest(
+                prompt=source_prompt,
+                aspect_ratio=validated_reference_aspect_ratio,
+            )
         data = await self._run_model(
             "video",
             source_prompt,
@@ -146,13 +159,22 @@ class PromptProcessor:
                 aspect_ratio=self._parse_aspect_ratio(data["aspect_ratio"]),
                 resolution=self._parse_video_resolution(data["resolution"]),
             )
+        request = self._with_reference_aspect_ratio(request, validated_reference_aspect_ratio)
         self._log_resolved_request("video", request, mode=mode)
         return request
 
     def _effective_mode(self, *, has_reference_image: bool) -> str:
-        if has_reference_image and self._config.prompt_force_enhance_with_reference_image:
-            return "enhance"
+        if has_reference_image and self._config.prompt_disable_processing_with_reference_image:
+            return "off"
         return self._config.prompt_processing_mode
+
+    @staticmethod
+    def _with_reference_aspect_ratio(
+        request: VideoGenerationRequest, reference_aspect_ratio: str
+    ) -> VideoGenerationRequest:
+        if request.aspect_ratio or not reference_aspect_ratio:
+            return request
+        return replace(request, aspect_ratio=reference_aspect_ratio)
 
     def _log_resolved_request(
         self,
@@ -213,7 +235,7 @@ class PromptProcessor:
         )
         started_at = time.monotonic()
         safe_log(
-            logging.INFO,
+            logging.DEBUG,
             "prompt_processing_started",
             operation=self._operation_for_media_type(media_type),
             prompt_mode=mode,
@@ -255,7 +277,7 @@ class PromptProcessor:
                 "提示词处理模型返回格式无效", code="prompt_processing_invalid"
             ) from exc
         safe_log(
-            logging.INFO,
+            logging.DEBUG,
             "prompt_processing_completed",
             operation=self._operation_for_media_type(media_type),
             prompt_mode=mode,

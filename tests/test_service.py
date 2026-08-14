@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import logging
 from unittest.mock import AsyncMock
 
 import pytest
@@ -18,7 +19,7 @@ from core.errors import (
     ProtocolError,
     SearchNotPerformedError,
 )
-from core.media import MediaWorkspace
+from core.media import MediaWorkspace, NormalizedImage
 from core.models import SearchResult, VideoGenerationRequest
 from core.platform import PlatformKind
 from core.sender import DeliveryAdapter
@@ -298,14 +299,18 @@ async def test_media_lifecycle_logs_are_safe_and_correlated(tmp_path, monkeypatc
     events = []
     monkeypatch.setattr(
         "core.service.safe_log",
-        lambda _level, name, **fields: events.append((name, fields)),
+        lambda level, name, **fields: events.append((level, name, fields)),
     )
     svc, _ = _make_service(ws, session=s)
     await svc.deliver_generated_images(FakeEvent(), "secret prompt")
-    names = [name for name, _ in events]
+    names = [name for _level, name, _fields in events]
     assert "media_job_started" in names
     assert "media_job_completed" in names
-    assert all("secret prompt" not in repr(fields) for _, fields in events)
+    levels = {name: level for level, name, _fields in events}
+    assert levels["media_job_started"] == logging.INFO
+    assert levels["media_job_model_attempt"] == logging.DEBUG
+    assert levels["media_job_completed"] == logging.INFO
+    assert all("secret prompt" not in repr(fields) for _level, _name, fields in events)
 
 
 async def test_deliver_images_is_always_single_result(tmp_path):
@@ -329,8 +334,9 @@ async def test_service_forwards_resolved_image_and_video_parameters(tmp_path):
                 prompt="enhanced image", aspect_ratio="9:16", resolution="2k"
             )
 
-        async def resolve_video(self, _prompt, *, has_reference_image):
+        async def resolve_video(self, _prompt, *, has_reference_image, reference_aspect_ratio):
             assert has_reference_image is False
+            assert reference_aspect_ratio == ""
             return VideoGenerationRequest(
                 prompt="enhanced video", duration=10, aspect_ratio="16:9", resolution="1080p"
             )
@@ -437,7 +443,6 @@ async def test_deliver_edited_image_uses_reference_aware_prompt_processor(tmp_pa
     cfg = _cfg(
         capability_settings={
             "send_media_progress": False,
-            "prompt_processing": {"force_enhance_with_reference_image": True},
         }
     )
     processor = Processor()
@@ -453,7 +458,7 @@ async def test_deliver_edited_image_uses_reference_aware_prompt_processor(tmp_pa
     assert s.calls[0]["json"]["prompt"] == "enhanced red treatment"
 
 
-async def test_reference_enhancement_warning_uses_existing_single_progress_message(tmp_path):
+async def test_reference_image_progress_message_has_no_prompt_processing_notice(tmp_path):
     class Processor:
         async def resolve_image_edit(self, prompt, *, has_reference_image):
             assert prompt == "变红"
@@ -464,9 +469,7 @@ async def test_reference_enhancement_warning_uses_existing_single_progress_messa
     s = FakeSession()
     image = base64.b64encode(_png_bytes()).decode()
     s.push(FakeResponse(200, body=json.dumps({"data": [{"b64_json": image}]})))
-    cfg = _cfg(
-        capability_settings={"prompt_processing": {"force_enhance_with_reference_image": True}}
-    )
+    cfg = _cfg()
     client = Grok2APIClient(
         HTTPTransport(cfg.api_base_url, cfg.client_api_key, sleep=_noop, session_factory=lambda: s)
     )
@@ -477,8 +480,7 @@ async def test_reference_enhancement_warning_uses_existing_single_progress_messa
     await svc.deliver_edited_image(event, "变红")
 
     assert len(event.sent) == 2
-    assert "AI" in event.sent[0].chain[0].text
-    assert "参考图" in event.sent[0].chain[0].text
+    assert event.sent[0].chain[0].text == "正在编辑图片，请稍候…"
 
 
 # -- video delivery --------------------------------------------------------
@@ -499,13 +501,34 @@ async def test_deliver_video_full_flow(tmp_path):
     assert leftover == []
 
 
+async def test_deliver_video_local_reference_image_fills_nearest_aspect_ratio(tmp_path):
+    ws = MediaWorkspace(tmp_path)
+    s = FakeSession()
+    s.push(FakeResponse(200, body=json.dumps({"request_id": "video_abc"})))
+    s.push(FakeResponse(200, body=json.dumps({"status": "done", "progress": 100})))
+    s.responses.append(_StreamResp([b"fake-mp4"]))
+    cfg = _cfg(capability_settings={"send_media_progress": False})
+    svc, _ = _make_service(ws, cfg, session=s)
+    local_image = NormalizedImage(
+        data_url="data:image/jpeg;base64,AAAA",
+        width=1280,
+        height=2816,
+    )
+    svc._find_input_normalized_image = AsyncMock(return_value=local_image)
+
+    await svc.deliver_video(FakeEvent(), "让他跳舞")
+
+    assert s.calls[0]["json"]["image"] == {"url": local_image.data_url}
+    assert s.calls[0]["json"]["aspect_ratio"] == "9:16"
+
+
 async def test_deliver_video_prefers_explicit_url_and_hides_it_from_logs(tmp_path, monkeypatch):
     class Processor:
         def __init__(self):
             self.calls = []
 
-        async def resolve_video(self, prompt, *, has_reference_image):
-            self.calls.append((prompt, has_reference_image))
+        async def resolve_video(self, prompt, *, has_reference_image, reference_aspect_ratio):
+            self.calls.append((prompt, has_reference_image, reference_aspect_ratio))
             return VideoGenerationRequest(prompt="enhanced dance", duration=6)
 
     ws = MediaWorkspace(tmp_path)
@@ -519,7 +542,9 @@ async def test_deliver_video_prefers_explicit_url_and_hides_it_from_logs(tmp_pat
     )
     processor = Processor()
     svc = GrokService(cfg, client, ws, DeliveryAdapter(ws), prompt_processor=processor)
-    svc._find_input_image = AsyncMock(side_effect=AssertionError("must not read attached image"))
+    svc._find_input_normalized_image = AsyncMock(
+        side_effect=AssertionError("must not read attached image")
+    )
     events = []
     monkeypatch.setattr(
         "core.service.safe_log", lambda _level, name, **fields: events.append((name, fields))
@@ -528,8 +553,9 @@ async def test_deliver_video_prefers_explicit_url_and_hides_it_from_logs(tmp_pat
 
     await svc.deliver_video(FakeEvent(), "让他跳舞", reference_image_url=url)
 
-    assert processor.calls == [("让他跳舞", True)]
+    assert processor.calls == [("让他跳舞", True, "")]
     assert s.calls[0]["json"]["image"] == {"url": url}
+    assert "aspect_ratio" not in s.calls[0]["json"]
     assert all(url not in repr(fields) for _name, fields in events)
 
 
@@ -538,8 +564,8 @@ async def test_deliver_video_without_reference_uses_global_path_and_omits_image(
         def __init__(self):
             self.calls = []
 
-        async def resolve_video(self, prompt, *, has_reference_image):
-            self.calls.append((prompt, has_reference_image))
+        async def resolve_video(self, prompt, *, has_reference_image, reference_aspect_ratio):
+            self.calls.append((prompt, has_reference_image, reference_aspect_ratio))
             return VideoGenerationRequest(prompt=prompt, duration=6)
 
     ws = MediaWorkspace(tmp_path)
@@ -556,7 +582,7 @@ async def test_deliver_video_without_reference_uses_global_path_and_omits_image(
 
     await svc.deliver_video(FakeEvent(), "让他跳舞")
 
-    assert processor.calls == [("让他跳舞", False)]
+    assert processor.calls == [("让他跳舞", False, "")]
     assert "image" not in s.calls[0]["json"]
 
 
@@ -565,7 +591,7 @@ async def test_deliver_video_propagates_invalid_reference_image_error(tmp_path):
     s = FakeSession()
     svc, _ = _make_service(ws, session=s)
     failure = ProtocolError("图片格式无效", code="bad_input_image")
-    svc._find_input_image = AsyncMock(side_effect=failure)
+    svc._find_input_normalized_image = AsyncMock(side_effect=failure)
 
     with pytest.raises(ProtocolError) as caught:
         await svc.deliver_video(FakeEvent(), "让他跳舞")
@@ -685,7 +711,11 @@ def _make_scripted_service(tmp_path, client, search_models, **capability_overrid
     return GrokService(cfg, client, workspace, DeliveryAdapter(workspace))
 
 
-async def test_search_skips_catalog_missing_models_and_uses_first_visible(tmp_path):
+async def test_search_skips_catalog_missing_models_and_uses_first_visible(tmp_path, monkeypatch):
+    events = []
+    monkeypatch.setattr(
+        "core.service.safe_log", lambda level, name, **fields: events.append((level, name, fields))
+    )
     client = ScriptedSearchClient(
         models=("grok-4.3", "grok-4.5"),
         search_results=(_search_result("grok-4.5"),),
@@ -694,6 +724,11 @@ async def test_search_skips_catalog_missing_models_and_uses_first_visible(tmp_pa
     result = await service.search(FakeEvent(), "current question")
     assert result.model == "grok-4.5"
     assert client.search_calls == ["grok-4.5"]
+    levels = {name: level for level, name, _fields in events}
+    assert levels["search_started"] == logging.INFO
+    assert levels["model_catalog_loaded"] == logging.DEBUG
+    assert levels["search_model_selected"] == logging.DEBUG
+    assert levels["search_completed"] == logging.INFO
 
 
 async def test_search_passes_enabled_tools_and_supported_reasoning_effort(tmp_path):

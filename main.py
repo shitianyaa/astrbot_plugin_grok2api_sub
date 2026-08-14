@@ -240,14 +240,14 @@ class Grok2APISubPlugin(Star):
         """联网搜索：/g2搜索 <问题>，返回正文与来源。"""
         event.stop_event()
         with operation_scope("search"):
-            safe_log(logging.INFO, "command_started", operation="search")
+            safe_log(logging.DEBUG, "command_started", operation="search")
             try:
                 service = self._require_service(event)
                 result = await service.search(
                     event, validate_search_query(str(query)), required=True
                 )
                 await self._send(event, service.format_search(result))
-                safe_log(logging.INFO, "command_completed", operation="search")
+                safe_log(logging.DEBUG, "command_completed", operation="search")
             except Exception as exc:  # noqa: BLE001
                 await self._send_error(event, exc, operation="search")
 
@@ -256,11 +256,11 @@ class Grok2APISubPlugin(Star):
         """生成图片：/g2生图 <提示词>。"""
         event.stop_event()
         with operation_scope("image_generate"):
-            safe_log(logging.INFO, "command_started", operation="image_generate")
+            safe_log(logging.DEBUG, "command_started", operation="image_generate")
             try:
                 service = self._require_service(event)
                 await service.deliver_generated_images(event, validate_search_query(str(arguments)))
-                safe_log(logging.INFO, "command_completed", operation="image_generate")
+                safe_log(logging.DEBUG, "command_completed", operation="image_generate")
             except Exception as exc:  # noqa: BLE001
                 await self._send_error(event, exc, operation="image_generate")
 
@@ -269,12 +269,12 @@ class Grok2APISubPlugin(Star):
         """编辑当前消息或回复中的首张图片：/g2改图 <编辑要求>。"""
         event.stop_event()
         with operation_scope("image_edit"):
-            safe_log(logging.INFO, "command_started", operation="image_edit")
+            safe_log(logging.DEBUG, "command_started", operation="image_edit")
             try:
                 service = self._require_service(event)
                 parsed = parse_media_command(str(prompt), allow_reference_image_url=False)
                 await service.deliver_edited_image(event, parsed.prompt)
-                safe_log(logging.INFO, "command_completed", operation="image_edit")
+                safe_log(logging.DEBUG, "command_completed", operation="image_edit")
             except Exception as exc:  # noqa: BLE001
                 await self._send_error(event, exc, operation="image_edit")
 
@@ -283,7 +283,7 @@ class Grok2APISubPlugin(Star):
         """生成视频：/g2视频 [--image-url HTTPS_URL] <提示词>，可附带首帧图片。"""
         event.stop_event()
         with operation_scope("video_generate"):
-            safe_log(logging.INFO, "command_started", operation="video_generate")
+            safe_log(logging.DEBUG, "command_started", operation="video_generate")
             try:
                 service = self._require_service(event)
                 parsed = parse_media_command(str(arguments), allow_reference_image_url=True)
@@ -292,7 +292,7 @@ class Grok2APISubPlugin(Star):
                     parsed.prompt,
                     reference_image_url=parsed.reference_image_url,
                 )
-                safe_log(logging.INFO, "command_completed", operation="video_generate")
+                safe_log(logging.DEBUG, "command_completed", operation="video_generate")
             except Exception as exc:  # noqa: BLE001
                 await self._send_error(event, exc, operation="video_generate")
 
@@ -302,11 +302,11 @@ class Grok2APISubPlugin(Star):
         """发送所选管理数据块：/g2面板（仅 AstrBot 管理员）。"""
         event.stop_event()
         with operation_scope("panel_build"):
-            safe_log(logging.INFO, "command_started", operation="panel_build")
+            safe_log(logging.DEBUG, "command_started", operation="panel_build")
             try:
                 report = await self._require_service(event).build_panel(event)
                 await self._send_panel_to_event(event, report)
-                safe_log(logging.INFO, "command_completed", operation="panel_build")
+                safe_log(logging.DEBUG, "command_completed", operation="panel_build")
             except Exception as exc:  # noqa: BLE001
                 await self._send_error(event, exc, operation="panel_build")
 
@@ -316,7 +316,7 @@ class Grok2APISubPlugin(Star):
         """Subscribe the current UMO to configured scheduled panel pushes."""
         event.stop_event()
         with operation_scope("panel_subscription"):
-            safe_log(logging.INFO, "command_started", operation="panel_subscription")
+            safe_log(logging.DEBUG, "command_started", operation="panel_subscription")
             try:
                 created = await self._panel_subscriptions.subscribe(str(event.unified_msg_origin))
                 message = "面板定时推送已订阅" if created else "当前会话已订阅面板定时推送"
@@ -327,7 +327,7 @@ class Grok2APISubPlugin(Star):
                     operation="panel_subscription",
                     result_status="subscribed" if created else "already_subscribed",
                 )
-                safe_log(logging.INFO, "command_completed", operation="panel_subscription")
+                safe_log(logging.DEBUG, "command_completed", operation="panel_subscription")
             except Exception as exc:  # noqa: BLE001
                 await self._send_error(event, exc, operation="panel_subscription")
 
@@ -337,7 +337,7 @@ class Grok2APISubPlugin(Star):
         """Remove the current UMO from configured scheduled panel pushes."""
         event.stop_event()
         with operation_scope("panel_subscription"):
-            safe_log(logging.INFO, "command_started", operation="panel_subscription")
+            safe_log(logging.DEBUG, "command_started", operation="panel_subscription")
             try:
                 removed = await self._panel_subscriptions.unsubscribe(str(event.unified_msg_origin))
                 message = "面板定时推送已退订" if removed else "当前会话未订阅面板定时推送"
@@ -348,7 +348,7 @@ class Grok2APISubPlugin(Star):
                     operation="panel_subscription",
                     result_status="unsubscribed" if removed else "not_subscribed",
                 )
-                safe_log(logging.INFO, "command_completed", operation="panel_subscription")
+                safe_log(logging.DEBUG, "command_completed", operation="panel_subscription")
             except Exception as exc:  # noqa: BLE001
                 await self._send_error(event, exc, operation="panel_subscription")
 
@@ -358,7 +358,7 @@ class Grok2APISubPlugin(Star):
         """Show only safe subscription counts, never full UMO values."""
         event.stop_event()
         with operation_scope("panel_subscription"):
-            safe_log(logging.INFO, "command_started", operation="panel_subscription")
+            safe_log(logging.DEBUG, "command_started", operation="panel_subscription")
             try:
                 current = validate_umo(str(event.unified_msg_origin))
                 dynamic = await self._panel_subscriptions.targets()
@@ -375,7 +375,7 @@ class Grok2APISubPlugin(Star):
                     target_count=len(dynamic),
                     candidate_count=len(self._cfg.panel_push_targets),
                 )
-                safe_log(logging.INFO, "command_completed", operation="panel_subscription")
+                safe_log(logging.DEBUG, "command_completed", operation="panel_subscription")
             except Exception as exc:  # noqa: BLE001
                 await self._send_error(event, exc, operation="panel_subscription")
 
@@ -384,10 +384,10 @@ class Grok2APISubPlugin(Star):
         """查看 Grok2API Sub 命令、参数、别名和当前能力状态。"""
         event.stop_event()
         with operation_scope("help"):
-            safe_log(logging.INFO, "command_started", operation="help")
+            safe_log(logging.DEBUG, "command_started", operation="help")
             try:
                 await self._send(event, self._build_help_text())
-                safe_log(logging.INFO, "command_completed", operation="help")
+                safe_log(logging.DEBUG, "command_completed", operation="help")
             except Exception as exc:  # noqa: BLE001
                 await self._send_error(event, exc, operation="help")
 
@@ -605,7 +605,7 @@ class Grok2APISubPlugin(Star):
             return None
         background = await provider.get_background(self._cfg.panel_background_tags)
         safe_log(
-            logging.INFO,
+            logging.DEBUG,
             "panel_background_ready",
             operation="panel_render",
             background_source=background.source,
@@ -796,7 +796,7 @@ class Grok2APISubPlugin(Star):
             "/g2搜索 <问题> — 联网搜索并返回正文与来源\n"
             "/g2生图 [数量] <提示词> — 生成图片\n"
             "/g2改图 <编辑要求> — 编辑当前或回复图片\n"
-            "/g2视频 [时长] [比例] <提示词> — 生成视频\n"
+            "/g2视频 [--image-url HTTPS_URL] <提示词> — 生成视频\n"
             "/g2面板 — 发送所选管理数据块（管理员）\n"
             "/g2面板订阅 — 订阅当前会话的定时面板推送（管理员）\n"
             "/g2面板退订 — 退订当前会话的定时面板推送（管理员）\n"
@@ -832,7 +832,7 @@ class Grok2APISubPlugin(Star):
                 exception_type=type(exc).__name__,
             )
             raise DeliveryError("消息发送失败") from exc
-        safe_log(logging.INFO, "message_sent", operation="message_send", sent_chars=len(text))
+        safe_log(logging.DEBUG, "message_sent", operation="message_send", sent_chars=len(text))
 
     async def _send_error(self, event: AstrMessageEvent, exc: Exception, *, operation: str) -> None:
         if isinstance(exc, PluginError):

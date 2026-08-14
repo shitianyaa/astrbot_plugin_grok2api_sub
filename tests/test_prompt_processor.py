@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from types import SimpleNamespace
 
 import pytest
@@ -18,7 +19,7 @@ def _config(
     mode: str = "off",
     extract_provider: str = "extract",
     enhance_provider: str = "enhance",
-    force_reference_enhance: bool = False,
+    disable_reference_processing: bool = False,
 ):
     return PluginConfig.from_astrbot(
         {
@@ -27,7 +28,7 @@ def _config(
                     "mode": mode,
                     "extract_provider_id": extract_provider,
                     "enhance_provider_id": enhance_provider,
-                    "force_enhance_with_reference_image": force_reference_enhance,
+                    "disable_prompt_processing_with_reference_image": disable_reference_processing,
                 }
             },
             "advanced_settings": {"prompt_processing_timeout_seconds": 15},
@@ -108,7 +109,25 @@ async def test_enhance_video_uses_selected_provider_and_returns_complete_request
     assert context.calls[0]["chat_provider_id"] == "fast-model"
 
 
-async def test_reference_image_override_forces_video_enhance_and_hides_reference_content():
+async def test_reference_image_disable_skips_video_prompt_processing():
+    context = Context()
+    processor = PromptProcessor(
+        context,
+        _config(mode="enhance", disable_reference_processing=True),
+    )
+
+    result = await processor.resolve_video(
+        "让他跳舞", has_reference_image=True, reference_aspect_ratio="9:16"
+    )
+
+    assert result.prompt == "让他跳舞"
+    assert result.duration == 6
+    assert result.aspect_ratio == "9:16"
+    assert result.resolution == "720p"
+    assert context.calls == []
+
+
+async def test_reference_image_disable_keeps_global_mode_without_a_reference_image():
     context = Context(
         _assistant(
             {
@@ -119,32 +138,12 @@ async def test_reference_image_override_forces_video_enhance_and_hides_reference
             }
         )
     )
-    processor = PromptProcessor(
-        context,
-        _config(mode="off", enhance_provider="reference-model", force_reference_enhance=True),
-    )
-
-    result = await processor.resolve_video("让他跳舞", has_reference_image=True)
-
-    assert result.prompt == "cinematic dancer moving with clear full-body motion"
-    assert context.calls[0]["chat_provider_id"] == "reference-model"
-    assert json.loads(context.calls[0]["prompt"]) == {
-        "media_type": "video",
-        "source_prompt": "让他跳舞",
-        "reference_image_present": True,
-    }
-    assert "https://" not in context.calls[0]["prompt"]
-    assert "cannot see the reference image" in context.calls[0]["system_prompt"]
-
-
-async def test_reference_image_override_keeps_global_mode_without_a_reference_image():
-    context = Context()
-    processor = PromptProcessor(context, _config(mode="off", force_reference_enhance=True))
+    processor = PromptProcessor(context, _config(mode="enhance", disable_reference_processing=True))
 
     result = await processor.resolve_video("让他跳舞", has_reference_image=False)
 
-    assert result.prompt == "让他跳舞"
-    assert context.calls == []
+    assert result.prompt == "cinematic dancer moving with clear full-body motion"
+    assert context.calls[0]["chat_provider_id"] == "enhance"
 
 
 async def test_reference_image_without_override_uses_global_extract_mode():
@@ -169,7 +168,7 @@ async def test_image_edit_uses_dedicated_enhancement_schema_and_audit_operation(
     context = Context(_assistant({"prompt": "apply a vivid red color treatment"}))
     processor = PromptProcessor(
         context,
-        _config(mode="off", force_reference_enhance=True),
+        _config(mode="enhance"),
     )
 
     result = await processor.resolve_image_edit("变红", has_reference_image=True)
@@ -200,23 +199,35 @@ async def test_image_edit_extract_mode_keeps_original_prompt_without_provider_ca
     assert context.calls == []
 
 
-async def test_reference_image_override_requires_enhance_provider():
+async def test_reference_image_disable_skips_image_edit_prompt_processing():
+    context = Context()
     processor = PromptProcessor(
-        Context(),
-        _config(mode="off", enhance_provider="", force_reference_enhance=True),
+        context,
+        _config(mode="enhance", disable_reference_processing=True),
     )
 
-    with pytest.raises(PluginError) as caught:
-        await processor.resolve_video("让他跳舞", has_reference_image=True)
+    result = await processor.resolve_image_edit("变红", has_reference_image=True)
 
-    assert caught.value.code == "prompt_processing_provider_missing"
+    assert result == "变红"
+    assert context.calls == []
 
 
-async def test_successful_processing_logs_only_the_final_validated_request(monkeypatch):
+async def test_reference_image_disable_does_not_require_enhance_provider():
+    processor = PromptProcessor(
+        Context(),
+        _config(mode="enhance", enhance_provider="", disable_reference_processing=True),
+    )
+
+    result = await processor.resolve_video("让他跳舞", has_reference_image=True)
+
+    assert result.prompt == "让他跳舞"
+
+
+async def test_successful_processing_logs_request_audit_at_info_and_details_at_debug(monkeypatch):
     events = []
     monkeypatch.setattr(
         "core.prompt_processor.safe_log",
-        lambda _level, name, **fields: events.append((name, fields)),
+        lambda level, name, **fields: events.append((level, name, fields)),
     )
     context = Context(
         _assistant(
@@ -230,7 +241,7 @@ async def test_successful_processing_logs_only_the_final_validated_request(monke
     )
     await PromptProcessor(context, _config(mode="enhance")).resolve_video("city")
 
-    resolved = [fields for name, fields in events if name == "prompt_processing_resolved"]
+    resolved = [fields for _level, name, fields in events if name == "prompt_processing_resolved"]
     assert resolved == [
         {
             "operation": "video_generate",
@@ -243,6 +254,32 @@ async def test_successful_processing_logs_only_the_final_validated_request(monke
             },
         }
     ]
+    levels = {name: level for level, name, _fields in events}
+    assert levels["prompt_processing_started"] == logging.DEBUG
+    assert levels["prompt_processing_completed"] == logging.DEBUG
+    assert levels["prompt_processing_resolved"] == logging.INFO
+
+
+async def test_reference_aspect_ratio_fills_processed_video_before_audit(monkeypatch):
+    events = []
+    monkeypatch.setattr(
+        "core.prompt_processor.safe_log",
+        lambda _level, name, **fields: events.append((name, fields)),
+    )
+    processor = PromptProcessor(
+        Context(_assistant({"duration": 6, "aspect_ratio": None, "resolution": "720p"})),
+        _config(mode="extract"),
+    )
+
+    request = await processor.resolve_video(
+        "让他跳舞",
+        has_reference_image=True,
+        reference_aspect_ratio="9:16",
+    )
+
+    assert request.aspect_ratio == "9:16"
+    resolved = [fields for name, fields in events if name == "prompt_processing_resolved"]
+    assert resolved[0]["prompt_json"]["aspect_ratio"] == "9:16"
 
 
 async def test_invalid_processing_output_never_logs_a_resolved_request(monkeypatch):

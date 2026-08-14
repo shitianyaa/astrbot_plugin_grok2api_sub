@@ -153,7 +153,7 @@ class AdminClient:
         resource = _resource_for_url(url)
         started_at = time.monotonic()
         safe_log(
-            logging.INFO,
+            logging.DEBUG,
             "admin_request_started",
             operation="admin_request",
             method=method,
@@ -188,7 +188,7 @@ class AdminClient:
             )
             raise
         safe_log(
-            logging.INFO if 200 <= status < 300 else logging.WARNING,
+            logging.DEBUG if 200 <= status < 300 else logging.WARNING,
             "admin_request_completed",
             operation="admin_request",
             method=method,

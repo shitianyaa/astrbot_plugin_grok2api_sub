@@ -90,11 +90,14 @@ def test_prompt_processing_uses_astrbot_provider_selectors(schema):
     assert items["mode"]["default"] == "off"
     assert items["extract_provider_id"]["_special"] == "select_provider"
     assert items["enhance_provider_id"]["_special"] == "select_provider"
-    assert items["force_enhance_with_reference_image"] == {
-        "description": "检测到参考图时强制使用提示词优化。",
+    assert items["disable_prompt_processing_with_reference_image"] == {
+        "description": "检测到参考图时禁用提示词处理。",
         "type": "bool",
         "default": False,
-        "hint": "仅对改图的消息图片和视频的消息图片或 --image-url 生效；开启后覆盖全局模式。",
+        "hint": (
+            "仅在检测到改图消息图片、视频消息图片或视频 --image-url 时生效；"
+            "关闭时遵循全局模式，开启后原提示词直传且不调用提示词处理模型。"
+        ),
     }
 
 

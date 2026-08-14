@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from pathlib import Path
 
 import pytest
@@ -78,7 +79,8 @@ async def test_requests_carry_bearer_and_accept():
 async def test_request_log_is_emitted_by_production_request(monkeypatch):
     events = []
     monkeypatch.setattr(
-        "core.transport.safe_log", lambda _level, name, **fields: events.append((name, fields))
+        "core.transport.safe_log",
+        lambda level, name, **fields: events.append((level, name, fields)),
     )
     t, s = _make()
     s.push(FakeResponse(200, body='{"ok":1}'))
@@ -90,11 +92,12 @@ async def test_request_log_is_emitted_by_production_request(monkeypatch):
         retry_policy=_policy(),
         operation="models",
     )
-    assert [name for name, _fields in events] == [
+    assert [name for _level, name, _fields in events] == [
         "http_request_started",
         "http_request_completed",
     ]
-    name, fields = events[1]
+    assert [level for level, _name, _fields in events] == [logging.DEBUG, logging.DEBUG]
+    _level, name, fields = events[1]
     assert name == "http_request_completed"
     assert fields["method"] == "GET"
     assert fields["path"] == "/v1/models"
@@ -108,7 +111,8 @@ async def test_request_log_is_emitted_by_production_request(monkeypatch):
 async def test_request_log_records_network_failure(monkeypatch):
     events = []
     monkeypatch.setattr(
-        "core.transport.safe_log", lambda _level, name, **fields: events.append((name, fields))
+        "core.transport.safe_log",
+        lambda level, name, **fields: events.append((level, name, fields)),
     )
     t, s = _make()
     s.push(FakeResponse(error=asyncio.TimeoutError()))
@@ -121,11 +125,12 @@ async def test_request_log_records_network_failure(monkeypatch):
             retry_policy=_policy(retries=0),
             operation="models",
         )
-    assert [name for name, _fields in events] == [
+    assert [name for _level, name, _fields in events] == [
         "http_request_started",
         "http_request_completed",
     ]
-    name, fields = events[1]
+    assert [level for level, _name, _fields in events] == [logging.DEBUG, logging.WARNING]
+    _level, name, fields = events[1]
     assert name == "http_request_completed"
     assert fields["method"] == "GET"
     assert fields["path"] == "/v1/models"

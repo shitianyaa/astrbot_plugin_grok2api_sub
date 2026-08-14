@@ -33,7 +33,7 @@ Schema 顶层只有 4 个 `object` 分组：`connection_settings`、`capability_
 | `prompt_processing.mode` | string | `off` | `off` 原文直传；`extract` 调用整理模型，仅补全参数；`enhance` 调用优化模型，改写提示词并补全参数 |
 | `prompt_processing.extract_provider_id` | string | `""` | AstrBot 原生供应商选择器；仅整理模式使用，必须选择已配置文本模型 |
 | `prompt_processing.enhance_provider_id` | string | `""` | AstrBot 原生供应商选择器；仅优化模式使用，可与整理模型不同 |
-| `prompt_processing.force_enhance_with_reference_image` | bool | `false` | 仅检测到改图消息图片或视频消息图片/显式 `--image-url` 时生效；`true` 强制 `enhance` 并覆盖全局模式，其他情况遵循全局模式 |
+| `prompt_processing.disable_prompt_processing_with_reference_image` | bool | `false` | 仅检测到改图消息图片、视频消息图片或视频显式 `--image-url` 时生效；`false` 时遵循全局模式，`true` 时本次请求强制 `off`、原提示词直传且不调用提示词处理模型 |
 
 | `enable_llm_search_tool` | bool | `true` | 会话级暴露搜索 Tool；是否调用仍由 AstrBot 主模型决定 |
 | `show_search_sources` | bool | `true` | 手动命令输出与 Tool 返回内容是否包含结构化来源 |
@@ -42,7 +42,7 @@ Schema 顶层只有 4 个 `object` 分组：`connection_settings`、`capability_
 | `image_response_format` | string | `b64_json` | `b64_json`、`url`；无论哪种都落盘后发送 |
 | `send_media_progress` | bool | `true` | 生图、改图、视频在任务锁取得后各发一次尽力而为的进度提示；提示发送失败不取消任务 |
 
-启用 `extract` 或 `enhance` 后，处理成功且字段校验完成的最终请求 JSON 会写入本地 `prompt_processing_resolved` 日志，供管理员核对提示词与参数质量。该记录不会发送给聊天用户；`off` 模式、失败输出和未经校验的模型原文不会记录。Client Key、Bearer/JWT、密码/secret、代理 userinfo 与 Base64 仍会脱敏。参考图强制优化不把消息图片、data URL 或显式 URL 传给文本模型；模型只接收“是否存在参考图”的布尔上下文。
+启用 `extract` 或 `enhance` 后，处理成功且字段校验完成的最终请求 JSON 会写入本地 `prompt_processing_resolved` 日志，供管理员核对提示词与参数质量。该记录不会发送给聊天用户；`off` 模式、失败输出和未经校验的模型原文不会记录。Client Key、Bearer/JWT、密码/secret、代理 userinfo 与 Base64 仍会脱敏。参考图不会把消息图片、data URL 或显式 URL 传给文本模型；模型只接收“是否存在参考图”的布尔上下文。开启 `disable_prompt_processing_with_reference_image` 后，有参考图的请求直接使用 `off` 模式；消息或回复中的视频参考图会在处理器没有给出比例时自动匹配最近支持比例，显式 URL 不下载、不识别尺寸。
 
 ## 访问控制（access_settings）
 

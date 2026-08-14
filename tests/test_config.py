@@ -154,7 +154,7 @@ def test_defaults():
     assert c.video_poll_timeout_seconds == 30
     assert c.image_response_format == "b64_json"
     assert c.prompt_processing_mode == "off"
-    assert c.prompt_force_enhance_with_reference_image is False
+    assert c.prompt_disable_processing_with_reference_image is False
     assert c.prompt_processing_timeout_seconds == 15
     assert c.save_media is False
     assert c.enable_web_search is True
@@ -240,16 +240,25 @@ def test_prompt_processing_config_accepts_independent_providers():
     assert c.prompt_enhance_provider_id == "large-model"
 
 
-def test_prompt_processing_reference_image_override_is_configurable():
+def test_prompt_processing_reference_image_disable_is_configurable_without_legacy_migration():
     c = _cfg(
-        capability_settings={"prompt_processing": {"force_enhance_with_reference_image": True}}
+        capability_settings={
+            "prompt_processing": {"disable_prompt_processing_with_reference_image": True}
+        }
     )
 
-    assert c.prompt_force_enhance_with_reference_image is True
+    assert c.prompt_disable_processing_with_reference_image is True
 
     _raises(
-        capability_settings={"prompt_processing": {"force_enhance_with_reference_image": "true"}}
+        capability_settings={
+            "prompt_processing": {"disable_prompt_processing_with_reference_image": "true"}
+        }
     )
+
+    legacy = _cfg(
+        capability_settings={"prompt_processing": {"force_enhance_with_reference_image": True}}
+    )
+    assert legacy.prompt_disable_processing_with_reference_image is False
 
 
 def test_reject_bool_as_int():
