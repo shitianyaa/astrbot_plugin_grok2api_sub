@@ -2,6 +2,16 @@
 
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/) 规范。
 
+## v0.1.3 (2026-08-14)
+
+### Removed
+
+- 移除仓库中遗留的 `admin_dashboard/` 临时管理面板源码、配置入口和生成物；插件内 `/g2面板` 功能不受影响。
+
+### Changed
+
+- 发布工作流不再保留对已删除 `admin_dashboard/` 目录的打包排除规则。
+
 ## v0.1.2 (2026-08-14)
 
 ### Added
