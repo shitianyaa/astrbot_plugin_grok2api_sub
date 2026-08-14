@@ -37,16 +37,32 @@ def _config(
 
 
 class Context:
-    def __init__(self, response=None, error: Exception | None = None):
+    def __init__(
+        self,
+        response=None,
+        error: Exception | None = None,
+        provider_id: str | None = "session-model",
+        provider_error: Exception | None = None,
+    ):
         self.response = response
         self.error = error
+        self.provider_id = provider_id
+        self.provider_error = provider_error
         self.calls: list[dict] = []
+        self.provider_umos: list[str] = []
 
     async def llm_generate(self, **kwargs):
         self.calls.append(kwargs)
         if self.error is not None:
             raise self.error
         return self.response
+
+    async def get_current_chat_provider_id(self, umo: str) -> str:
+        self.provider_umos.append(umo)
+        if self.provider_error is not None:
+            raise self.provider_error
+        assert self.provider_id is not None
+        return self.provider_id
 
 
 def _assistant(data: dict):
@@ -223,7 +239,7 @@ async def test_reference_image_disable_does_not_require_enhance_provider():
     assert result.prompt == "让他跳舞"
 
 
-async def test_successful_processing_logs_request_audit_at_info_and_details_at_debug(monkeypatch):
+async def test_successful_processing_logs_request_audit_at_debug(monkeypatch):
     events = []
     monkeypatch.setattr(
         "core.prompt_processor.safe_log",
@@ -257,7 +273,7 @@ async def test_successful_processing_logs_request_audit_at_info_and_details_at_d
     levels = {name: level for level, name, _fields in events}
     assert levels["prompt_processing_started"] == logging.DEBUG
     assert levels["prompt_processing_completed"] == logging.DEBUG
-    assert levels["prompt_processing_resolved"] == logging.INFO
+    assert levels["prompt_processing_resolved"] == logging.DEBUG
 
 
 async def test_reference_aspect_ratio_fills_processed_video_before_audit(monkeypatch):
@@ -343,3 +359,136 @@ async def test_extract_rejects_unsupported_video_duration():
         await processor.resolve_video("8 seconds, wide shot")
 
     assert caught.value.code == "prompt_processing_invalid"
+
+
+# ---------------------------------------------------------------------------
+# Search result rewrite
+# ---------------------------------------------------------------------------
+
+
+def _search_answer(answer: str):
+    return _assistant({"answer": answer})
+
+
+async def test_rewrite_search_uses_session_provider_single_call_without_tools_or_history():
+    context = Context(
+        _search_answer("GitHub 组织所有者对组织仓库有管理员权限。"),
+        provider_id="session-model",
+    )
+    processor = PromptProcessor(context, _config(mode="off"))
+
+    answer = await processor.rewrite_search(
+        "platform:group:123", question="组织所有者有什么权限？", search_text="检索正文"
+    )
+
+    assert answer == "GitHub 组织所有者对组织仓库有管理员权限。"
+    assert context.provider_umos == ["platform:group:123"]
+    assert context.calls[0]["chat_provider_id"] == "session-model"
+    assert context.calls[0].get("tools") is None
+    assert context.calls[0].get("contexts") is None
+    assert json.loads(context.calls[0]["prompt"]) == {
+        "question": "组织所有者有什么权限？",
+        "search_text": "检索正文",
+    }
+
+
+async def test_rewrite_search_logs_model_and_lengths_without_raw_input(monkeypatch):
+    events = []
+    monkeypatch.setattr(
+        "core.prompt_processor.safe_log",
+        lambda _level, name, **fields: events.append((name, fields)),
+    )
+    processor = PromptProcessor(Context(_search_answer("简洁回答")), _config(mode="off"))
+
+    await processor.rewrite_search("umo", question="私密问题", search_text="私密检索正文")
+
+    expected_payload = json.dumps(
+        {"question": "私密问题", "search_text": "私密检索正文"},
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+    assert events[0] == (
+        "search_rewrite_started",
+        {"operation": "search", "model": "session-model", "text_chars": len(expected_payload)},
+    )
+    assert events[1][0] == "search_rewrite_completed"
+    assert events[1][1]["operation"] == "search"
+    assert events[1][1]["model"] == "session-model"
+    assert events[1][1]["text_chars"] == len("简洁回答")
+    assert isinstance(events[1][1]["elapsed_ms"], int)
+    assert "私密问题" not in str(events)
+    assert "私密检索正文" not in str(events)
+
+
+async def test_rewrite_search_strips_source_urls_from_outbound_payload():
+    context = Context(_search_answer("简洁回答"))
+    processor = PromptProcessor(context, _config(mode="off"))
+
+    await processor.rewrite_search(
+        "umo", question="q", search_text="结论 https://example.com/private-source 剩余正文"
+    )
+
+    payload = json.loads(context.calls[0]["prompt"])
+    assert payload["question"] == "q"
+    assert "example.com" not in payload["search_text"]
+    assert "结论" in payload["search_text"]
+    assert "剩余正文" in payload["search_text"]
+
+
+@pytest.mark.parametrize(
+    "response",
+    [
+        "not json",
+        _assistant({"answer": None}),
+        _assistant({"answer": "组织所有者对仓库有管理员权限。", "extra": True}),
+        _assistant({"answer": "   "}),
+        _assistant({"answer": "含来源 https://example.com/private-source 的回答"}),
+        SimpleNamespace(role="tool", completion_text="{}", tools_call_name=None),
+        SimpleNamespace(role="assistant", completion_text="{}", tools_call_name="search"),
+        SimpleNamespace(role="assistant", completion_text=""),  # empty output
+    ],
+)
+async def test_rewrite_search_rejects_invalid_model_outputs(response):
+    processor = PromptProcessor(Context(response), _config(mode="off"))
+
+    with pytest.raises(PluginError) as caught:
+        await processor.rewrite_search("umo", question="q", search_text="text")
+
+    assert caught.value.code == "search_rewrite_invalid"
+
+
+async def test_rewrite_search_timeout_maps_to_search_rewrite_timeout():
+    processor = PromptProcessor(Context(error=asyncio.TimeoutError()), _config(mode="off"))
+
+    with pytest.raises(PluginError) as caught:
+        await processor.rewrite_search("umo", question="q", search_text="text")
+
+    assert caught.value.code == "search_rewrite_timeout"
+
+
+async def test_rewrite_search_provider_lookup_failure_maps_to_search_rewrite_provider_failed():
+    processor = PromptProcessor(
+        Context(provider_error=KeyError("no provider")),
+        _config(mode="off"),
+    )
+
+    with pytest.raises(PluginError) as caught:
+        await processor.rewrite_search("umo", question="q", search_text="text")
+
+    assert caught.value.code == "search_rewrite_provider_failed"
+
+
+async def test_rewrite_search_generate_error_maps_to_search_rewrite_provider_failed():
+    processor = PromptProcessor(Context(error=RuntimeError("boom")), _config(mode="off"))
+
+    with pytest.raises(PluginError) as caught:
+        await processor.rewrite_search("umo", question="q", search_text="text")
+
+    assert caught.value.code == "search_rewrite_provider_failed"
+
+
+async def test_rewrite_search_cancellation_propagates():
+    processor = PromptProcessor(Context(error=asyncio.CancelledError()), _config(mode="off"))
+
+    with pytest.raises(asyncio.CancelledError):
+        await processor.rewrite_search("umo", question="q", search_text="text")

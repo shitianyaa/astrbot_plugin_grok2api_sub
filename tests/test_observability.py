@@ -1,4 +1,4 @@
-"""Observability tests: sanitization, trace propagation, allow-list fields."""
+"""Observability tests: task blocks, sanitization, and allow-list fields."""
 
 from __future__ import annotations
 
@@ -8,8 +8,10 @@ from core.observability import (
     ALLOWED_FIELDS,
     operation_scope,
     safe_log,
+    safe_task_log,
     sanitize_diagnostic,
     sanitize_prompt_json,
+    task_attempts,
 )
 
 
@@ -33,23 +35,16 @@ def test_sanitize_shortens_long_text():
     assert len(out) <= 512
 
 
-def test_operation_scope_propagates_trace_id():
-    from core.observability import current_trace_id
+def test_operation_scope_shares_and_resets_task_attempts():
+    from core.observability import record_task_attempt
 
-    assert current_trace_id() == ""
-    with operation_scope("search", "onebot") as tid:
-        assert len(tid) == 12
-        assert current_trace_id() == tid
-    assert current_trace_id() == ""
-
-
-def test_nested_operation_scope_reuses_outer_trace_id():
-    from core.observability import current_trace_id
-
-    with operation_scope("command") as outer:
-        with operation_scope("transport") as inner:
-            assert inner == outer
-            assert current_trace_id() == outer
+    assert task_attempts("search") == 0
+    with operation_scope("search"):
+        record_task_attempt("search")
+        with operation_scope("transport"):
+            record_task_attempt("search")
+        assert task_attempts("search") == 2
+    assert task_attempts("search") == 0
 
 
 def test_prompt_json_keeps_resolved_fields_and_redacts_sensitive_fragments():
@@ -76,7 +71,7 @@ def test_safe_log_ignores_unknown_fields():
     safe_log(logging.INFO, "probe", fake_secret="g2a_zzz_secret", operation="x")
 
 
-def test_safe_log_prefix_and_trace(tmp_path, caplog):
+def test_safe_task_log_renders_complete_prompt_without_trace():
     import logging as _logging
 
     from astrbot.api import logger as astrbot_logger
@@ -94,11 +89,26 @@ def test_safe_log_prefix_and_trace(tmp_path, caplog):
         astrbot_logger.handlers.clear()
         astrbot_logger.addHandler(_logging.StreamHandler(sink))
         astrbot_logger.setLevel(_logging.DEBUG)
-        with operation_scope("search", "onebot") as tid:
-            safe_log(_logging.INFO, "command_started", operation="search", status=200)
+        safe_task_log(
+            _logging.INFO,
+            "请求开始",
+            operation="image_edit",
+            source_prompt="x" * 800,
+            request_prompt=(
+                "g2a_live_secret Authorization: Bearer abc.def.ghi password=hunter2 "
+                "http://alice:proxy-pass@127.0.0.1:3067 data:image/png;base64,AAAA"
+            ),
+            candidate_models="first, second",
+        )
     finally:
         astrbot_logger.handlers = old_handlers
     joined = "".join(records)
     assert "[grok2api_sub]" in joined
-    assert tid in joined
-    assert "command_started" in joined
+    assert "请求开始" in joined
+    assert "操作: 图片编辑" in joined
+    assert "原始提示词: " + "x" * 800 in joined
+    assert "实际提示词:" in joined
+    assert "候选模型: first, second" in joined
+    assert "trace_id" not in joined
+    for secret in ("live_secret", "abc.def.ghi", "hunter2", "proxy-pass", "base64,"):
+        assert secret not in joined

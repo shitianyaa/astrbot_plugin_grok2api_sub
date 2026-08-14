@@ -20,13 +20,17 @@ from core.errors import (
     SearchNotPerformedError,
 )
 from core.media import MediaWorkspace, NormalizedImage
-from core.models import SearchResult, VideoGenerationRequest
+from core.models import SearchResult, SearchSource, VideoGenerationRequest
 from core.platform import PlatformKind
 from core.sender import DeliveryAdapter
 from core.service import GrokService
 from core.transport import HTTPTransport
 from tests.fakes import FakeResponse, FakeSession
-from tests.test_transport import _noop, _StreamResp
+from tests.test_transport import _StreamResp
+
+
+async def _no_retry_sleep(_delay: float) -> None:
+    return None
 
 
 def _cfg(**over) -> PluginConfig:
@@ -80,15 +84,24 @@ def base(tmp_path):
     return ws
 
 
-def _make_service(ws, cfg=None, session=None):
+def _make_service(ws, cfg=None, session=None, prompt_processor=None):
     cfg = cfg or _cfg()
     session = session or FakeSession()
     t = HTTPTransport(
-        cfg.api_base_url, cfg.client_api_key, sleep=_noop, session_factory=lambda: session
+        cfg.api_base_url,
+        cfg.client_api_key,
+        sleep=_no_retry_sleep,
+        session_factory=lambda: session,
     )
-    client = Grok2APIClient(t)
+    client = Grok2APIClient(
+        t,
+        model_retry_count=cfg.model_retry_count,
+        video_retry_count=cfg.video_retry_count,
+        retry_base_delay=cfg.retry_base_delay_seconds,
+        retry_excluded_errors=cfg.retry_excluded_errors,
+    )
     sender = DeliveryAdapter(ws)
-    return GrokService(cfg, client, ws, sender), session
+    return GrokService(cfg, client, ws, sender, prompt_processor=prompt_processor), session
 
 
 # -- preflight -------------------------------------------------------------
@@ -160,6 +173,111 @@ async def test_manual_search_format(tmp_path):
     text = svc.format_search(r)
     assert "answer" in text
     assert "https://e.com/1" in text
+
+
+class _SearchRewriteProcessor:
+    def __init__(self, answer="简洁回答", error: Exception | None = None):
+        self.answer = answer
+        self.error = error
+        self.calls: list[tuple[str, str, str]] = []
+
+    async def rewrite_search(self, umo: str, *, question: str, search_text: str) -> str:
+        self.calls.append((umo, question, search_text))
+        if self.error is not None:
+            raise self.error
+        return self.answer
+
+
+def _rewrite_result(text="原始搜索正文") -> SearchResult:
+    return SearchResult(
+        response_id="rewrite-response",
+        model="grok-4.5",
+        status="completed",
+        text=text,
+        sources=(SearchSource(url="https://example.com/source", title="可信来源"),),
+        search_performed=True,
+    )
+
+
+async def test_rewrite_search_result_replaces_text_and_preserves_sources(tmp_path):
+    processor = _SearchRewriteProcessor()
+    service, _ = _make_service(MediaWorkspace(tmp_path), prompt_processor=processor)
+    event = FakeEvent()
+    original = _rewrite_result()
+
+    rewritten = await service.rewrite_search_result(event, "用户问题", original)
+
+    assert rewritten.text == "简洁回答"
+    assert rewritten.sources == original.sources
+    assert rewritten.model == original.model
+    assert rewritten.response_id == original.response_id
+    assert processor.calls == [(event.unified_msg_origin, "用户问题", "原始搜索正文")]
+
+
+@pytest.mark.parametrize("text", ["", "   "])
+async def test_rewrite_search_result_skips_empty_text(tmp_path, text):
+    processor = _SearchRewriteProcessor()
+    service, _ = _make_service(MediaWorkspace(tmp_path), prompt_processor=processor)
+    original = _rewrite_result(text)
+
+    rewritten = await service.rewrite_search_result(FakeEvent(), "用户问题", original)
+
+    assert rewritten is original
+    assert processor.calls == []
+
+
+async def test_rewrite_search_result_skips_when_processor_is_unavailable(tmp_path):
+    service, _ = _make_service(MediaWorkspace(tmp_path))
+    original = _rewrite_result()
+
+    rewritten = await service.rewrite_search_result(FakeEvent(), "用户问题", original)
+
+    assert rewritten is original
+
+
+async def test_rewrite_search_result_falls_back_without_logging_query_or_body(
+    tmp_path, monkeypatch
+):
+    events = []
+    monkeypatch.setattr(
+        "core.service.safe_log", lambda _level, name, **fields: events.append((name, fields))
+    )
+    processor = _SearchRewriteProcessor(
+        error=PluginError("重写失败", code="search_rewrite_invalid")
+    )
+    service, _ = _make_service(MediaWorkspace(tmp_path), prompt_processor=processor)
+    original = _rewrite_result("私密原始搜索正文")
+
+    rewritten = await service.rewrite_search_result(FakeEvent(), "私密用户问题", original)
+
+    assert rewritten is original
+    assert events == [
+        (
+            "search_rewrite_failed",
+            {
+                "operation": "search",
+                "error_code": "search_rewrite_invalid",
+                "exception_type": "PluginError",
+                "text_chars": len(original.text),
+            },
+        )
+    ]
+    assert "私密用户问题" not in str(events)
+    assert "私密原始搜索正文" not in str(events)
+
+
+async def test_search_returns_raw_result_without_invoking_rewrite_processor(tmp_path):
+    ws = MediaWorkspace(tmp_path)
+    s = FakeSession()
+    s.push(FakeResponse(200, body=json.dumps({"data": [{"id": "grok-4.5"}]})))
+    s.push(FakeResponse(200, body=_search_response()))
+    processor = _SearchRewriteProcessor()
+    service, _ = _make_service(ws, session=s, prompt_processor=processor)
+
+    result = await service.search(FakeEvent(), "q")
+
+    assert result.text == "answer"
+    assert processor.calls == []
 
 
 # -- concurrency -----------------------------------------------------------
@@ -296,21 +414,27 @@ async def test_media_lifecycle_logs_are_safe_and_correlated(tmp_path, monkeypatc
 
     b64 = base64.b64encode(_png_bytes()).decode()
     s.push(FakeResponse(200, body=json.dumps({"data": [{"b64_json": b64}]})))
-    events = []
+    diagnostics = []
+    task_events = []
     monkeypatch.setattr(
         "core.service.safe_log",
-        lambda level, name, **fields: events.append((level, name, fields)),
+        lambda level, name, **fields: diagnostics.append((level, name, fields)),
+    )
+    monkeypatch.setattr(
+        "core.service.safe_task_log",
+        lambda level, title, **fields: task_events.append((level, title, fields)),
     )
     svc, _ = _make_service(ws, session=s)
     await svc.deliver_generated_images(FakeEvent(), "secret prompt")
-    names = [name for _level, name, _fields in events]
-    assert "media_job_started" in names
-    assert "media_job_completed" in names
-    levels = {name: level for level, name, _fields in events}
-    assert levels["media_job_started"] == logging.INFO
+    assert [title for _level, title, _fields in task_events] == ["请求开始", "请求完成"]
+    started = task_events[0][2]
+    completed = task_events[1][2]
+    assert started["source_prompt"] == "secret prompt"
+    assert started["request_prompt"] == "secret prompt"
+    assert completed["model"] == "grok-imagine-image"
+    assert completed["result"] == "图片生成并发送成功"
+    levels = {name: level for level, name, _fields in diagnostics}
     assert levels["media_job_model_attempt"] == logging.DEBUG
-    assert levels["media_job_completed"] == logging.INFO
-    assert all("secret prompt" not in repr(fields) for _level, _name, fields in events)
 
 
 async def test_deliver_images_is_always_single_result(tmp_path):
@@ -350,7 +474,9 @@ async def test_service_forwards_resolved_image_and_video_parameters(tmp_path):
     s.responses.append(_StreamResp([b"fake-mp4"]))
     cfg = _cfg(capability_settings={"send_media_progress": False})
     client = Grok2APIClient(
-        HTTPTransport(cfg.api_base_url, cfg.client_api_key, sleep=_noop, session_factory=lambda: s)
+        HTTPTransport(
+            cfg.api_base_url, cfg.client_api_key, sleep=_no_retry_sleep, session_factory=lambda: s
+        )
     )
     svc = GrokService(cfg, client, ws, DeliveryAdapter(ws), prompt_processor=Processor())
 
@@ -384,7 +510,9 @@ async def test_prompt_processing_error_stops_before_image_request(tmp_path):
     s = FakeSession()
     cfg = _cfg(capability_settings={"send_media_progress": False})
     client = Grok2APIClient(
-        HTTPTransport(cfg.api_base_url, cfg.client_api_key, sleep=_noop, session_factory=lambda: s)
+        HTTPTransport(
+            cfg.api_base_url, cfg.client_api_key, sleep=_no_retry_sleep, session_factory=lambda: s
+        )
     )
     svc = GrokService(cfg, client, ws, DeliveryAdapter(ws), prompt_processor=Processor())
     event = FakeEvent()
@@ -406,7 +534,7 @@ async def test_media_generation_failure_finalizes_once_with_generate_stage(tmp_p
     monkeypatch.setattr(svc, "_finish", finalized)
     events = []
     monkeypatch.setattr(
-        "core.service.safe_log", lambda _level, name, **fields: events.append((name, fields))
+        "core.service.safe_task_log", lambda _level, title, **fields: events.append((title, fields))
     )
 
     with pytest.raises(PluginError) as caught:
@@ -414,9 +542,117 @@ async def test_media_generation_failure_finalizes_once_with_generate_stage(tmp_p
 
     assert caught.value is failure
     finalized.assert_awaited_once_with([], success=False)
-    failures = [fields for name, fields in events if name == "media_job_failed"]
+    failures = [fields for title, fields in events if title == "请求失败"]
     assert len(failures) == 1
     assert failures[0]["stage"] == "generate"
+
+
+def _model_not_found_body() -> str:
+    return json.dumps({"error": {"code": "model_not_found"}})
+
+
+async def test_image_fallback_exhausts_first_model_retries_before_second(tmp_path, monkeypatch):
+    ws = MediaWorkspace(tmp_path)
+    session = FakeSession()
+    image = base64.b64encode(_png_bytes()).decode()
+    session.push(
+        FakeResponse(404, body=_model_not_found_body()),
+        FakeResponse(404, body=_model_not_found_body()),
+        FakeResponse(404, body=_model_not_found_body()),
+        FakeResponse(200, body=json.dumps({"data": [{"b64_json": image}]})),
+    )
+    cfg = _cfg(capability_settings={"image_models": "first\nsecond", "send_media_progress": False})
+    task_events = []
+    monkeypatch.setattr(
+        "core.service.safe_task_log",
+        lambda _level, title, **fields: task_events.append((title, fields)),
+    )
+    service, _ = _make_service(ws, cfg=cfg, session=session)
+
+    await service.deliver_generated_images(FakeEvent(), "cat")
+
+    assert [call["json"]["model"] for call in session.calls] == [
+        "first",
+        "first",
+        "first",
+        "second",
+    ]
+    completed = next(fields for title, fields in task_events if title == "请求完成")
+    assert completed["model"] == "second"
+    assert completed["candidate_fallbacks"] == 1
+    assert completed["retry_count"] == 2
+
+
+async def test_image_excluded_model_error_skips_retry_but_keeps_fallback(tmp_path):
+    ws = MediaWorkspace(tmp_path)
+    session = FakeSession()
+    image = base64.b64encode(_png_bytes()).decode()
+    session.push(
+        FakeResponse(404, body=_model_not_found_body()),
+        FakeResponse(200, body=json.dumps({"data": [{"b64_json": image}]})),
+    )
+    cfg = _cfg(
+        capability_settings={"image_models": "first\nsecond", "send_media_progress": False},
+        advanced_settings={"retry_excluded_errors": "model_not_found"},
+    )
+    service, _ = _make_service(ws, cfg=cfg, session=session)
+
+    await service.deliver_generated_images(FakeEvent(), "cat")
+
+    assert [call["json"]["model"] for call in session.calls] == ["first", "second"]
+
+
+async def test_image_edit_fallback_exhausts_first_model_retries_before_second(tmp_path):
+    ws = MediaWorkspace(tmp_path)
+    session = FakeSession()
+    image = base64.b64encode(_png_bytes()).decode()
+    session.push(
+        FakeResponse(404, body=_model_not_found_body()),
+        FakeResponse(404, body=_model_not_found_body()),
+        FakeResponse(404, body=_model_not_found_body()),
+        FakeResponse(200, body=json.dumps({"data": [{"b64_json": image}]})),
+    )
+    cfg = _cfg(
+        capability_settings={"image_edit_models": "first\nsecond", "send_media_progress": False}
+    )
+    service, _ = _make_service(ws, cfg=cfg, session=session)
+    service._find_input_image = AsyncMock(return_value="data:image/png;base64,AAAA")
+
+    await service.deliver_edited_image(FakeEvent(), "make red")
+
+    assert [call["json"]["model"] for call in session.calls] == [
+        "first",
+        "first",
+        "first",
+        "second",
+    ]
+
+
+async def test_video_fallback_exhausts_first_model_retries_before_second(tmp_path):
+    ws = MediaWorkspace(tmp_path)
+    session = FakeSession()
+    session.push(
+        FakeResponse(404, body=_model_not_found_body()),
+        FakeResponse(404, body=_model_not_found_body()),
+        FakeResponse(404, body=_model_not_found_body()),
+        FakeResponse(200, body=json.dumps({"request_id": "video_abc"})),
+        FakeResponse(200, body=json.dumps({"status": "done", "progress": 100})),
+    )
+    session.responses.append(_StreamResp([b"fake-mp4"]))
+    cfg = _cfg(capability_settings={"video_models": "first\nsecond", "send_media_progress": False})
+    service, _ = _make_service(ws, cfg=cfg, session=session)
+
+    await service.deliver_video(FakeEvent(), "make a video")
+
+    create_calls = [
+        call for call in session.calls if call["url"].endswith("/v1/videos/generations")
+    ]
+    assert [call["json"]["model"] for call in create_calls] == [
+        "first",
+        "first",
+        "first",
+        "second",
+    ]
 
 
 async def test_deliver_edited_image_requires_input(tmp_path):
@@ -447,7 +683,9 @@ async def test_deliver_edited_image_uses_reference_aware_prompt_processor(tmp_pa
     )
     processor = Processor()
     client = Grok2APIClient(
-        HTTPTransport(cfg.api_base_url, cfg.client_api_key, sleep=_noop, session_factory=lambda: s)
+        HTTPTransport(
+            cfg.api_base_url, cfg.client_api_key, sleep=_no_retry_sleep, session_factory=lambda: s
+        )
     )
     svc = GrokService(cfg, client, ws, DeliveryAdapter(ws), prompt_processor=processor)
     svc._find_input_image = AsyncMock(return_value="data:image/png;base64,AAAA")
@@ -471,7 +709,9 @@ async def test_reference_image_progress_message_has_no_prompt_processing_notice(
     s.push(FakeResponse(200, body=json.dumps({"data": [{"b64_json": image}]})))
     cfg = _cfg()
     client = Grok2APIClient(
-        HTTPTransport(cfg.api_base_url, cfg.client_api_key, sleep=_noop, session_factory=lambda: s)
+        HTTPTransport(
+            cfg.api_base_url, cfg.client_api_key, sleep=_no_retry_sleep, session_factory=lambda: s
+        )
     )
     svc = GrokService(cfg, client, ws, DeliveryAdapter(ws), prompt_processor=Processor())
     svc._find_input_image = AsyncMock(return_value="data:image/png;base64,AAAA")
@@ -538,7 +778,9 @@ async def test_deliver_video_prefers_explicit_url_and_hides_it_from_logs(tmp_pat
     s.responses.append(_StreamResp([b"fake-mp4"]))
     cfg = _cfg(capability_settings={"send_media_progress": False})
     client = Grok2APIClient(
-        HTTPTransport(cfg.api_base_url, cfg.client_api_key, sleep=_noop, session_factory=lambda: s)
+        HTTPTransport(
+            cfg.api_base_url, cfg.client_api_key, sleep=_no_retry_sleep, session_factory=lambda: s
+        )
     )
     processor = Processor()
     svc = GrokService(cfg, client, ws, DeliveryAdapter(ws), prompt_processor=processor)
@@ -575,7 +817,9 @@ async def test_deliver_video_without_reference_uses_global_path_and_omits_image(
     s.responses.append(_StreamResp([b"fake-mp4"]))
     cfg = _cfg(capability_settings={"send_media_progress": False})
     client = Grok2APIClient(
-        HTTPTransport(cfg.api_base_url, cfg.client_api_key, sleep=_noop, session_factory=lambda: s)
+        HTTPTransport(
+            cfg.api_base_url, cfg.client_api_key, sleep=_no_retry_sleep, session_factory=lambda: s
+        )
     )
     processor = Processor()
     svc = GrokService(cfg, client, ws, DeliveryAdapter(ws), prompt_processor=processor)
@@ -712,9 +956,15 @@ def _make_scripted_service(tmp_path, client, search_models, **capability_overrid
 
 
 async def test_search_skips_catalog_missing_models_and_uses_first_visible(tmp_path, monkeypatch):
-    events = []
+    diagnostics = []
+    task_events = []
     monkeypatch.setattr(
-        "core.service.safe_log", lambda level, name, **fields: events.append((level, name, fields))
+        "core.service.safe_log",
+        lambda level, name, **fields: diagnostics.append((level, name, fields)),
+    )
+    monkeypatch.setattr(
+        "core.service.safe_task_log",
+        lambda level, title, **fields: task_events.append((level, title, fields)),
     )
     client = ScriptedSearchClient(
         models=("grok-4.3", "grok-4.5"),
@@ -724,11 +974,12 @@ async def test_search_skips_catalog_missing_models_and_uses_first_visible(tmp_pa
     result = await service.search(FakeEvent(), "current question")
     assert result.model == "grok-4.5"
     assert client.search_calls == ["grok-4.5"]
-    levels = {name: level for level, name, _fields in events}
-    assert levels["search_started"] == logging.INFO
+    levels = {name: level for level, name, _fields in diagnostics}
     assert levels["model_catalog_loaded"] == logging.DEBUG
     assert levels["search_model_selected"] == logging.DEBUG
-    assert levels["search_completed"] == logging.INFO
+    assert [title for _level, title, _fields in task_events] == ["请求开始", "请求完成"]
+    assert task_events[0][2]["source_prompt"] == "current question"
+    assert task_events[1][2]["model"] == "grok-4.5"
 
 
 async def test_search_passes_enabled_tools_and_supported_reasoning_effort(tmp_path):
@@ -817,6 +1068,30 @@ async def test_explicit_model_failure_advances_to_next(tmp_path, first_error):
     result = await service.search(FakeEvent(), "question")
     assert result.model == "second"
     assert client.search_calls == ["first", "second"]
+
+
+async def test_search_fallback_exhausts_first_model_retries_before_second(tmp_path):
+    ws = MediaWorkspace(tmp_path)
+    session = FakeSession()
+    session.push(
+        FakeResponse(200, body=json.dumps({"data": [{"id": "first"}, {"id": "second"}]})),
+        FakeResponse(404, body=_model_not_found_body()),
+        FakeResponse(404, body=_model_not_found_body()),
+        FakeResponse(404, body=_model_not_found_body()),
+        FakeResponse(200, body=_search_response()),
+    )
+    cfg = _cfg(capability_settings={"search_models": "first\nsecond"})
+    service, _ = _make_service(ws, cfg=cfg, session=session)
+
+    await service.search(FakeEvent(), "question")
+
+    calls = [call for call in session.calls if call["url"].endswith("/v1/responses")]
+    assert [call["json"]["model"] for call in calls] == [
+        "first",
+        "first",
+        "first",
+        "second",
+    ]
 
 
 @pytest.mark.parametrize(
@@ -916,7 +1191,10 @@ def _make_panel_service(ws, cfg=None, admin_session=None):
         session_factory=lambda: session,
     )
     t = HTTPTransport(
-        cfg.api_base_url, cfg.client_api_key, sleep=_noop, session_factory=lambda: session
+        cfg.api_base_url,
+        cfg.client_api_key,
+        sleep=_no_retry_sleep,
+        session_factory=lambda: session,
     )
     client = Grok2APIClient(t)
     sender = DeliveryAdapter(ws)

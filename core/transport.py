@@ -28,7 +28,7 @@ from typing import TypeVar
 import aiohttp
 
 from .errors import APIError, ConfigurationError, PluginError, ProtocolError
-from .observability import safe_log
+from .observability import record_task_attempt, safe_log
 
 logger = logging.getLogger("astrbot_plugin_grok2api_sub.transport")
 
@@ -189,7 +189,6 @@ class HTTPTransport:
         """Log one request attempt's non-sensitive outcome."""
         elapsed_ms = int((time.monotonic() - started_at) * 1000) if started_at is not None else 0
         log_path = path if path.startswith("/v1/") or path == "/v1" else "[invalid_path]"
-        level = logging.WARNING if retryable or status == 0 or status >= 400 else logging.DEBUG
         fields: dict[str, object] = {
             "operation": operation,
             "method": method,
@@ -201,7 +200,7 @@ class HTTPTransport:
         }
         if bytes is not None:
             fields["bytes"] = bytes
-        safe_log(level, "http_request_completed", **fields)
+        safe_log(logging.DEBUG, "http_request_completed", **fields)
 
     async def close(self) -> None:
         self._closed = True
@@ -239,6 +238,7 @@ class HTTPTransport:
                 raise ConfigurationError("插件已关闭", code="closed")
             session = self._session_for()
             started_at = time.monotonic()
+            record_task_attempt(operation)
             safe_log(
                 logging.DEBUG,
                 "http_request_started",
@@ -347,10 +347,10 @@ class HTTPTransport:
         # model fallback codes are the only bytes we keep from the error body
         upstream_code = await _extract_safe_error_code(resp)
         if upstream_code == "model_not_found":
-            return APIError(status, upstream_code, "搜索模型不存在", retryable=True)
+            return APIError(status, upstream_code, "请求模型不存在", retryable=True)
         if upstream_code == "model_not_allowed":
             return APIError(
-                status, upstream_code, "当前 Client Key 无权使用该搜索模型", retryable=True
+                status, upstream_code, "当前 Client Key 无权使用该请求模型", retryable=True
             )
         if status in (401, 403):
             return APIError(status, "auth_error", "Client Key 无效或权限不足", retryable=True)
@@ -394,6 +394,7 @@ class HTTPTransport:
             session = self._session_for()
             written = 0
             started_at = time.monotonic()
+            record_task_attempt("download")
             safe_log(
                 logging.DEBUG,
                 "http_request_started",

@@ -42,7 +42,7 @@ Schema 顶层只有 4 个 `object` 分组：`connection_settings`、`capability_
 | `image_response_format` | string | `b64_json` | `b64_json`、`url`；无论哪种都落盘后发送 |
 | `send_media_progress` | bool | `true` | 生图、改图、视频在任务锁取得后各发一次尽力而为的进度提示；提示发送失败不取消任务 |
 
-启用 `extract` 或 `enhance` 后，处理成功且字段校验完成的最终请求 JSON 会写入本地 `prompt_processing_resolved` 日志，供管理员核对提示词与参数质量。该记录不会发送给聊天用户；`off` 模式、失败输出和未经校验的模型原文不会记录。Client Key、Bearer/JWT、密码/secret、代理 userinfo 与 Base64 仍会脱敏。参考图不会把消息图片、data URL 或显式 URL 传给文本模型；模型只接收“是否存在参考图”的布尔上下文。开启 `disable_prompt_processing_with_reference_image` 后，有参考图的请求直接使用 `off` 模式；消息或回复中的视频参考图会在处理器没有给出比例时自动匹配最近支持比例，显式 URL 不下载、不识别尺寸。
+启用 `extract` 或 `enhance` 后，处理成功且字段校验完成的最终请求 JSON 会写入 DEBUG 级别的本地 `prompt_processing_resolved` 日志，供管理员核对提示词与参数质量。该记录不会发送给聊天用户；`off` 模式、失败输出和未经校验的模型原文不会记录。Client Key、Bearer/JWT、密码/secret、代理 userinfo 与 Base64 仍会脱敏。参考图不会把消息图片、data URL 或显式 URL 传给文本模型；模型只接收“是否存在参考图”的布尔上下文。开启 `disable_prompt_processing_with_reference_image` 后，有参考图的请求直接使用 `off` 模式；消息或回复中的视频参考图会在处理器没有给出比例时自动匹配最近支持比例，显式 URL 不下载、不识别尺寸。
 
 ## 访问控制（access_settings）
 
@@ -64,7 +64,7 @@ Schema 顶层只有 4 个 `object` 分组：`connection_settings`、`capability_
 | `video_poll_timeout_seconds` | int | `30` | 1–600；每次视频状态查询的整体超时 |
 | `video_poll_interval_seconds` | int | `3` | 1–30 |
 | `download_timeout_seconds` | int | `300` | 30–1800 |
-| `prompt_processing_timeout_seconds` | int | `15` | 1–60；整理/优化模型超时、调用失败或输出非 JSON 时，本次媒体生成终止，不会静默改为直传 |
+| `prompt_processing_timeout_seconds` | int | `15` | 1–60；提示词整理/优化或搜索结果整理模型超时、调用失败或输出非 JSON 时，媒体生成终止；`/g2搜索` 则回退发送原始结果 |
 | `max_input_image_mb` | int | `12` | 1–24，为 32 MiB JSON 请求体留 Base64 膨胀空间 |
 | `max_image_download_mb` | int | `25` | 1–100 |
 | `max_video_download_mb` | int | `190` | 1–200，低于 QQ Official 200 MiB 硬上限 |
@@ -97,6 +97,8 @@ Schema 顶层只有 4 个 `object` 分组：`connection_settings`、`capability_
 - 仅开启 X 搜索而候选全为 `grok-chat-*` 时同样明确禁用搜索能力；chat 模型不会收到没有可用工具的请求。
 - 每次尝试只使用该操作自己的单次超时。视频等待不再设置插件侧总时长，而是以 `video_poll_timeout_seconds`、`video_poll_interval_seconds` 和 `video_retry_count` 持续轮询远端终态。
 - 远端 HTTP、网络、JSON 解析和远端响应结构错误默认都可重试，包含生成 POST；这可能重复生成或重复扣费。需要避免某类错误重试时，加入 `retry_excluded_errors`。本地输入校验、媒体大小限制、路径校验和平台消息发送不会被自动重放。
+- INFO 日志只保留多行任务开始和完成/失败块。搜索、图片和视频任务完整记录原始提示词及实际请求提示词；任务结束记录实际模型、候选回退、远端重试、结果和耗时。内部 HTTP、管理面请求、轮询和模型尝试写入 DEBUG。`trace_id` 不再使用；参考图 URL、媒体 URL、请求 ID、上游响应正文和凭据不会写入任务日志。
+- 单个候选先完成 `retry_count + 1` 次请求才进入下一候选。媒体仅在 `model_not_found` 或 `model_not_allowed` 时回退；搜索额外在 `search_not_performed` 时回退。排除这些错误码只会缩短当前候选的重试，不会阻止回退。
 
 ## 安全约束
 

@@ -176,7 +176,7 @@ class AdminClient:
             raise
         except Exception as exc:  # noqa: BLE001
             safe_log(
-                logging.WARNING,
+                logging.DEBUG,
                 "admin_request_failed",
                 operation="admin_request",
                 method=method,
@@ -188,7 +188,7 @@ class AdminClient:
             )
             raise
         safe_log(
-            logging.DEBUG if 200 <= status < 300 else logging.WARNING,
+            logging.DEBUG,
             "admin_request_completed",
             operation="admin_request",
             method=method,
@@ -243,7 +243,7 @@ class AdminClient:
     async def _recover_session(self) -> str:
         """Refresh once, or re-login if the refresh is rejected. Fatal on failure."""
         safe_log(
-            logging.INFO,
+            logging.DEBUG,
             "admin_session_recovery_started",
             operation="admin_request",
             result_status="refresh" if self._refresh_token is not None else "login",
@@ -260,7 +260,7 @@ class AdminClient:
                 self._store_tokens(data, error_code="admin_session_expired")
                 assert self._access_token is not None
                 safe_log(
-                    logging.INFO,
+                    logging.DEBUG,
                     "admin_session_recovery_completed",
                     operation="admin_request",
                     result_status="refresh",
@@ -271,7 +271,7 @@ class AdminClient:
         await self._login()
         assert self._access_token is not None
         safe_log(
-            logging.INFO,
+            logging.DEBUG,
             "admin_session_recovery_completed",
             operation="admin_request",
             result_status="login",

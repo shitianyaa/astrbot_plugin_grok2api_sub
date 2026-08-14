@@ -13,7 +13,7 @@ import datetime as _dt
 import logging
 import time
 import uuid
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -28,8 +28,16 @@ from .errors import (
     SearchNotPerformedError,
 )
 from .media import MediaWorkspace, closest_aspect_ratio
-from .models import ImageResult, SearchResult
-from .observability import operation_scope, safe_log
+from .models import SearchResult
+from .observability import (
+    operation_scope,
+    record_task_model,
+    safe_log,
+    safe_task_log,
+    task_attempts,
+    task_candidate_attempts,
+    task_model,
+)
 from .panel_models import (
     ModelSection,
     PanelReport,
@@ -77,6 +85,13 @@ _SAFE_ROW_KEYS = (
 def _row_subset(item: dict) -> dict:
     """Retain only the approved per-row fields; discard emails/keys/request IDs."""
     return {k: item.get(k) for k in _SAFE_ROW_KEYS}
+
+
+@dataclass(frozen=True, slots=True)
+class _ModelFallbackOutcome:
+    value: Any
+    model: str
+    candidate_attempts: int
 
 
 class GrokService:
@@ -150,7 +165,7 @@ class GrokService:
             raise
         except PluginError as exc:
             safe_log(
-                logging.WARNING,
+                logging.DEBUG,
                 "media_progress_delivery_failed",
                 operation=operation,
                 error_code=exc.code,
@@ -158,7 +173,7 @@ class GrokService:
             )
         except Exception as exc:  # noqa: BLE001
             safe_log(
-                logging.WARNING,
+                logging.DEBUG,
                 "media_progress_delivery_failed",
                 operation=operation,
                 error_code="progress_delivery_failed",
@@ -170,61 +185,98 @@ class GrokService:
         return int((time.monotonic() - started_at) * 1000)
 
     def _log_media_failure(
-        self, operation: str, started_at: float, stage: str, exc: Exception
+        self,
+        operation: str,
+        started_at: float,
+        stage: str,
+        exc: Exception,
+        *,
+        source_prompt: str,
+        request_prompt: str = "",
+        transport_operation: str = "",
     ) -> None:
         fields: dict[str, object] = {
             "operation": operation,
+            "source_prompt": source_prompt,
+            "request_prompt": request_prompt,
             "stage": stage,
             "elapsed_ms": self._elapsed_ms(started_at),
-            "exception_type": type(exc).__name__,
+            "model": task_model(operation),
+            "candidate_fallbacks": max(task_candidate_attempts(operation) - 1, 0),
         }
+        if transport_operation:
+            fields["retry_count"] = max(
+                task_attempts(transport_operation) - task_candidate_attempts(operation), 0
+            )
         if isinstance(exc, PluginError):
             fields["error_code"] = exc.code
-            fields["ambiguous"] = exc.ambiguous
+            if isinstance(exc, APIError):
+                fields["status"] = exc.status
         else:
             fields["error_code"] = "media_job_failed"
-        safe_log(logging.WARNING, "media_job_failed", **fields)
+        safe_task_log(logging.WARNING, "请求失败", **fields)
+
+    @staticmethod
+    def _effective_prompt_mode(config: PluginConfig, *, has_reference_image: bool) -> str:
+        if has_reference_image and config.prompt_disable_processing_with_reference_image:
+            return "off"
+        return config.prompt_processing_mode
 
     # -- search ------------------------------------------------------------
     async def search(self, event: Any, query: str, *, required: bool = True) -> SearchResult:
         with operation_scope("search"):
             started_at = time.monotonic()
-            safe_log(
-                logging.INFO,
-                "search_started",
-                operation="search",
-                query_chars=len(query),
-                candidate_count=len(self._config.search_models),
-            )
             try:
                 self._preflight(event, "search")
+                safe_task_log(
+                    logging.INFO,
+                    "请求开始",
+                    operation="search",
+                    source_prompt=query,
+                    request_prompt=query,
+                    candidate_models=", ".join(self._config.search_models),
+                )
                 async with self._search_sem:
-                    result = await self._search_with_fallback(query, required=required)
+                    outcome = await self._search_with_fallback(query, required=required)
             except asyncio.CancelledError:
                 raise
             except Exception as exc:  # noqa: BLE001
-                safe_log(
+                fields: dict[str, object] = {
+                    "operation": "search",
+                    "source_prompt": query,
+                    "request_prompt": query,
+                    "model": task_model("search"),
+                    "candidate_fallbacks": max(task_candidate_attempts("search") - 1, 0),
+                    "retry_count": max(
+                        task_attempts("search") - task_candidate_attempts("search"), 0
+                    ),
+                    "stage": "search",
+                    "elapsed_ms": self._elapsed_ms(started_at),
+                    "error_code": exc.code if isinstance(exc, PluginError) else "unknown",
+                }
+                if isinstance(exc, APIError):
+                    fields["status"] = exc.status
+                safe_task_log(
                     logging.WARNING,
-                    "search_failed",
-                    operation="search",
-                    elapsed_ms=self._elapsed_ms(started_at),
-                    error_code=exc.code if isinstance(exc, PluginError) else "unknown",
-                    exception_type=type(exc).__name__,
+                    "请求失败",
+                    **fields,
                 )
                 raise
-            safe_log(
+            result = outcome.value
+            safe_task_log(
                 logging.INFO,
-                "search_completed",
+                "请求完成",
                 operation="search",
-                model=result.model,
+                model=outcome.model,
+                result="已生成搜索结果",
+                candidate_fallbacks=max(outcome.candidate_attempts - 1, 0),
+                retry_count=max(task_attempts("search") - outcome.candidate_attempts, 0),
                 elapsed_ms=self._elapsed_ms(started_at),
                 source_count=len(result.sources),
-                text_chars=len(result.text),
-                result_status=result.status,
             )
             return result
 
-    async def _search_with_fallback(self, query: str, *, required: bool) -> SearchResult:
+    async def _search_with_fallback(self, query: str, *, required: bool) -> _ModelFallbackOutcome:
         """Try configured search models in user order with strict fallback.
 
         Every remote result first uses the current model's retry policy. After
@@ -238,7 +290,7 @@ class GrokService:
             catalog = await self._client.list_models()
         except PluginError as exc:
             safe_log(
-                logging.WARNING,
+                logging.DEBUG,
                 "model_catalog_failed",
                 error_code=exc.code,
                 operation="search",
@@ -278,6 +330,7 @@ class GrokService:
                 self._log_model_skipped(model, index, "search_tool_unsupported")
                 continue
             try:
+                record_task_model("search", model)
                 result = await self._client.search(
                     query,
                     model=model,
@@ -290,7 +343,11 @@ class GrokService:
                     required=required,
                 )
                 self._log_model_selected(model, index)
-                return result
+                return _ModelFallbackOutcome(
+                    value=result,
+                    model=model,
+                    candidate_attempts=task_candidate_attempts("search"),
+                )
             except APIError as exc:
                 if exc.code not in {"model_not_found", "model_not_allowed"}:
                     raise
@@ -301,7 +358,7 @@ class GrokService:
                 continue
 
         safe_log(
-            logging.WARNING,
+            logging.DEBUG,
             "search_models_exhausted",
             candidate_count=len(configured),
             operation="search",
@@ -319,7 +376,7 @@ class GrokService:
 
     def _log_model_skipped(self, model: str, index: int, reason: str) -> None:
         safe_log(
-            logging.WARNING,
+            logging.DEBUG,
             "search_model_skipped",
             model=model,
             model_index=index,
@@ -344,18 +401,51 @@ class GrokService:
             show_sources=self._config.show_search_sources,
         )
 
+    async def rewrite_search_result(
+        self, event: Any, query: str, result: SearchResult
+    ) -> SearchResult:
+        """Rewrite manual-search text, retaining the raw result on any failure.
+
+        ``search()`` deliberately does not call this method: the registered LLM
+        Tool must keep returning its original structured result for the main
+        conversation model to use directly.
+        """
+        processor = self._prompt_processor
+        if processor is None or not result.text.strip():
+            return result
+        try:
+            answer = await processor.rewrite_search(
+                str(getattr(event, "unified_msg_origin", "")),
+                question=query,
+                search_text=result.text,
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            safe_log(
+                logging.DEBUG,
+                "search_rewrite_failed",
+                operation="search",
+                error_code=exc.code if isinstance(exc, PluginError) else "search_rewrite_failed",
+                exception_type=type(exc).__name__,
+                text_chars=len(result.text),
+            )
+            return result
+        return replace(result, text=answer)
+
     # -- image generation with model fallback -----------------------------
     async def _generate_image_with_fallback(
         self,
         request: Any,
         models: tuple[str, ...],
         started_at: float,
-    ) -> tuple[ImageResult, ...]:
+    ) -> _ModelFallbackOutcome:
         """Try image models in order, advancing on model_not_found/allowed."""
         if not models:
             raise PluginError("未配置生图模型", code="capability_unavailable")
         for index, model in enumerate(models):
             try:
+                record_task_model("image_generate", model)
                 safe_log(
                     logging.DEBUG,
                     "media_job_model_attempt",
@@ -363,7 +453,7 @@ class GrokService:
                     model=model,
                     model_index=index,
                 )
-                return await self._client.generate_images(
+                results = await self._client.generate_images(
                     request.prompt,
                     model=model,
                     count=1,
@@ -373,10 +463,15 @@ class GrokService:
                     api_base_url=self._config.api_base_url,
                     max_download_bytes=self._config.max_image_download_mb * 1024 * 1024,
                 )
+                return _ModelFallbackOutcome(
+                    value=results,
+                    model=model,
+                    candidate_attempts=task_candidate_attempts("image_generate"),
+                )
             except APIError as exc:
                 if exc.code in {"model_not_found", "model_not_allowed"}:
                     safe_log(
-                        logging.WARNING,
+                        logging.DEBUG,
                         "media_job_model_skipped",
                         operation="image_generate",
                         model=model,
@@ -393,12 +488,13 @@ class GrokService:
         data_url: str,
         models: tuple[str, ...],
         started_at: float,
-    ) -> tuple[ImageResult, ...]:
+    ) -> _ModelFallbackOutcome:
         """Try image edit models in order, advancing on model_not_found/allowed."""
         if not models:
             raise PluginError("未配置改图模型", code="capability_unavailable")
         for index, model in enumerate(models):
             try:
+                record_task_model("image_edit", model)
                 safe_log(
                     logging.DEBUG,
                     "media_job_model_attempt",
@@ -406,7 +502,7 @@ class GrokService:
                     model=model,
                     model_index=index,
                 )
-                return await self._client.edit_image(
+                results = await self._client.edit_image(
                     prompt,
                     data_url,
                     model=model,
@@ -414,10 +510,15 @@ class GrokService:
                     api_base_url=self._config.api_base_url,
                     max_download_bytes=self._config.max_image_download_mb * 1024 * 1024,
                 )
+                return _ModelFallbackOutcome(
+                    value=results,
+                    model=model,
+                    candidate_attempts=task_candidate_attempts("image_edit"),
+                )
             except APIError as exc:
                 if exc.code in {"model_not_found", "model_not_allowed"}:
                     safe_log(
-                        logging.WARNING,
+                        logging.DEBUG,
                         "media_job_model_skipped",
                         operation="image_edit",
                         model=model,
@@ -434,12 +535,13 @@ class GrokService:
         image_data_url: str,
         models: tuple[str, ...],
         started_at: float,
-    ) -> str:
+    ) -> _ModelFallbackOutcome:
         """Try video models in order, advancing on model_not_found/allowed."""
         if not models:
             raise PluginError("未配置视频模型", code="capability_unavailable")
         for index, model in enumerate(models):
             try:
+                record_task_model("video_generate", model)
                 safe_log(
                     logging.DEBUG,
                     "media_job_model_attempt",
@@ -447,7 +549,7 @@ class GrokService:
                     model=model,
                     model_index=index,
                 )
-                return await self._client.create_video(
+                request_id = await self._client.create_video(
                     request.prompt,
                     model=model,
                     duration=request.duration,
@@ -455,10 +557,15 @@ class GrokService:
                     resolution=request.resolution,
                     image_data_url=image_data_url,
                 )
+                return _ModelFallbackOutcome(
+                    value=request_id,
+                    model=model,
+                    candidate_attempts=task_candidate_attempts("video_generate"),
+                )
             except APIError as exc:
                 if exc.code in {"model_not_found", "model_not_allowed"}:
                     safe_log(
-                        logging.WARNING,
+                        logging.DEBUG,
                         "media_job_model_skipped",
                         operation="video_generate",
                         model=model,
@@ -473,21 +580,51 @@ class GrokService:
     async def deliver_generated_images(self, event: Any, prompt: str) -> None:
         operation = "image_generate"
         with operation_scope(operation):
-            self._preflight(event, "image")
+            preflight_started_at = time.monotonic()
+            try:
+                self._preflight(event, "image")
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                self._log_media_failure(
+                    operation,
+                    preflight_started_at,
+                    "preflight",
+                    exc,
+                    source_prompt=prompt,
+                )
+                raise
             async with self._media_sem:
-                lock = self._session_guard(event)
+                try:
+                    lock = self._session_guard(event)
+                except Exception as exc:
+                    self._log_media_failure(
+                        operation,
+                        preflight_started_at,
+                        "session_lock",
+                        exc,
+                        source_prompt=prompt,
+                    )
+                    raise
                 await lock.acquire()
                 paths: list[Path] = []
                 started_at = time.monotonic()
                 stage = "prompt_processing"
+                request_prompt = ""
                 try:
                     request = await self._resolve_image_request(prompt)
-                    safe_log(
+                    request_prompt = request.prompt
+                    safe_task_log(
                         logging.INFO,
-                        "media_job_started",
+                        "请求开始",
                         operation=operation,
-                        model=self._config.image_models[0] if self._config.image_models else "",
-                        media_count=1,
+                        source_prompt=prompt,
+                        request_prompt=request_prompt,
+                        prompt_mode=self._effective_prompt_mode(
+                            self._config, has_reference_image=False
+                        ),
+                        reference_image="无",
+                        candidate_models=", ".join(self._config.image_models),
                     )
                     await self._send_media_progress(
                         event,
@@ -495,11 +632,12 @@ class GrokService:
                         "正在生成图片，请稍候…",
                     )
                     stage = "generate"
-                    results = await self._generate_image_with_fallback(
+                    outcome = await self._generate_image_with_fallback(
                         request,
                         self._config.image_models,
                         started_at,
                     )
+                    results = outcome.value
                     for result in results:
                         if result.content:
                             paths.append(await self._workspace.save_image(result))
@@ -515,11 +653,15 @@ class GrokService:
                     stage = "send"
                     await self._sender.send_images(event, paths)
                     await self._finish(paths, success=True)
-                    safe_log(
+                    safe_task_log(
                         logging.INFO,
-                        "media_job_completed",
+                        "请求完成",
                         operation=operation,
+                        model=outcome.model,
+                        result="图片生成并发送成功",
                         media_count=len(paths),
+                        candidate_fallbacks=max(outcome.candidate_attempts - 1, 0),
+                        retry_count=max(task_attempts("image") - outcome.candidate_attempts, 0),
                         elapsed_ms=self._elapsed_ms(started_at),
                     )
                 except asyncio.CancelledError:
@@ -527,7 +669,15 @@ class GrokService:
                     raise
                 except Exception as exc:
                     await self._finish(paths, success=False)
-                    self._log_media_failure(operation, started_at, stage, exc)
+                    self._log_media_failure(
+                        operation,
+                        started_at,
+                        stage,
+                        exc,
+                        source_prompt=prompt,
+                        request_prompt=request_prompt,
+                        transport_operation="image",
+                    )
                     raise
                 finally:
                     self._release_session_lock(event, lock)
@@ -535,25 +685,53 @@ class GrokService:
     async def deliver_edited_image(self, event: Any, prompt: str) -> None:
         operation = "image_edit"
         with operation_scope(operation):
-            self._preflight(event, "image_edit")
+            preflight_started_at = time.monotonic()
+            try:
+                self._preflight(event, "image_edit")
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                self._log_media_failure(
+                    operation,
+                    preflight_started_at,
+                    "preflight",
+                    exc,
+                    source_prompt=prompt,
+                )
+                raise
             async with self._media_sem:
-                lock = self._session_guard(event)
+                try:
+                    lock = self._session_guard(event)
+                except Exception as exc:
+                    self._log_media_failure(
+                        operation,
+                        preflight_started_at,
+                        "session_lock",
+                        exc,
+                        source_prompt=prompt,
+                    )
+                    raise
                 await lock.acquire()
                 paths: list[Path] = []
                 started_at = time.monotonic()
                 stage = "input"
+                request_prompt = ""
                 try:
                     data_url = await self._find_input_image(event)
                     stage = "prompt_processing"
                     resolved_prompt = await self._resolve_image_edit_prompt(prompt)
-                    safe_log(
+                    request_prompt = resolved_prompt
+                    safe_task_log(
                         logging.INFO,
-                        "media_job_started",
+                        "请求开始",
                         operation=operation,
-                        model=self._config.image_edit_models[0]
-                        if self._config.image_edit_models
-                        else "",
-                        media_count=1,
+                        source_prompt=prompt,
+                        request_prompt=request_prompt,
+                        prompt_mode=self._effective_prompt_mode(
+                            self._config, has_reference_image=True
+                        ),
+                        reference_image="有",
+                        candidate_models=", ".join(self._config.image_edit_models),
                     )
                     await self._send_media_progress(
                         event,
@@ -561,12 +739,13 @@ class GrokService:
                         self._media_progress_text(operation),
                     )
                     stage = "generate"
-                    results = await self._edit_image_with_fallback(
+                    outcome = await self._edit_image_with_fallback(
                         resolved_prompt,
                         data_url,
                         self._config.image_edit_models,
                         started_at,
                     )
+                    results = outcome.value
                     for result in results[:1]:
                         if result.content:
                             paths.append(await self._workspace.save_image(result))
@@ -582,11 +761,17 @@ class GrokService:
                     stage = "send"
                     await self._sender.send_images(event, paths)
                     await self._finish(paths, success=True)
-                    safe_log(
+                    safe_task_log(
                         logging.INFO,
-                        "media_job_completed",
+                        "请求完成",
                         operation=operation,
+                        model=outcome.model,
+                        result="图片编辑并发送成功",
                         media_count=len(paths),
+                        candidate_fallbacks=max(outcome.candidate_attempts - 1, 0),
+                        retry_count=max(
+                            task_attempts("image_edit") - outcome.candidate_attempts, 0
+                        ),
                         elapsed_ms=self._elapsed_ms(started_at),
                     )
                 except asyncio.CancelledError:
@@ -594,7 +779,15 @@ class GrokService:
                     raise
                 except Exception as exc:
                     await self._finish(paths, success=False)
-                    self._log_media_failure(operation, started_at, stage, exc)
+                    self._log_media_failure(
+                        operation,
+                        started_at,
+                        stage,
+                        exc,
+                        source_prompt=prompt,
+                        request_prompt=request_prompt,
+                        transport_operation="image_edit",
+                    )
                     raise
                 finally:
                     self._release_session_lock(event, lock)
@@ -628,13 +821,37 @@ class GrokService:
     ) -> None:
         operation = "video_generate"
         with operation_scope(operation):
-            self._preflight(event, "video")
+            preflight_started_at = time.monotonic()
+            try:
+                self._preflight(event, "video")
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                self._log_media_failure(
+                    operation,
+                    preflight_started_at,
+                    "preflight",
+                    exc,
+                    source_prompt=prompt,
+                )
+                raise
             async with self._media_sem:
-                lock = self._session_guard(event)
+                try:
+                    lock = self._session_guard(event)
+                except Exception as exc:
+                    self._log_media_failure(
+                        operation,
+                        preflight_started_at,
+                        "session_lock",
+                        exc,
+                        source_prompt=prompt,
+                    )
+                    raise
                 await lock.acquire()
                 paths: list[Path] = []
                 started_at = time.monotonic()
                 stage = "input"
+                request_prompt = ""
                 try:
                     (
                         image_data_url,
@@ -646,12 +863,19 @@ class GrokService:
                         has_reference_image=bool(image_data_url),
                         reference_aspect_ratio=reference_aspect_ratio,
                     )
-                    safe_log(
+                    request_prompt = request.prompt
+                    safe_task_log(
                         logging.INFO,
-                        "media_job_started",
+                        "请求开始",
                         operation=operation,
-                        model=self._config.video_models[0] if self._config.video_models else "",
-                        media_count=1,
+                        source_prompt=prompt,
+                        request_prompt=request_prompt,
+                        prompt_mode=self._effective_prompt_mode(
+                            self._config, has_reference_image=bool(image_data_url)
+                        ),
+                        reference_image="有" if image_data_url else "无",
+                        reference_aspect_ratio=reference_aspect_ratio,
+                        candidate_models=", ".join(self._config.video_models),
                     )
                     await self._send_media_progress(
                         event,
@@ -659,12 +883,13 @@ class GrokService:
                         self._media_progress_text(operation),
                     )
                     stage = "generate"
-                    request_id = await self._create_video_with_fallback(
+                    outcome = await self._create_video_with_fallback(
                         request,
                         image_data_url,
                         self._config.video_models,
                         started_at,
                     )
+                    request_id = outcome.value
                     safe_log(
                         logging.DEBUG,
                         "video_created",
@@ -686,12 +911,17 @@ class GrokService:
                     stage = "send"
                     await self._sender.send_video(event, dest)
                     await self._finish(paths, success=True)
-                    safe_log(
+                    safe_task_log(
                         logging.INFO,
-                        "media_job_completed",
+                        "请求完成",
                         operation=operation,
+                        model=outcome.model,
+                        result="视频生成并发送成功",
                         media_count=1,
-                        request_id=request_id,
+                        candidate_fallbacks=max(outcome.candidate_attempts - 1, 0),
+                        retry_count=max(
+                            task_attempts("video_create") - outcome.candidate_attempts, 0
+                        ),
                         elapsed_ms=self._elapsed_ms(started_at),
                     )
                 except asyncio.CancelledError:
@@ -699,7 +929,15 @@ class GrokService:
                     raise
                 except Exception as exc:
                     await self._finish(paths, success=False)
-                    self._log_media_failure(operation, started_at, stage, exc)
+                    self._log_media_failure(
+                        operation,
+                        started_at,
+                        stage,
+                        exc,
+                        source_prompt=prompt,
+                        request_prompt=request_prompt,
+                        transport_operation="video_create",
+                    )
                     raise
                 finally:
                     self._release_session_lock(event, lock)
@@ -780,7 +1018,7 @@ class GrokService:
         if not cfg.panel_sections:
             raise PluginError("未启用任何面板数据块", code="no_panel_section")
 
-    async def build_panel(self, event: Any) -> PanelReport:
+    async def build_panel(self, event: Any, *, log_task: bool = True) -> PanelReport:
         """Collect the selected blocks for one period, cached for 60 seconds.
 
         The cache is checked before authentication so a repeat request inside the
@@ -789,42 +1027,78 @@ class GrokService:
         """
         with operation_scope("panel_build"):
             started_at = time.monotonic()
-            self._panel_preflight()
+            try:
+                self._panel_preflight()
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                if log_task:
+                    safe_task_log(
+                        logging.WARNING,
+                        "请求失败",
+                        operation="panel_build",
+                        stage="preflight",
+                        error_code=exc.code
+                        if isinstance(exc, PluginError)
+                        else "panel_build_failed",
+                        elapsed_ms=self._elapsed_ms(started_at),
+                    )
+                raise
             admin = self._admin_client
             if admin is None:
-                raise PluginError("管理客户端未初始化", code="admin_client_unavailable")
+                exc = PluginError("管理客户端未初始化", code="admin_client_unavailable")
+                if log_task:
+                    safe_task_log(
+                        logging.WARNING,
+                        "请求失败",
+                        operation="panel_build",
+                        stage="preflight",
+                        error_code=exc.code,
+                        elapsed_ms=self._elapsed_ms(started_at),
+                    )
+                raise exc
             period = self._config.panel_period
             sections = self._config.panel_sections
             key = (period, sections)
-            safe_log(
-                logging.INFO,
-                "panel_build_started",
-                operation="panel_build",
-                section_count=len(sections),
-            )
-            cached = self._panel_cache.get(key)
-            if cached is not None and (time.monotonic() - cached.generated_at) < _PANEL_CACHE_TTL:
-                safe_log(
+            if log_task:
+                safe_task_log(
                     logging.INFO,
-                    "panel_build_completed",
+                    "请求开始",
                     operation="panel_build",
                     section_count=len(sections),
-                    result_status="cache",
-                    elapsed_ms=self._elapsed_ms(started_at),
                 )
+            cached = self._panel_cache.get(key)
+            if cached is not None and (time.monotonic() - cached.generated_at) < _PANEL_CACHE_TTL:
+                if log_task:
+                    safe_task_log(
+                        logging.INFO,
+                        "请求完成",
+                        operation="panel_build",
+                        section_count=len(sections),
+                        result="使用缓存",
+                        elapsed_ms=self._elapsed_ms(started_at),
+                    )
                 return replace(cached, cached=True)
             try:
                 report = await self._collect_panel(admin, period, sections)
             except Exception as exc:  # noqa: BLE001
-                safe_log(
-                    logging.WARNING,
-                    "panel_build_failed",
-                    operation="panel_build",
-                    section_count=len(sections),
-                    error_code=exc.code if isinstance(exc, PluginError) else "panel_build_failed",
-                    exception_type=type(exc).__name__,
-                    elapsed_ms=self._elapsed_ms(started_at),
-                )
+                fields: dict[str, object] = {
+                    "operation": "panel_build",
+                    "section_count": len(sections),
+                    "stage": "collect",
+                    "error_code": exc.code
+                    if isinstance(exc, PluginError)
+                    else "panel_build_failed",
+                    "elapsed_ms": self._elapsed_ms(started_at),
+                }
+                if isinstance(exc, APIError):
+                    fields["status"] = exc.status
+                if log_task:
+                    safe_task_log(
+                        logging.WARNING,
+                        "请求失败",
+                        **fields,
+                    )
                 raise
             if not report.errors and not (
                 (report.behavior is not None and report.behavior.truncated)
@@ -833,15 +1107,16 @@ class GrokService:
                 self._panel_cache[key] = report
             else:
                 self._panel_cache.pop(key, None)
-            safe_log(
-                logging.INFO,
-                "panel_build_completed",
-                operation="panel_build",
-                section_count=len(sections),
-                failed_count=len(report.errors),
-                result_status="partial" if report.errors else "fresh",
-                elapsed_ms=self._elapsed_ms(started_at),
-            )
+            if log_task:
+                safe_task_log(
+                    logging.INFO,
+                    "请求完成",
+                    operation="panel_build",
+                    section_count=len(sections),
+                    failed_count=len(report.errors),
+                    result="部分成功" if report.errors else "成功",
+                    elapsed_ms=self._elapsed_ms(started_at),
+                )
             return report
 
     async def _collect_panel(

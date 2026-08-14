@@ -129,7 +129,7 @@ async def test_request_log_records_network_failure(monkeypatch):
         "http_request_started",
         "http_request_completed",
     ]
-    assert [level for level, _name, _fields in events] == [logging.DEBUG, logging.WARNING]
+    assert [level for level, _name, _fields in events] == [logging.DEBUG, logging.DEBUG]
     _level, name, fields = events[1]
     assert name == "http_request_completed"
     assert fields["method"] == "GET"

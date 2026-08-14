@@ -80,14 +80,14 @@ class Grok2APISearchTool(FunctionTool[AstrAgentContext]):
         event = self._extract_event(context)
         with operation_scope("search_tool"):
             safe_log(
-                logging.INFO,
+                logging.DEBUG,
                 "search_tool_started",
                 operation="search_tool",
                 query_chars=len(query),
             )
             if not self.policy.allow():
                 safe_log(
-                    logging.WARNING,
+                    logging.DEBUG,
                     "search_tool_rejected",
                     operation="search_tool",
                     error_code="capability_unavailable",
@@ -95,7 +95,7 @@ class Grok2APISearchTool(FunctionTool[AstrAgentContext]):
                 return self._result(False, "", [], False, "搜索能力不可用")
             if not query:
                 safe_log(
-                    logging.WARNING,
+                    logging.DEBUG,
                     "search_tool_rejected",
                     operation="search_tool",
                     error_code="query_empty",
@@ -103,7 +103,7 @@ class Grok2APISearchTool(FunctionTool[AstrAgentContext]):
                 return self._result(False, "", [], False, "query_empty")
             if event is None:
                 safe_log(
-                    logging.WARNING,
+                    logging.DEBUG,
                     "search_tool_rejected",
                     operation="search_tool",
                     error_code="no_event_context",
@@ -113,7 +113,7 @@ class Grok2APISearchTool(FunctionTool[AstrAgentContext]):
                 result = await self.service.search(event, query, required=True)
             except PluginError as exc:
                 safe_log(
-                    logging.WARNING,
+                    logging.DEBUG,
                     "search_tool_failed",
                     operation="search_tool",
                     error_code=exc.code,
@@ -122,7 +122,7 @@ class Grok2APISearchTool(FunctionTool[AstrAgentContext]):
                 return self._result(False, "", [], False, exc.code)
             except Exception as exc:  # noqa: BLE001
                 safe_log(
-                    logging.WARNING,
+                    logging.DEBUG,
                     "search_tool_failed",
                     operation="search_tool",
                     error_code="search_error",
@@ -136,7 +136,7 @@ class Grok2APISearchTool(FunctionTool[AstrAgentContext]):
                     for source in result.sources[: self.policy.max_sources]
                 ]
             safe_log(
-                logging.INFO,
+                logging.DEBUG,
                 "search_tool_completed",
                 operation="search_tool",
                 source_count=len(sources),

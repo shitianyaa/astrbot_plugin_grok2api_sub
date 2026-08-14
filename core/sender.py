@@ -78,7 +78,7 @@ class DeliveryAdapter:
             raise
         except Exception as exc:  # noqa: BLE001
             safe_log(
-                logging.WARNING,
+                logging.DEBUG,
                 "delivery_unknown",
                 error_code="delivery_unknown",
                 exception_type=type(exc).__name__,

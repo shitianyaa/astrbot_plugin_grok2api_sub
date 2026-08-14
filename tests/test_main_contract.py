@@ -141,6 +141,33 @@ def test_imports_are_package_relative():
     assert "from astrbot.core.star.filter.command import GreedyStr" in src
 
 
+def test_g2_search_rewrites_manual_results_before_formatting():
+    src = _main_src()
+    idx = src.find("async def g2_search")
+    body = src[idx : idx + 700]
+
+    assert "query_text = validate_search_query(str(query))" in body
+    assert "service.search(event, query_text, required=True)" in body
+    assert "service.rewrite_search_result(event, query_text, result)" in body
+    assert "await self._send(event, service.format_search(result))" in body
+    assert body.index("service.search(") < body.index("service.rewrite_search_result(")
+    assert body.index("service.rewrite_search_result(") < body.index("service.format_search(")
+
+
+def test_search_rewrite_documentation_contract():
+    readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+    commands = (REPO_ROOT / "docs" / "commands.md").read_text(encoding="utf-8")
+    config = (REPO_ROOT / "docs" / "configuration.md").read_text(encoding="utf-8")
+    schema = (REPO_ROOT / "_conf_schema.json").read_text(encoding="utf-8")
+
+    assert "不调用 AstrBot 主 LLM 二次改写" not in readme
+    assert "不调用 AstrBot 主 LLM 二次改写" not in commands
+    assert "当前会话的 AstrBot 聊天模型" in readme
+    assert "整理失败时自动发送原始结果" in commands
+    assert "搜索结果整理模型超时" in config
+    assert "搜索结果整理模型超时" in schema
+
+
 def test_media_commands_use_shared_explicit_reference_image_parser():
     src = _main_src()
     assert "parse_image_command" not in src

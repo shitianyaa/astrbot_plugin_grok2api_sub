@@ -26,7 +26,7 @@
 
 ## 功能
 
-- 手动命令联网搜索（默认同时启用 Web 与 X 搜索）
+- 手动命令联网搜索（默认同时启用 Web 与 X 搜索，并由当前会话模型整理结果）
 - AstrBot 主模型按 Tool 描述自动决定是否联网（`grok2api_web_search`）
 - 文生图（1 到配置上限张）
 - 单图改图（当前消息或回复消息中的第一张图片）
@@ -88,6 +88,8 @@ python -m pip install -r requirements.txt
 
 使用 `extract` 或 `enhance` 时，插件会在严格校验成功后将最终发送给 grok2api 的提示词与媒体参数 JSON 写入本地 `prompt_processing_resolved` 日志，方便管理员检查处理质量；不会回复给用户。直传模式和失败输出不记录，凭据、Bearer/JWT、密码/secret、代理 userinfo 与 Base64 始终脱敏。
 
+**日志**：INFO 级别按多行块显示每个任务的开始和最终完成/失败。搜索、生图、改图、视频会完整记录原始提示词与实际请求提示词、候选模型、最终模型、回退次数、远端重试次数和耗时；面板只记录区块与推送汇总。HTTP、管理面子请求、模型尝试、轮询和提示词处理审计在 DEBUG 级别查看。日志不含 `trace_id`、参考图 URL、媒体 URL、请求 ID 或上游响应正文；凭据类片段仍强制脱敏。
+
 **访问控制（`access_settings`）**：`user_whitelist` / `user_blacklist` / `group_whitelist` / `group_blacklist`（空列表不限制）。
 
 **高级设置（`advanced_settings`）**：超时、并发、媒体大小、重试、`save_media` 等。
@@ -107,7 +109,7 @@ python -m pip install -r requirements.txt
 
 | 命令 | 别名 | 权限 | 行为 |
 |---|---|---|---|
-| `/g2搜索 <问题>` | `/grok2搜索` | 访问规则 | 强制执行全局已启用的 Web/X 搜索，直接返回远端正文和来源，不调用本地 LLM 改写 |
+| `/g2搜索 <问题>` | `/grok2搜索` | 访问规则 | 强制执行全局已启用的 Web/X 搜索；成功后用当前会话的 AstrBot 聊天模型整理正文，来源由插件本地追加，整理失败回退原始结果 |
 | `/g2生图 <提示词>` | `/grok2生图` | 访问规则 | 整段提示词直传或按模式处理，每次生成 1 张；图片默认 `1k` |
 | `/g2改图 <编辑要求>` | `/grok2改图` | 访问规则 | 编辑当前或回复消息中的第一张图片 |
 | `/g2视频 [--image-url <HTTPS_URL>] <提示词>` | `/grok2视频` | 访问规则 | 整段提示词直传或按模式处理；默认 `6s`、`720p`，消息/回复参考图会自动匹配最近支持比例，也可显式传入 URL 参考图 |
@@ -120,9 +122,10 @@ python -m pip install -r requirements.txt
 详见 [docs/commands.md](docs/commands.md)。
 
 `/g2搜索` 只使用 `enable_web_search`、`enable_x_search` 与
-`search_reasoning_effort` 的全局设置；两个搜索开关都关闭时会在请求前拒绝。它直接请求
-grok2api 并发送远端结果。`grok2api_web_search` 则是给 AstrBot 主模型选择的 Tool：主模型
-调用 Tool 后，仍会根据 Tool 结果组织最终回复。
+`search_reasoning_effort` 的全局设置；两个搜索开关都关闭时会在请求前拒绝。搜索成功后，插件
+使用当前会话的 AstrBot 聊天模型进行一次独立整理：不携带会话历史或工具，正文仅基于检索材料，
+来源仍由插件本地追加；整理失败时自动发送原始结果。`grok2api_web_search` 则是给 AstrBot 主模型
+选择的 Tool：主模型调用 Tool 后，仍会根据结构化 Tool 结果组织最终回复，不触发这次整理。
 
 `/g2面板` 默认经 AstrBot 已配置的 HTML-to-image 服务发送 1920x1080（16:9）图片，也可在插件配置中选择 720p 或 1440p；T2I 不可用时会自动
 退回纯文本。背景图每次发送都向 Lolicon 请求非 R18、排除 AI 的横向图片，并使用插件的全局代理和 TLS
@@ -134,6 +137,7 @@ grok2api 并发送远端结果。`grok2api_web_search` 则是给 AstrBot 主模�
 ## 限制与安全警告
 
 - 搜索、生图、改图和视频请求默认会按重试配置重放；生成 POST 也可能被重放，可能造成重复生成或重复扣费。需要避免某类错误重试时，在 `retry_excluded_errors` 中显式排除对应状态码或错误码。
+- 每个候选模型先用完所属重试次数再尝试下一候选。仅 `model_not_found`、`model_not_allowed` 会触发媒体候选回退；搜索还会在 `search_not_performed` 时回退。将这些错误码加入 `retry_excluded_errors` 会跳过当前候选的剩余重试，但仍会继续下一候选。
 - 图片/视频会立即下载到本地再发送；原结果 URL 不作为永久存档。
 - QQ Official 单次最多生成/发送 **4** 张图片；超出在调用 API 前拒绝。
 - 改图只接受当前消息或回复链中的图片，不接受任意本地路径、用户输入 URL 或 `file_id`。

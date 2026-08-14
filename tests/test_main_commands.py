@@ -138,7 +138,7 @@ async def test_scheduled_panel_deduplicates_same_target_in_one_minute(monkeypatc
             return ("onebot:group:123",)
 
     class Service:
-        async def build_panel(self, _event):
+        async def build_panel(self, _event, **_kwargs):
             return PanelReport(generated_at=0, period="7d", selected_sections=())
 
     plugin = object.__new__(plugin_module.Grok2APISubPlugin)
@@ -185,7 +185,7 @@ async def test_scheduled_panel_logs_actual_delivery_counts(monkeypatch, plugin_m
             return ("onebot:group:123", "onebot:group:456", "onebot:group:789")
 
     class Service:
-        async def build_panel(self, _event):
+        async def build_panel(self, _event, **_kwargs):
             return PanelReport(generated_at=0, period="7d", selected_sections=())
 
     events = []
@@ -204,14 +204,16 @@ async def test_scheduled_panel_logs_actual_delivery_counts(monkeypatch, plugin_m
 
     monkeypatch.setattr(plugin_module.dt, "datetime", FixedDateTime)
     monkeypatch.setattr(
-        plugin_module, "safe_log", lambda _level, name, **fields: events.append((name, fields))
+        plugin_module,
+        "safe_task_log",
+        lambda _level, title, **fields: events.append((title, fields)),
     )
     monkeypatch.setattr(plugin, "_render_panel_image", no_image)
     monkeypatch.setattr(plugin, "_send_panel_text_to_targets", partial_delivery)
 
     await plugin._run_scheduled_panel(trigger="cron")
 
-    completed = next(fields for name, fields in events if name == "panel_push_completed")
+    completed = next(fields for title, fields in events if title == "请求完成")
     assert completed["attempted_count"] == 3
     assert completed["delivered_count"] == 1
     assert completed["failed_count"] == 1

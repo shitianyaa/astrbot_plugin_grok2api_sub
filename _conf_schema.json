@@ -242,11 +242,11 @@
         "slider": { "min": 30, "max": 1800, "step": 30 }
       },
       "prompt_processing_timeout_seconds": {
-        "description": "提示词处理模型超时（秒）。",
+        "description": "提示词处理与搜索结果整理模型超时（秒）。",
         "type": "int",
         "default": 15,
         "slider": { "min": 1, "max": 60, "step": 1 },
-        "hint": "整理或优化模型超时、调用失败或返回非预期 JSON 时，本次媒体生成会终止。"
+        "hint": "整理或优化失败时媒体生成终止；/g2搜索 整理失败时发送原始搜索结果。"
       },
       "max_input_image_mb": {
         "description": "改图输入图片最大体积（MiB）。",

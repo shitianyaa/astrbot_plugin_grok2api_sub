@@ -27,7 +27,7 @@ from .core.command_parser import parse_media_command, validate_search_query
 from .core.config import PluginConfig
 from .core.errors import PluginError
 from .core.media import MediaWorkspace
-from .core.observability import operation_scope, safe_log
+from .core.observability import operation_scope, safe_log, safe_task_log
 from .core.panel_background import PanelBackgroundProvider
 from .core.panel_card import build_panel_card_data, panel_render_spec
 from .core.panel_renderer import format_panel_text
@@ -243,9 +243,9 @@ class Grok2APISubPlugin(Star):
             safe_log(logging.DEBUG, "command_started", operation="search")
             try:
                 service = self._require_service(event)
-                result = await service.search(
-                    event, validate_search_query(str(query)), required=True
-                )
+                query_text = validate_search_query(str(query))
+                result = await service.search(event, query_text, required=True)
+                result = await service.rewrite_search_result(event, query_text, result)
                 await self._send(event, service.format_search(result))
                 safe_log(logging.DEBUG, "command_completed", operation="search")
             except Exception as exc:  # noqa: BLE001
@@ -534,17 +534,16 @@ class Grok2APISubPlugin(Star):
                     if sent_at >= marker - 1
                 }
                 started = dt.datetime.now().timestamp()
-                safe_log(
+                safe_task_log(
                     logging.INFO,
-                    "panel_push_started",
+                    "请求开始",
                     operation="panel_push",
                     trigger=trigger,
-                    target_count=len(pending),
                     attempted_count=len(pending),
                 )
                 image_path: Path | None = None
                 try:
-                    report = await self._require_service(None).build_panel(None)
+                    report = await self._require_service(None).build_panel(None, log_task=False)
                     image_path = await self._render_panel_image(report)
                     if image_path is not None:
                         delivered, failed, unavailable = await self._send_panel_image_to_targets(
@@ -555,17 +554,17 @@ class Grok2APISubPlugin(Star):
                             pending, format_panel_text(report)
                         )
                 except Exception as exc:  # noqa: BLE001
-                    safe_log(
+                    safe_task_log(
                         logging.WARNING,
-                        "panel_push_failed",
+                        "请求失败",
                         operation="panel_push",
                         trigger=trigger,
-                        target_count=len(pending),
                         attempted_count=len(pending),
+                        stage="build_or_deliver",
                         error_code=exc.code
                         if isinstance(exc, PluginError)
                         else "panel_push_failed",
-                        exception_type=type(exc).__name__,
+                        elapsed_ms=int((dt.datetime.now().timestamp() - started) * 1000),
                     )
                     return
                 finally:
@@ -573,16 +572,16 @@ class Grok2APISubPlugin(Star):
                         await self._workspace_or_raise().finalize_delivery(
                             [image_path], success=False
                         )
-                safe_log(
+                safe_task_log(
                     logging.INFO,
-                    "panel_push_completed",
+                    "请求完成",
                     operation="panel_push",
                     trigger=trigger,
-                    target_count=len(pending),
                     attempted_count=len(pending),
                     delivered_count=delivered,
                     failed_count=failed,
                     unavailable_count=unavailable,
+                    result="推送完成",
                     elapsed_ms=int((dt.datetime.now().timestamp() - started) * 1000),
                 )
 
@@ -631,7 +630,7 @@ class Grok2APISubPlugin(Star):
             return self._workspace_or_raise().validate_delivery_path(destination)
         except Exception as exc:  # noqa: BLE001
             safe_log(
-                logging.WARNING,
+                logging.DEBUG,
                 "panel_render_failed",
                 operation="panel_render",
                 error_code="panel_render_failed",
@@ -665,7 +664,7 @@ class Grok2APISubPlugin(Star):
                 sent = await self.context.send_message(target, self._image_chain(image_path))
             except Exception as exc:  # noqa: BLE001
                 safe_log(
-                    logging.WARNING,
+                    logging.DEBUG,
                     "panel_target_send_failed",
                     operation="panel_push",
                     error_code="target_send_failed",
@@ -675,7 +674,7 @@ class Grok2APISubPlugin(Star):
                 continue
             if not sent:
                 safe_log(
-                    logging.WARNING,
+                    logging.DEBUG,
                     "panel_target_send_failed",
                     operation="panel_push",
                     error_code="target_not_available",
@@ -698,7 +697,7 @@ class Grok2APISubPlugin(Star):
                 sent = await self.context.send_message(target, self._text_chain(text))
             except Exception as exc:  # noqa: BLE001
                 safe_log(
-                    logging.WARNING,
+                    logging.DEBUG,
                     "panel_target_send_failed",
                     operation="panel_push",
                     error_code="target_send_failed",
@@ -708,7 +707,7 @@ class Grok2APISubPlugin(Star):
                 continue
             if not sent:
                 safe_log(
-                    logging.WARNING,
+                    logging.DEBUG,
                     "panel_target_send_failed",
                     operation="panel_push",
                     error_code="target_not_available",
@@ -727,7 +726,7 @@ class Grok2APISubPlugin(Star):
     @staticmethod
     def _log_panel_target_unavailable() -> None:
         safe_log(
-            logging.WARNING,
+            logging.DEBUG,
             "panel_target_send_failed",
             operation="panel_push",
             error_code="target_not_available",

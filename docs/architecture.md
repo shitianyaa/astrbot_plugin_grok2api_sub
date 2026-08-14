@@ -27,7 +27,7 @@ models.py / errors.py / parsers.py / observability.py -> 不依赖 AstrBot
 - 返回内容必须是无多余字段的 JSON。比例、图片 `1k/2k`、视频 `6/10/15` 秒和 `480p/720p/1080p` 逐项白名单校验；模型异常、工具调用响应、超时或格式错误都会在 grok2api 生成请求前终止本次命令。
 - `prompt_processing.disable_prompt_processing_with_reference_image=true` 时，检测到改图消息图片或视频消息图片/显式 URL 参考图会强制使用 `off`；因此不会调用文本模型，关闭时则完全遵循全局模式。
 - 消息或回复中的视频参考图在 Pillow 校验和归一化时保留宽高；若处理器没有返回比例，服务层以固定白名单选择最近比例。显式 URL 保持不透明转发，不下载、不读取尺寸。
-- `prompt_processor.py` 默认仅记录模式、字符数、耗时、稳定错误码和异常类型。用户启用 `extract` 或 `enhance` 且输出通过严格校验后，会额外写入一条本地 `prompt_processing_resolved`，包含实际发送的 `prompt` 与媒体参数 JSON，便于核对质量；自动填入的本地参考图比例会在该日志前合并。直传模式、原始输入、失败输出和 provider 标识不记录。该 JSON 会继续脱敏 Client Key、Bearer/JWT、密码/secret 赋值、代理 userinfo 与 Base64。
+- `prompt_processor.py` 的内部处理过程均在 DEBUG 记录。用户启用 `extract` 或 `enhance` 且输出通过严格校验后，会额外写入一条本地 `prompt_processing_resolved`，包含实际发送的 `prompt` 与媒体参数 JSON，便于核对质量；自动填入的本地参考图比例会在该日志前合并。直传模式、原始输入、失败输出和 provider 标识不记录。该 JSON 会继续脱敏 Client Key、Bearer/JWT、密码/secret 赋值、代理 userinfo 与 Base64。
 
 ## 管理面板安全域（`/g2面板`）
 
@@ -126,11 +126,8 @@ Provider；无论选哪个 Provider，插件都以完成态 `web_search_call` �
 
 - `send_media_progress` 默认开启。生图、改图、视频取得同会话任务锁后各发送一次进度提示；提示本身
   发送失败只记录安全日志，不取消已经接受的远端任务。
-- 每个媒体任务记录开始、完成或失败事件，字段限于操作类型、模型、数量、耗时、安全 request ID、
-  错误码和异常类型。日志不包含提示词、图片内容、完整 URL 或凭据。
-- INFO 仅记录一次任务开始、汇总完成或失败，以及已验证的提示词审计结果；通用命令包装、消息发送成功、
-  模型选择、提示词处理过程、视频轮询、面板渲染准备和每次 JSON HTTP/管理面成功请求均仅在 DEBUG 记录。
-  重试或失败仍以 WARN 记录，网络失败使用 `status=0`。日志事件名和字段名保持英文，不记录 URL、请求体或凭据。
+- 每个媒体任务使用多行块记录开始、完成或失败；开始块完整记录原始提示词与实际提示词，结束块记录最终模型、候选回退、远端重试、结果和耗时。日志不包含图片内容、参考图 URL、媒体 URL、请求 ID、上游响应正文或凭据。
+- INFO 仅记录任务开始、汇总完成或失败；通用命令包装、消息发送成功、模型选择、提示词处理过程、视频轮询、面板渲染准备和每次 HTTP/管理面请求均仅在 DEBUG 记录。任务失败以 WARN 的最终块记录，包含稳定错误码与最终 HTTP 状态（有时）；不使用 `trace_id`。
 
 ## 远端重试边界
 

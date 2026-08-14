@@ -6,7 +6,8 @@
 ## `/g2搜索 <问题>`（别名 `/grok2搜索`）
 
 - 强制执行全局已启用的 Web/X 联网搜索，返回正文和结构化来源；两个开关都关闭时在请求前拒绝。
-- 插件直接调用 grok2api 并发送远端结果，不调用 AstrBot 主 LLM 二次改写。
+- 搜索成功后，插件使用当前会话的 AstrBot 聊天模型进行一次独立整理；不携带会话历史或工具，正文仅基于检索材料，来源仍由插件本地追加。整理失败时自动发送原始结果。
+- `grok2api_web_search` Tool 保持返回结构化结果，交由调用它的 AstrBot 主模型组织回复，不触发这次整理。
 - 内容长度 1–4000 字符。
 - `show_search_sources=false` 或 `max_search_sources=0` 时不输出来源；否则最多 `max_search_sources` 条，格式 `标题 - URL`。
 
