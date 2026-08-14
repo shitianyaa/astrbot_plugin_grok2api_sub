@@ -1,4 +1,4 @@
-"""Lolicon background retrieval with an on-disk fallback cache.
+"""Multi-source horizontal background retrieval with an on-disk fallback cache.
 
 Pillow is used only to validate untrusted downloaded image bytes.
 The actual panel is rendered by AstrBot's configured HTML-to-image service.
@@ -23,7 +23,9 @@ import aiohttp
 from .errors import PluginError
 from .observability import safe_log
 
-_LOLICON_ENDPOINT = "https://api.lolicon.app/setu/v2"
+_WALLHAVEN_ENDPOINT = "https://wallhaven.cc/api/v1/search"
+_LOLIAPI_ENDPOINT = "https://www.loliapi.com/acg/pc/"
+_ALCY_ENDPOINT = "https://t.alcy.cc/pc/"
 _MAX_PIXELS = 40_000_000
 
 
@@ -71,7 +73,7 @@ class PanelBackgroundProvider:
                 cached = await asyncio.to_thread(self._read_cache)
                 if cached is not None:
                     safe_log(
-                        logging.WARNING,
+                        logging.DEBUG,
                         "panel_background_fallback",
                         operation="panel_render",
                         background_source="cache",
@@ -79,7 +81,7 @@ class PanelBackgroundProvider:
                     )
                     return PanelBackground(self._as_data_url(cached), "cache")
                 safe_log(
-                    logging.WARNING,
+                    logging.DEBUG,
                     "panel_background_fallback",
                     operation="panel_render",
                     background_source="default",
@@ -93,18 +95,49 @@ class PanelBackgroundProvider:
             self._session = None
 
     async def _refresh(self, tags: tuple[str, ...]) -> bytes:
+        errors: list[PanelBackgroundError] = []
+        for fetch in (self._fetch_wallhaven, self._fetch_loliapi, self._fetch_alcy):
+            try:
+                content = await fetch(tags)
+                await asyncio.to_thread(self._write_cache, content)
+                return content
+            except PanelBackgroundError as exc:
+                errors.append(exc)
+        raise errors[-1] if errors else PanelBackgroundError("panel_background_api")
+
+    async def _fetch_wallhaven(self, tags: tuple[str, ...]) -> bytes:
         params: list[tuple[str, str]] = [
-            ("r18", "0"),
-            ("num", "20"),
-            ("excludeAI", "true"),
-            ("aspectRatio", "1.6-1.8"),
-            ("size", "regular"),
+            ("categories", "010"),
+            ("purity", "100"),
+            ("ratios", "16x9"),
+            ("sorting", "random"),
         ]
         if tags:
-            params.append(("tag", random.choice(tags)))
+            params.append(("q", random.choice(tags)))
+        payload = await self._get_json(_WALLHAVEN_ENDPOINT, params=params)
+        for image_url in self._choose_wallhaven_urls(payload):
+            try:
+                content = await self._download_image(image_url)
+                await asyncio.to_thread(self._validate_image, content)
+                return content
+            except PanelBackgroundError:
+                continue
+        raise PanelBackgroundError("panel_background_wallhaven")
+
+    async def _fetch_loliapi(self, _tags: tuple[str, ...]) -> bytes:
+        content = await self._download_image(_LOLIAPI_ENDPOINT, allow_redirects=True)
+        await asyncio.to_thread(self._validate_image, content)
+        return content
+
+    async def _fetch_alcy(self, _tags: tuple[str, ...]) -> bytes:
+        content = await self._download_image(_ALCY_ENDPOINT, allow_redirects=True)
+        await asyncio.to_thread(self._validate_image, content)
+        return content
+
+    async def _get_json(self, url: str, *, params: list[tuple[str, str]] | None = None) -> object:
         try:
             async with (await self._get_session()).get(
-                _LOLICON_ENDPOINT,
+                url,
                 params=params,
                 proxy=self._proxy_url,
                 timeout=self._timeout,
@@ -112,20 +145,9 @@ class PanelBackgroundProvider:
             ) as response:
                 if response.status != 200:
                     raise PanelBackgroundError("panel_background_api")
-                raw = await response.read()
-            payload = json.loads(raw)
-            last_error = PanelBackgroundError("panel_background_response")
-            for image_url in self._choose_urls(payload):
-                try:
-                    content = await self._download_image(image_url)
-                    await asyncio.to_thread(self._validate_image, content)
-                    await asyncio.to_thread(self._write_cache, content)
-                    return content
-                except PanelBackgroundError as exc:
-                    # Lolicon can return a mixed batch despite aspect filtering.
-                    # Try the remaining pre-filtered candidates before falling back.
-                    last_error = exc
-            raise last_error
+                return json.loads(await response.read())
+        except PanelBackgroundError:
+            raise
         except (
             aiohttp.ClientError,
             asyncio.TimeoutError,
@@ -141,15 +163,19 @@ class PanelBackgroundProvider:
             self._session = aiohttp.ClientSession(connector=connector, trust_env=False)
         return self._session
 
-    def _choose_urls(self, payload: object) -> list[str]:
+    def _choose_wallhaven_urls(self, payload: object) -> list[str]:
         rows = payload.get("data") if isinstance(payload, dict) else None
         if not isinstance(rows, list):
-            raise PanelBackgroundError("panel_background_response")
+            raise PanelBackgroundError("panel_background_wallhaven")
         sized_candidates: list[str] = []
         unknown_size_candidates: list[str] = []
         for row in rows:
-            urls = row.get("urls") if isinstance(row, dict) else None
-            value = urls.get("regular") if isinstance(urls, dict) else None
+            if not isinstance(row, dict):
+                continue
+            thumbs = row.get("thumbs")
+            value = thumbs.get("large") if isinstance(thumbs, dict) else None
+            if not isinstance(value, str):
+                value = row.get("path")
             if not isinstance(value, str) or not self._is_safe_url(value):
                 continue
             width = row.get("width") if isinstance(row, dict) else None
@@ -161,19 +187,28 @@ class PanelBackgroundProvider:
                 unknown_size_candidates.append(value)
         candidates = sized_candidates or unknown_size_candidates
         if not candidates:
-            raise PanelBackgroundError("panel_background_response")
+            raise PanelBackgroundError("panel_background_wallhaven")
         return random.sample(candidates, k=len(candidates))
 
-    async def _download_image(self, url: str) -> bytes:
+    async def _download_image(
+        self,
+        url: str,
+        *,
+        allow_redirects: bool = False,
+    ) -> bytes:
         try:
             async with (await self._get_session()).get(
                 url,
                 proxy=self._proxy_url,
                 timeout=self._timeout,
-                allow_redirects=False,
+                allow_redirects=allow_redirects,
             ) as response:
                 if response.status != 200:
                     raise PanelBackgroundError("panel_background_download")
+                if allow_redirects:
+                    final_url = getattr(response, "url", None)
+                    if final_url is not None and not self._is_safe_url(str(final_url)):
+                        raise PanelBackgroundError("panel_background_redirect")
                 parts: list[bytes] = []
                 size = 0
                 async for chunk in response.content.iter_chunked(64 * 1024):
@@ -189,8 +224,17 @@ class PanelBackgroundProvider:
 
     @staticmethod
     def _is_safe_url(value: str) -> bool:
-        parts = urlsplit(value)
-        return parts.scheme in {"http", "https"} and bool(parts.hostname) and not parts.username
+        try:
+            parts = urlsplit(value)
+        except ValueError:
+            return False
+        return (
+            parts.scheme in {"http", "https"}
+            and bool(parts.hostname)
+            and not parts.username
+            and not parts.password
+            and not parts.fragment
+        )
 
     @staticmethod
     def _validate_image(content: bytes) -> None:

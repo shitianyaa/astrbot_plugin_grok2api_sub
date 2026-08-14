@@ -1,35 +1,47 @@
-"""Grok2API web search, image generation/editing and video tool for AstrBot.
+# Repository Development Rules
 
-The two most important rules enforced across this codebase:
+## Scope
 
-1. **Never log or leak credentials.** The grok2api Client Key must never appear
-   in logs, error messages, test output or the ``redacted_summary()`` report.
-   Only a boolean ``client_key_configured`` flag is exposed.
-2. **Auditable resolved media prompts.** When prompt processing is enabled and
-   succeeds in ``extract`` or ``enhance`` mode, the final validated media
-   request JSON is intentionally written to the local log for owner review.
-   It must pass through ``sanitize_prompt_json`` and redact Client Keys,
-   Bearer/JWT tokens, password/secret assignments, proxy userinfo and Base64.
-   Direct ``off`` mode prompts and failed or unvalidated model output are not
-   logged.
-3. **Remote-call retries are explicit and configurable.** Search, image and
-   image-edit work use the model retry group; video creation, polling and
-   download use the video retry group. Generation requests may be replayed
-   when the configured policy permits it, so do not add an implicit bypass
-   for generation requests.
+This repository is an AstrBot plugin providing Grok2API search, image, image-edit, video, and panel features. Keep changes focused on the requested behavior and preserve unrelated user work.
 
-Validation commands (run from this repo root):
+## Safety
 
-.. code-block:: powershell
+- Never read, print, commit, or hardcode `.env` values, Client Keys, tokens, passwords, cookies, JWTs, or private URLs.
+- Do not place credentials, Bearer/JWT values, Base64 media, signed URLs, userinfo, media URLs, request IDs, or upstream response bodies in logs.
+- Treat remote API responses and image URLs as untrusted. Validate schemes, redirects, image bytes, size, decoding, dimensions, and aspect ratio before use.
 
-    python -m json.tool _conf_schema.json
-    python -m compileall main.py core tests
-    python -m pytest -q
-    ruff check .
-    ruff format --check .
+## Repository Workflow
 
-The parent ``D:\\Python\\QQBOT\\AGENTS.md`` still applies on top of this file.
-No real credentials or full Base64 may be written to logs or tests. The
-validated prompt JSON described above is the explicit local-audit exception;
-tests must continue to use synthetic, non-private values.
-"""
+- If `.codegraph/` exists, run `codegraph explore` before searching or reading source files.
+- Keep factual task notes in `Progress/YYYY-MM-DD*.md`; never commit `Progress/`.
+- Use `apply_patch` for manual edits. Do not use destructive Git commands or discard unrelated changes.
+- Do not add dependencies without checking the existing stack and documenting the reason.
+
+## Code Conventions
+
+- Follow existing Python, aiohttp, AstrBot, and pytest patterns.
+- Keep INFO logs concise task blocks; put transport, polling, model-attempt, panel subrequest, and delivery details at DEBUG.
+- Preserve the retry contract: exhaust one model's retry group before fallback; only stable model-selection errors switch candidates.
+- Preserve the media background fallback order and cache/CSS fallback behavior unless the task explicitly changes it.
+
+## Version and Git
+
+- Runtime, packaging, metadata, README badge, and CHANGELOG versions must agree.
+- Do not change versions, commit, push, publish, or create releases unless the user explicitly authorizes it.
+- Never add AI attribution trailers to commits or release text.
+- Before staging, inspect `git diff` and stage only files belonging to the requested change.
+
+## Validation
+
+Run the relevant focused tests first, then:
+
+```powershell
+python -m json.tool _conf_schema.json
+python -m compileall main.py core tests
+python -m pytest -q
+ruff check .
+ruff format --check .
+git diff --check
+```
+
+Report warnings, skipped checks, external-service limitations, and remaining risks explicitly.

@@ -5,7 +5,7 @@
 <img src="https://count.getloli.com/@astrbot-plugin-grok2api-sub?name=astrbot-plugin-grok2api-sub&theme=booru-jaypee&padding=6&offset=0&align=top&scale=1&pixelated=1&darkmode=auto" alt="count" />
 
 ![AstrBot](https://img.shields.io/badge/AstrBot-plugin-5865f2?style=flat-square)
-![Version](https://img.shields.io/badge/version-0.1.3-22c55e?style=flat-square)
+![Version](https://img.shields.io/badge/version-0.1.4-22c55e?style=flat-square)
 ![Python](https://img.shields.io/badge/Python-3.10%2B-3776ab?style=flat-square)
 ![Platform](https://img.shields.io/badge/platform-OneBot%20%2F%20QQ%20Official-f97316?style=flat-square)
 ![License](https://img.shields.io/badge/license-MIT-3b82f6?style=flat-square)
@@ -88,7 +88,7 @@ python -m pip install -r requirements.txt
 
 使用 `extract` 或 `enhance` 时，插件会在严格校验成功后将最终发送给 grok2api 的提示词与媒体参数 JSON 写入本地 `prompt_processing_resolved` 日志，方便管理员检查处理质量；不会回复给用户。直传模式和失败输出不记录，凭据、Bearer/JWT、密码/secret、代理 userinfo 与 Base64 始终脱敏。
 
-**日志**：INFO 级别按多行块显示每个任务的开始和最终完成/失败。搜索、生图、改图、视频会完整记录原始提示词与实际请求提示词、候选模型、最终模型、回退次数、远端重试次数和耗时；面板只记录区块与推送汇总。HTTP、管理面子请求、模型尝试、轮询和提示词处理审计在 DEBUG 级别查看。日志不含 `trace_id`、参考图 URL、媒体 URL、请求 ID 或上游响应正文；凭据类片段仍强制脱敏。
+**日志**：INFO 级别按多行块显示每个任务的开始和最终完成/失败。搜索、生图、改图、视频会完整记录原始提示词与实际请求提示词、实际请求参数（比例、时长、分辨率、数量、返回格式等）、候选模型、最终模型、回退次数、远端重试次数和耗时；面板只记录区块与推送汇总。HTTP、管理面子请求、模型尝试、轮询和提示词处理审计在 DEBUG 级别查看。日志不含 `trace_id`、参考图 URL、媒体 URL、请求 ID 或上游响应正文；凭据类片段仍强制脱敏。
 
 **访问控制（`access_settings`）**：`user_whitelist` / `user_blacklist` / `group_whitelist` / `group_blacklist`（空列表不限制）。
 
@@ -128,8 +128,8 @@ python -m pip install -r requirements.txt
 选择的 Tool：主模型调用 Tool 后，仍会根据结构化 Tool 结果组织最终回复，不触发这次整理。
 
 `/g2面板` 默认经 AstrBot 已配置的 HTML-to-image 服务发送 1920x1080（16:9）图片，也可在插件配置中选择 720p 或 1440p；T2I 不可用时会自动
-退回纯文本。背景图每次发送都向 Lolicon 请求非 R18、排除 AI 的横向图片，并使用插件的全局代理和 TLS
-配置；失败时复用最近有效缓存，未命中缓存时使用内置背景。定时推送的固定 UMO 目标与命令订阅目标合并
+退回纯文本。背景图按 Wallhaven（动漫、SFW、16:9）→ LoliAPI 横屏 → t.alcy 横屏的顺序获取，使用插件的全局代理和 TLS
+配置；所有来源都执行图片解码、体积和横向比例校验，失败时复用最近有效缓存，未命中缓存时使用内置背景。来源不保证排除 AI 图片。定时推送的固定 UMO 目标与命令订阅目标合并
 去重；Cron 和从每日 00:00 对齐的间隔任务可同时启用，同一目标同一分钟只发送一次。
 
 > 注意：`/g2面板` 需要 grok2api 管理面 API（`/api/admin/v1/...`），目前仅自部署的 [chenyme/grok2api](https://github.com/chenyme/grok2api) 实例支持。使用第三方站点时，面板功能不可用，其余搜索/媒体能力不受影响。

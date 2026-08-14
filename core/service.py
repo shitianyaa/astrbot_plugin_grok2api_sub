@@ -193,12 +193,14 @@ class GrokService:
         *,
         source_prompt: str,
         request_prompt: str = "",
+        request_params: dict[str, object] | None = None,
         transport_operation: str = "",
     ) -> None:
         fields: dict[str, object] = {
             "operation": operation,
             "source_prompt": source_prompt,
             "request_prompt": request_prompt,
+            "request_params": request_params or {},
             "stage": stage,
             "elapsed_ms": self._elapsed_ms(started_at),
             "model": task_model(operation),
@@ -226,6 +228,12 @@ class GrokService:
     async def search(self, event: Any, query: str, *, required: bool = True) -> SearchResult:
         with operation_scope("search"):
             started_at = time.monotonic()
+            request_params = {
+                "required": required,
+                "web_search": self._config.enable_web_search,
+                "x_search": self._config.enable_x_search,
+                "reasoning_effort": self._config.search_reasoning_effort,
+            }
             try:
                 self._preflight(event, "search")
                 safe_task_log(
@@ -234,6 +242,7 @@ class GrokService:
                     operation="search",
                     source_prompt=query,
                     request_prompt=query,
+                    request_params=request_params,
                     candidate_models=", ".join(self._config.search_models),
                 )
                 async with self._search_sem:
@@ -245,6 +254,7 @@ class GrokService:
                     "operation": "search",
                     "source_prompt": query,
                     "request_prompt": query,
+                    "request_params": request_params,
                     "model": task_model("search"),
                     "candidate_fallbacks": max(task_candidate_attempts("search") - 1, 0),
                     "retry_count": max(
@@ -267,8 +277,12 @@ class GrokService:
                 logging.INFO,
                 "请求完成",
                 operation="search",
+                request_params=request_params,
                 model=outcome.model,
                 result="已生成搜索结果",
+                result_status=result.status,
+                search_performed=result.search_performed,
+                incomplete=result.incomplete,
                 candidate_fallbacks=max(outcome.candidate_attempts - 1, 0),
                 retry_count=max(task_attempts("search") - outcome.candidate_attempts, 0),
                 elapsed_ms=self._elapsed_ms(started_at),
@@ -611,15 +625,23 @@ class GrokService:
                 started_at = time.monotonic()
                 stage = "prompt_processing"
                 request_prompt = ""
+                request_params: dict[str, object] = {}
                 try:
                     request = await self._resolve_image_request(prompt)
                     request_prompt = request.prompt
+                    request_params = {
+                        "n": 1,
+                        "response_format": self._config.image_response_format,
+                        "aspect_ratio": request.aspect_ratio,
+                        "resolution": request.resolution,
+                    }
                     safe_task_log(
                         logging.INFO,
                         "请求开始",
                         operation=operation,
                         source_prompt=prompt,
                         request_prompt=request_prompt,
+                        request_params=request_params,
                         prompt_mode=self._effective_prompt_mode(
                             self._config, has_reference_image=False
                         ),
@@ -659,6 +681,7 @@ class GrokService:
                         operation=operation,
                         model=outcome.model,
                         result="图片生成并发送成功",
+                        request_params=request_params,
                         media_count=len(paths),
                         candidate_fallbacks=max(outcome.candidate_attempts - 1, 0),
                         retry_count=max(task_attempts("image") - outcome.candidate_attempts, 0),
@@ -676,6 +699,7 @@ class GrokService:
                         exc,
                         source_prompt=prompt,
                         request_prompt=request_prompt,
+                        request_params=request_params,
                         transport_operation="image",
                     )
                     raise
@@ -716,17 +740,23 @@ class GrokService:
                 started_at = time.monotonic()
                 stage = "input"
                 request_prompt = ""
+                request_params: dict[str, object] = {}
                 try:
                     data_url = await self._find_input_image(event)
                     stage = "prompt_processing"
                     resolved_prompt = await self._resolve_image_edit_prompt(prompt)
                     request_prompt = resolved_prompt
+                    request_params = {
+                        "n": 1,
+                        "response_format": self._config.image_response_format,
+                    }
                     safe_task_log(
                         logging.INFO,
                         "请求开始",
                         operation=operation,
                         source_prompt=prompt,
                         request_prompt=request_prompt,
+                        request_params=request_params,
                         prompt_mode=self._effective_prompt_mode(
                             self._config, has_reference_image=True
                         ),
@@ -767,6 +797,7 @@ class GrokService:
                         operation=operation,
                         model=outcome.model,
                         result="图片编辑并发送成功",
+                        request_params=request_params,
                         media_count=len(paths),
                         candidate_fallbacks=max(outcome.candidate_attempts - 1, 0),
                         retry_count=max(
@@ -786,6 +817,7 @@ class GrokService:
                         exc,
                         source_prompt=prompt,
                         request_prompt=request_prompt,
+                        request_params=request_params,
                         transport_operation="image_edit",
                     )
                     raise
@@ -852,6 +884,7 @@ class GrokService:
                 started_at = time.monotonic()
                 stage = "input"
                 request_prompt = ""
+                request_params: dict[str, object] = {}
                 try:
                     (
                         image_data_url,
@@ -864,12 +897,19 @@ class GrokService:
                         reference_aspect_ratio=reference_aspect_ratio,
                     )
                     request_prompt = request.prompt
+                    request_params = {
+                        "duration": request.duration,
+                        "aspect_ratio": request.aspect_ratio,
+                        "resolution": request.resolution,
+                        "reference_image_present": bool(image_data_url),
+                    }
                     safe_task_log(
                         logging.INFO,
                         "请求开始",
                         operation=operation,
                         source_prompt=prompt,
                         request_prompt=request_prompt,
+                        request_params=request_params,
                         prompt_mode=self._effective_prompt_mode(
                             self._config, has_reference_image=bool(image_data_url)
                         ),
@@ -917,6 +957,7 @@ class GrokService:
                         operation=operation,
                         model=outcome.model,
                         result="视频生成并发送成功",
+                        request_params=request_params,
                         media_count=1,
                         candidate_fallbacks=max(outcome.candidate_attempts - 1, 0),
                         retry_count=max(
@@ -936,6 +977,7 @@ class GrokService:
                         exc,
                         source_prompt=prompt,
                         request_prompt=request_prompt,
+                        request_params=request_params,
                         transport_operation="video_create",
                     )
                     raise

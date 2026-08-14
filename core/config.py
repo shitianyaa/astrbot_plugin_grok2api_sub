@@ -127,7 +127,7 @@ def parse_panel_sections(value: object) -> tuple[str, ...]:
 
 
 def parse_panel_background_tags(value: object) -> tuple[str, ...]:
-    """Parse the optional multi-line Lolicon tag list without logging it."""
+    """Parse optional multi-line Wallhaven keywords without logging them."""
     if not isinstance(value, str):
         _fail("advanced_settings.panel_background_tags", "必须是多行文本")
     result: list[str] = []
@@ -743,4 +743,4 @@ class PluginConfig:
 
 
 def version() -> str:
-    return "v0.1.3"
+    return "v0.1.4"

@@ -343,10 +343,10 @@
         "hint": "1080p 兼顾清晰度与文件大小；1440p 更清晰但生成和发送开销更高。"
       },
       "panel_background_tags": {
-        "description": "Lolicon 背景图标签，每行一个；留空随机取图。每次面板发送随机选择一行。",
+        "description": "Wallhaven 背景图关键词，每行一个；留空随机取动漫图。每次面板发送随机选择一行。",
         "type": "text",
         "default": "",
-        "hint": "仅请求 R18=0、排除 AI、横向图片；获取失败时复用本地缓存背景。"
+        "hint": "优先请求 Wallhaven 的动漫、SFW、16:9 图片，再回退 LoliAPI 与 t.alcy；所有来源均执行横向图片校验。来源不保证排除 AI 图片；获取失败时复用本地缓存背景。"
       },
       "panel_push_targets": {
         "description": "固定推送目标。填写 AstrBot UMO（platform:message_type:session_id）；与命令订阅目标合并去重。",

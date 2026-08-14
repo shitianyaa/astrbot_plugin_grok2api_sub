@@ -9,7 +9,7 @@ service.py -> admin_client / panel_models（仅 /g2面板 路径）
 client.py -> transport / parsers / models / errors
 sender.py -> platform / models / observability + AstrBot message components
 panel_renderer.py / panel_card.py -> panel_models（纯渲染数据层）
-panel_background.py -> Lolicon（显式 proxy/TLS，不读取环境代理）
+panel_background.py -> Wallhaven / LoliAPI / t.alcy（显式 proxy/TLS，不读取环境代理）
 panel_schedule.py -> UMO 订阅存储与午夜对齐规则
 models.py / errors.py / parsers.py / observability.py -> 不依赖 AstrBot
 ```
@@ -39,7 +39,7 @@ AstrBot WebUI 配置
   -> AdminClient（login -> 缓存 Bearer GET -> 401 refresh -> 单次重放）
   -> GrokService.build_panel()
   -> PanelReport（汇总字段 + 脱敏审计行为聚合）
-  -> PanelBackgroundProvider（Lolicon / 缓存 / CSS 默认背景）
+  -> PanelBackgroundProvider（Wallhaven / LoliAPI / t.alcy / 缓存 / CSS 默认背景）
   -> panel_card.py HTML 模板
   -> Star.html_render()（AstrBot T2I）
   -> 受控 workspace 图片 -> MessageChain
@@ -127,7 +127,7 @@ Provider；无论选哪个 Provider，插件都以完成态 `web_search_call` �
 - `send_media_progress` 默认开启。生图、改图、视频取得同会话任务锁后各发送一次进度提示；提示本身
   发送失败只记录安全日志，不取消已经接受的远端任务。
 - 每个媒体任务使用多行块记录开始、完成或失败；开始块完整记录原始提示词与实际提示词，结束块记录最终模型、候选回退、远端重试、结果和耗时。日志不包含图片内容、参考图 URL、媒体 URL、请求 ID、上游响应正文或凭据。
-- INFO 仅记录任务开始、汇总完成或失败；通用命令包装、消息发送成功、模型选择、提示词处理过程、视频轮询、面板渲染准备和每次 HTTP/管理面请求均仅在 DEBUG 记录。任务失败以 WARN 的最终块记录，包含稳定错误码与最终 HTTP 状态（有时）；不使用 `trace_id`。
+- INFO 仅记录任务开始、汇总完成或失败；任务块包含原始/实际提示词、脱敏请求参数、最终模型、候选回退、远端重试和结果状态。通用命令包装、消息发送、模型选择、提示词处理过程、视频轮询、面板背景回退、面板渲染准备和每次 HTTP/管理面请求均仅在 DEBUG 记录。任务失败以 WARN 的最终块记录，包含稳定错误码与最终 HTTP 状态（有时）；不使用 `trace_id`。
 
 ## 远端重试边界
 

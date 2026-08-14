@@ -72,6 +72,7 @@ TASK_FIELDS = {
     "operation",
     "source_prompt",
     "request_prompt",
+    "request_params",
     "prompt_mode",
     "reference_image",
     "reference_aspect_ratio",
@@ -93,12 +94,16 @@ TASK_FIELDS = {
     "unavailable_count",
     "trigger",
     "rewrite_model",
+    "result_status",
+    "search_performed",
+    "incomplete",
 }
 
 _TASK_LABELS = {
     "operation": "操作",
     "source_prompt": "原始提示词",
     "request_prompt": "实际提示词",
+    "request_params": "请求参数",
     "prompt_mode": "提示词优化",
     "reference_image": "参考图",
     "reference_aspect_ratio": "参考图比例",
@@ -120,6 +125,9 @@ _TASK_LABELS = {
     "unavailable_count": "不可用",
     "trigger": "触发方式",
     "rewrite_model": "总结模型",
+    "result_status": "结果状态",
+    "search_performed": "已执行搜索",
+    "incomplete": "结果不完整",
 }
 
 _OPERATION_LABELS = {
@@ -261,6 +269,8 @@ def safe_log(level: int, event_name: str, **fields: object) -> None:
 
 
 def _task_value(key: str, value: object) -> str:
+    if key == "request_params":
+        return sanitize_prompt_json(value)
     if key in {"source_prompt", "request_prompt"}:
         return _sanitize_sensitive_text(str(value))
     if key == "operation":

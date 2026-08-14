@@ -431,7 +431,14 @@ async def test_media_lifecycle_logs_are_safe_and_correlated(tmp_path, monkeypatc
     completed = task_events[1][2]
     assert started["source_prompt"] == "secret prompt"
     assert started["request_prompt"] == "secret prompt"
+    assert started["request_params"] == {
+        "n": 1,
+        "response_format": "b64_json",
+        "aspect_ratio": "",
+        "resolution": "1k",
+    }
     assert completed["model"] == "grok-imagine-image"
+    assert completed["request_params"] == started["request_params"]
     assert completed["result"] == "图片生成并发送成功"
     levels = {name: level for level, name, _fields in diagnostics}
     assert levels["media_job_model_attempt"] == logging.DEBUG
@@ -979,7 +986,16 @@ async def test_search_skips_catalog_missing_models_and_uses_first_visible(tmp_pa
     assert levels["search_model_selected"] == logging.DEBUG
     assert [title for _level, title, _fields in task_events] == ["请求开始", "请求完成"]
     assert task_events[0][2]["source_prompt"] == "current question"
+    assert task_events[0][2]["request_params"] == {
+        "required": True,
+        "web_search": True,
+        "x_search": True,
+        "reasoning_effort": "high",
+    }
     assert task_events[1][2]["model"] == "grok-4.5"
+    assert task_events[1][2]["result_status"] == "completed"
+    assert task_events[1][2]["search_performed"] is True
+    assert task_events[1][2]["incomplete"] is False
 
 
 async def test_search_passes_enabled_tools_and_supported_reasoning_effort(tmp_path):

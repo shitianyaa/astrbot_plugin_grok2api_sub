@@ -2,6 +2,18 @@
 
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/) 规范。
 
+## v0.1.4 (2026-08-14)
+
+### Added
+
+- **多源面板背景**：背景图按 Wallhaven（动漫、SFW、16:9）、LoliAPI 横屏和 t.alcy 横屏顺序获取；每个来源统一执行下载体积、图片解码和横向比例校验，全部失败时复用缓存或 CSS 默认背景。
+- **任务日志参数**：任务块补充实际请求参数、搜索状态和结果摘要，内部 HTTP、面板子请求、轮询与模型尝试继续仅在 DEBUG 输出。
+
+### Changed
+
+- `panel_background_tags` 改为 Wallhaven 搜索关键词，每行一个；来源不保证排除 AI 图片。
+- 统一任务日志移除 `trace_id`，开始和完成/失败块记录完整提示词、脱敏参数、实际模型和回退/重试统计。
+
 ## v0.1.3 (2026-08-14)
 
 ### Removed

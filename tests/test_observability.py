@@ -98,6 +98,7 @@ def test_safe_task_log_renders_complete_prompt_without_trace():
                 "g2a_live_secret Authorization: Bearer abc.def.ghi password=hunter2 "
                 "http://alice:proxy-pass@127.0.0.1:3067 data:image/png;base64,AAAA"
             ),
+            request_params={"duration": 10, "aspect_ratio": "16:9", "resolution": "1080p"},
             candidate_models="first, second",
         )
     finally:
@@ -108,6 +109,7 @@ def test_safe_task_log_renders_complete_prompt_without_trace():
     assert "操作: 图片编辑" in joined
     assert "原始提示词: " + "x" * 800 in joined
     assert "实际提示词:" in joined
+    assert '请求参数: {"duration":10,"aspect_ratio":"16:9","resolution":"1080p"}' in joined
     assert "候选模型: first, second" in joined
     assert "trace_id" not in joined
     for secret in ("live_secret", "abc.def.ghi", "hunter2", "proxy-pass", "base64,"):

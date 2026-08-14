@@ -5,7 +5,7 @@
 ```text
 AstrBot 管理员命令
   -> grok2api 管理面只读聚合
-  -> Lolicon 背景（新图 / 缓存 / 默认）
+  -> 多源背景（Wallhaven / LoliAPI / t.alcy / 缓存 / 默认）
   -> AstrBot 全局 HTML-to-image
   -> 图片校验
   -> 当前会话或定时 UMO 发送
@@ -19,7 +19,7 @@ AstrBot 管理员命令
 - 发出命令的账号拥有 AstrBot `ADMIN` 权限。
 - AstrBot 全局已配置可用的 HTML-to-image 服务。插件调用 `Star.html_render()`，不保存 T2I 地址或凭据，也不使用 Playwright。
 - grok2api 管理面可从 AstrBot 主机访问；管理账号仅有读取聚合数据所需的权限。
-- 若需经代理访问管理面或 Lolicon，代理已在本机可用。
+- 若需经代理访问管理面或背景源，代理已在本机可用；背景 API 与图片下载统一沿用同一显式代理配置。
 
 ## 2. WebUI 最小配置
 
@@ -36,7 +36,7 @@ AstrBot 管理员命令
 | `advanced_settings` | `panel_sections` | 首次全选：账号池、图片库、视频库、请求审计汇总、按模型统计 |
 | `advanced_settings` | `panel_t2i_enabled` | `true`，用于图片路径；后续关闭以验证文本回退 |
 | `advanced_settings` | `panel_resolution` | 默认 `1080p`；也可选 `720p` 或 `1440p` |
-| `advanced_settings` | `panel_background_tags` | 每行一个标签；留空表示随机横向非 R18、非 AI 背景 |
+| `advanced_settings` | `panel_background_tags` | 每行一个 Wallhaven 关键词；留空表示随机动漫、SFW、横向背景 |
 
 首次验证不要填写 `panel_push_targets`，也不要启用 Cron 或间隔推送，避免向非测试会话发送。
 
@@ -68,21 +68,21 @@ AstrBot 管理员命令
 /g2面板
 ```
 
-通过标准：收到与图片相同统计周期、相同已选数据块的纯文本面板。此路径不请求 Lolicon，也不调用 T2I。
+通过标准：收到与图片相同统计周期、相同已选数据块的纯文本面板。此路径不请求背景源，也不调用 T2I。
 
 恢复 `panel_t2i_enabled=true` 后重载。若全局 T2I 服务不可用、返回空文件或错误内容，插件应记录 `panel_render_failed`，并发送同一份 `PanelReport` 的纯文本；不能重新拉取管理数据，也不能把错误 JSON/HTML 当作图片发送。
 
 ## 5. 背景回退
 
-连续执行两次 `/g2面板`。正常情况下每次都会尝试刷新 Lolicon 背景。
+连续执行两次 `/g2面板`。正常情况下每次都会按 Wallhaven、LoliAPI、t.alcy 顺序尝试刷新背景。
 
 | 场景 | 预期日志 | 预期图片 |
 |---|---|---|
 | 刷新并下载成功 | `background_source=fresh` | 使用新背景 |
-| 暂时阻断 Lolicon 或图片下载，已有缓存 | `background_source=cache` | 复用最近有效背景 |
-| 暂时阻断 Lolicon，且无有效缓存 | `background_source=default` | 使用卡片内置默认背景，仍继续 T2I |
+| 暂时阻断多源或图片下载，已有缓存 | `background_source=cache` | 复用最近有效背景 |
+| 暂时阻断多源，且无有效缓存 | `background_source=default` | 使用卡片内置默认背景，仍继续 T2I |
 
-验证缓存时仅对测试环境短暂阻断 Lolicon。不要删除生产插件数据目录；缓存文件由插件管理。
+验证缓存时仅对测试环境短暂阻断多源背景。不要删除生产插件数据目录；缓存文件由插件管理。
 
 ## 6. 定时发送
 
@@ -130,7 +130,7 @@ AstrBot 管理员命令
 
 ## 7. 本地开发探针
 
-脚本 [testignore/panel_live_check/live_panel_t2i_smoke.py](../testignore/panel_live_check/live_panel_t2i_smoke.py) 可在不启动机器人平台时验证：管理端取数、文本渲染、Lolicon 背景和指定 T2I 服务。
+脚本 [testignore/panel_live_check/live_panel_t2i_smoke.py](../testignore/panel_live_check/live_panel_t2i_smoke.py) 可在不启动机器人平台时验证：管理端取数、多源背景和指定 T2I 服务。
 
 它只从当前进程读取 `G2_ADMIN_USER` 与 `G2_ADMIN_PASS`，不会打印或写入凭据、Token、管理响应或原始记录。当前脚本中的管理面、代理和 T2I 地址是开发测试常量；生产验收必须使用第 3 至 6 节的 AstrBot 路径。
 

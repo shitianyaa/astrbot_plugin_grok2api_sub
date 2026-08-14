@@ -809,7 +809,7 @@ class Grok2APISubPlugin(Star):
         sender = getattr(event, "send", None)
         if sender is None:
             safe_log(
-                logging.WARNING,
+                logging.DEBUG,
                 "message_send_failed",
                 operation="message_send",
                 error_code="send_unsupported",
@@ -824,7 +824,7 @@ class Grok2APISubPlugin(Star):
             raise
         except Exception as exc:  # noqa: BLE001
             safe_log(
-                logging.WARNING,
+                logging.DEBUG,
                 "message_send_failed",
                 operation="message_send",
                 error_code="send_failed",
@@ -837,7 +837,7 @@ class Grok2APISubPlugin(Star):
         if isinstance(exc, PluginError):
             reason = _ERROR_HINTS.get(exc.code, exc.user_message)
             safe_log(
-                logging.WARNING,
+                logging.DEBUG,
                 "command_failed",
                 operation=operation,
                 error_code=exc.code,
@@ -847,7 +847,7 @@ class Grok2APISubPlugin(Star):
         else:
             reason = _ERROR_HINTS.get("", "处理失败，请稍后再试")
             safe_log(
-                logging.WARNING,
+                logging.DEBUG,
                 "command_failed",
                 operation=operation,
                 error_code="unknown",
