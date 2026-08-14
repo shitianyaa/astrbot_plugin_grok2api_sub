@@ -1,8 +1,0 @@
-# 本地连接配置（含凭据），绝不提交
-config.local.json
-
-# 生成物（包含真实运行数据快照），每次重跑覆盖
-view.html
-
-__pycache__/
-*.pyc

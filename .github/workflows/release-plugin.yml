@@ -136,7 +136,6 @@ jobs:
             --exclude='/tests/' \
             --exclude='/docs/' \
             --exclude='/testignore/' \
-            --exclude='/admin_dashboard/' \
             --exclude='/.codegraph/' \
             --exclude='/dist/' \
             --exclude='/data/' \
