@@ -46,6 +46,16 @@ from .core.transport import HTTPTransport
 TOOL_NAME = "grok2api_web_search"
 _PANEL_JOB_PREFIX = "grok2api_sub:panel:"
 
+# error_code -> 用户能理解的报错说明（错误信息本身是中文，这里只补最容易卡住
+# 用户的三类：智能改写/搜索模型回退/上游接口提示，其余复用原错误信息）。
+_ERROR_HINTS: dict[str, str] = {
+    "prompt_processing_invalid": "智能改写提示词后返回的格式无效，请重试或关闭智能改写",
+    "prompt_processing_timeout": "智能改写提示词超时，请重试",
+    "prompt_processing_provider_failed": "智能改写提示词失败，请检查提示词改写模型的配置",
+    "prompt_processing_provider_missing": "请先配置提示词改写模型，或关闭智能改写",
+    "search_models_exhausted": "所有搜索模型都不可用，请确认搜索模型配置或稍后重试",
+}
+
 
 class Grok2APISubPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
@@ -815,7 +825,7 @@ class Grok2APISubPlugin(Star):
 
     async def _send_error(self, event: AstrMessageEvent, exc: Exception, *, operation: str) -> None:
         if isinstance(exc, PluginError):
-            msg = exc.user_message
+            reason = _ERROR_HINTS.get(exc.code, exc.user_message)
             safe_log(
                 logging.WARNING,
                 "command_failed",
@@ -825,7 +835,7 @@ class Grok2APISubPlugin(Star):
                 ambiguous=exc.ambiguous,
             )
         else:
-            msg = "处理失败，请稍后再试"
+            reason = _ERROR_HINTS.get("", "处理失败，请稍后再试")
             safe_log(
                 logging.WARNING,
                 "command_failed",
@@ -834,7 +844,7 @@ class Grok2APISubPlugin(Star):
                 exception_type=type(exc).__name__,
             )
         try:
-            await self._send(event, msg)
+            await self._send(event, reason)
         except Exception:  # noqa: BLE001
             safe_log(
                 logging.ERROR,

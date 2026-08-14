@@ -2,7 +2,7 @@
 
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/) 规范。
 
-## [Unreleased]
+## v0.1.1 (2026-08-14)
 
 ### Added
 
@@ -11,7 +11,7 @@
 - **面板配置**：`connection_settings` 增加 `admin_username`/`admin_password`（与 Client Key 相互独立，仅面板使用，不入日志与 `redacted_summary`）；`advanced_settings` 增加 `panel_period`（`24h`/`7d`/`30d`/`90d`，默认 `7d`）与 `panel_sections`（五块中文多选，默认全选，可置空）。顶层仍为 4 个分组。
 - **面板聚合与渲染**：`core/panel_models.py` 提供防御式 DTO（缺字段→0、未知 key 忽略）、`Decimal` 成本换算（`1e8 ticks = $1`）、本地按 `createdAt` 切窗的 `aggregate_models`；`core/panel_renderer.py` 输出纯文本，最多显示 20 个模型并标注省略/截断。`GrokService.build_panel` 走独立 `_panel_preflight()`（不复用 `_preflight`/`missing_capability`，因此**不要求 Client Key**），完整报告缓存 60 秒，逐块顺序抓取、单块失败不阻断其余块。
 - 审计逐条只保留 `createdAt`/`statusCode`/`errorCode`/`durationMs`/`totalTokens`/`modelPublicId`/`modelUpstreamModel`，游标分页上限 5000 行并显式标记截断；账号邮箱、Client Key 名、请求 ID 与原始审计行不进入 `PanelReport`。
-- **面板图片与定时推送**：`/g2面板` 现通过 AstrBot HTML-to-image 渲染 1280x720（16:9）卡片，T2I 失败退回文本；新增 Lolicon 非 R18/排除 AI 横向背景、缓存回退、固定 UMO 模板列表、会话订阅命令、Cron 与从午夜对齐的间隔推送。同一 UMO 在同一分钟只发送一次，定时路径不调用主 LLM。
+- **面板图片与定时推送**：`/g2面板` 现通过 AstrBot HTML-to-image 渲染 720p/1080p/1440p（默认 1080p）的 16:9 卡片，T2I 失败退回文本；新增 Lolicon 非 R18/排除 AI 横向背景、缓存回退、固定 UMO 模板列表、会话订阅命令、Cron 与从午夜对齐的间隔推送。同一 UMO 在同一分钟只发送一次，定时路径不调用主 LLM。
 
 ### Removed
 
@@ -30,7 +30,7 @@
 - 会话并发 guard：即时检查同 UMO 锁占用，立即返回 `media_job_busy` 而非排队等待；空闲锁从字典回收。
 - 访问控制：群聊中用户黑/白名单现在也生效（之前仅群聊忽略用户白名单）。
 - 搜索来源合并：遍历所有完成态 Web/X 搜索输出，累计来源，不再第一个 call 提前 return。
-- 搜索来源展示：`max_search_sources=0` 时不再输出空的“来源”标题；FunctionTool 也遵守来源显示和数量配置。
+- 搜索来源展示：`max_search_sources=0` 时不再输出空的"来源"标题；FunctionTool 也遵守来源显示和数量配置。
 - `HTTPTransport.close()` 不再 `except: pass`，关闭失败记录 `transport_close_failed` 日志。
 - sender 日志不再直接用 `%s` 输出平台异常对象，改用 `safe_log` 只记录异常类型。
 
@@ -39,6 +39,8 @@
 - 统一日志脱敏：新增 `core/observability.py`，`safe_log` 只接受白名单字段，所有值经 `sanitize_diagnostic` 清除 Client Key、代理 userinfo、Base64 和超长文本。
 - 请求关联：每个命令/操作通过 `operation_scope` 建立 12 位随机 `trace_id`，通过 `ContextVar` 传播到 HTTP 日志。
 - 日志中只记录已验证的相对路径，不记录完整 URL 或 Authorization 头。
+
+## [Unreleased]
 
 ### Changed
 
@@ -58,20 +60,4 @@
 - **严格搜索回退**：每个远端结果先按当前候选的重试策略处理；仅 `model_not_found`/`model_not_allowed`/`search_not_performed` 在重试耗尽后切换下一候选，其他错误立即抛出；耗尽抛 `search_models_exhausted`。
 - **安全错误码**：transport 从错误体有界读取（64 KiB）只保留 `model_not_found`/`model_not_allowed`，其余用稳定映射，杜绝错误体泄漏。
 - 未知命令异常不再 `logger.warning("命令异常: %s", exc)` 打印完整异常字符串，改为 `safe_log` 只记录 `exception_type`。
-
-## [v0.1.0] - 2026-08-11
-
-### Added
-
-- 通过 grok2api Client Key 提供联网搜索、生图、改图、生视频。
-- 双平台发送：OneBot/NapCat（aiocqhttp）与 QQ Official。
-- 六个命令：`/g2搜索`、`/g2生图`、`/g2改图`、`/g2视频`、`/g2状态`、`/g2帮助`。
-- 会话级注册的 `grok2api_web_search` FunctionTool，由 AstrBot 主模型决定是否调用。
-- 配置集中校验、访问控制（黑白名单）、并发/大小限制、临时文件清理。
-- HTTP 传输：同源相对路径、受控重试矩阵、`.part` 原子下载、代理支持。
-
-### Security
-
-- 只保存 Client Key；日志、状态页、错误消息均不泄露密钥或完整 Base64。
-- 拒绝把上游提供的绝对 URL 作为鉴权请求目标，避免 Key 外泄。
 - 图片输入归一化并防解压炸弹；输出媒体先落盘再由 AstrBot 发送。

@@ -169,9 +169,12 @@ class GrokService:
     def _elapsed_ms(started_at: float) -> int:
         return int((time.monotonic() - started_at) * 1000)
 
-    def _log_media_failure(self, operation: str, started_at: float, exc: Exception) -> None:
+    def _log_media_failure(
+        self, operation: str, started_at: float, stage: str, exc: Exception
+    ) -> None:
         fields: dict[str, object] = {
             "operation": operation,
+            "stage": stage,
             "elapsed_ms": self._elapsed_ms(started_at),
             "exception_type": type(exc).__name__,
         }
@@ -351,6 +354,7 @@ class GrokService:
                 await lock.acquire()
                 paths: list[Path] = []
                 started_at = time.monotonic()
+                stage = "prompt_processing"
                 try:
                     request = await self._resolve_image_request(prompt)
                     safe_log(
@@ -365,6 +369,7 @@ class GrokService:
                         operation,
                         "正在生成图片，请稍候…",
                     )
+                    stage = "generate"
                     results = await self._client.generate_images(
                         request.prompt,
                         model=self._config.image_model,
@@ -379,6 +384,7 @@ class GrokService:
                         if result.content:
                             paths.append(await self._workspace.save_image(result))
                         else:
+                            stage = "download"
                             dest = self._new_media_path("img")
                             await self._client.download_media(
                                 result.source_url,
@@ -386,6 +392,7 @@ class GrokService:
                                 max_bytes=self._config.max_image_download_mb * 1024 * 1024,
                             )
                             paths.append(dest)
+                    stage = "send"
                     await self._sender.send_images(event, paths)
                     await self._finish(paths, success=True)
                     safe_log(
@@ -401,7 +408,7 @@ class GrokService:
                     raise
                 except Exception as exc:
                     await self._finish(paths, success=False)
-                    self._log_media_failure(operation, started_at, exc)
+                    self._log_media_failure(operation, started_at, stage, exc)
                     raise
                 finally:
                     self._release_session_lock(event, lock)
@@ -415,6 +422,7 @@ class GrokService:
                 await lock.acquire()
                 paths: list[Path] = []
                 started_at = time.monotonic()
+                stage = "input"
                 try:
                     data_url = await self._find_input_image(event)
                     safe_log(
@@ -425,6 +433,7 @@ class GrokService:
                         media_count=1,
                     )
                     await self._send_media_progress(event, operation, "正在编辑图片，请稍候…")
+                    stage = "generate"
                     results = await self._client.edit_image(
                         prompt,
                         data_url,
@@ -437,6 +446,7 @@ class GrokService:
                         if result.content:
                             paths.append(await self._workspace.save_image(result))
                         else:
+                            stage = "download"
                             dest = self._new_media_path("edit")
                             await self._client.download_media(
                                 result.source_url,
@@ -444,6 +454,7 @@ class GrokService:
                                 max_bytes=self._config.max_image_download_mb * 1024 * 1024,
                             )
                             paths.append(dest)
+                    stage = "send"
                     await self._sender.send_images(event, paths)
                     await self._finish(paths, success=True)
                     safe_log(
@@ -459,7 +470,7 @@ class GrokService:
                     raise
                 except Exception as exc:
                     await self._finish(paths, success=False)
-                    self._log_media_failure(operation, started_at, exc)
+                    self._log_media_failure(operation, started_at, stage, exc)
                     raise
                 finally:
                     self._release_session_lock(event, lock)
@@ -489,6 +500,7 @@ class GrokService:
                 await lock.acquire()
                 paths: list[Path] = []
                 started_at = time.monotonic()
+                stage = "prompt_processing"
                 try:
                     request = await self._resolve_video_request(prompt)
                     safe_log(
@@ -505,6 +517,7 @@ class GrokService:
                     except ProtocolError:
                         image_data_url = ""
 
+                    stage = "generate"
                     request_id = await self._client.create_video(
                         request.prompt,
                         model=self._config.video_model,
@@ -520,16 +533,19 @@ class GrokService:
                         model=self._config.video_model,
                         request_id=request_id,
                     )
+                    stage = "poll"
                     job = await self._client.wait_for_video(request_id)
                     if job.status == "failed":
                         raise ProtocolError(f"视频生成失败：{job.error_code}", code="video_failed")
                     dest = self._workspace.allocate_video_path(request_id)
                     paths.append(dest)
+                    stage = "download"
                     await self._client.download_video(
                         request_id,
                         dest,
                         max_bytes=self._config.max_video_download_mb * 1024 * 1024,
                     )
+                    stage = "send"
                     await self._sender.send_video(event, dest)
                     await self._finish(paths, success=True)
                     safe_log(
@@ -546,7 +562,7 @@ class GrokService:
                     raise
                 except Exception as exc:
                     await self._finish(paths, success=False)
-                    self._log_media_failure(operation, started_at, exc)
+                    self._log_media_failure(operation, started_at, stage, exc)
                     raise
                 finally:
                     self._release_session_lock(event, lock)

@@ -1,5 +1,17 @@
 # astrbot_plugin_grok2api_sub
 
+<div align="center">
+
+<img src="https://count.getloli.com/@astrbot-plugin-grok2api-sub?name=astrbot-plugin-grok2api-sub&theme=booru-jaypee&padding=6&offset=0&align=top&scale=1&pixelated=1&darkmode=auto" alt="count" />
+
+![AstrBot](https://img.shields.io/badge/AstrBot-plugin-5865f2?style=flat-square)
+![Version](https://img.shields.io/badge/version-0.1.1-22c55e?style=flat-square)
+![Python](https://img.shields.io/badge/Python-3.10%2B-3776ab?style=flat-square)
+![Platform](https://img.shields.io/badge/platform-OneBot%20%2F%20QQ%20Official-f97316?style=flat-square)
+![License](https://img.shields.io/badge/license-MIT-3b82f6?style=flat-square)
+
+</div>
+
 > **社区非官方插件**：本项目与 xAI、Grok 和 grok2api 项目无隶属或背书关系。
 
 通过 **grok2api Client Key** 提供联网搜索、文生图、改图和文生视频，并同时支持 **OneBot/NapCat** 与 **QQ Official** 双平台发送。
@@ -41,6 +53,7 @@ python -m pip install -r requirements.txt
 | `enabled` | `true`（总开关） |
 | `api_base_url` | `https://grok.example.com`（远端 grok2api 根地址，不带 `/v1`） |
 | `client_api_key` | `g2a_...`（专用 Client Key，非管理员 JWT） |
+| `admin_username` / `admin_password` | 管理面登录凭据；仅用于 `/g2面板` 只读查询，与 Client Key 相互独立 |
 | `verify_tls` | `true`（生产保持开启） |
 | `client_proxy_url` | `http://proxy.example:8080`（可选，AstrBot 到远端 API 的代理，留空不代理） |
 

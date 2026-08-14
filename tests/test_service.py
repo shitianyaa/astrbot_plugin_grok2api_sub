@@ -390,6 +390,28 @@ async def test_prompt_processing_error_stops_before_image_request(tmp_path):
     assert event.sent == []
 
 
+async def test_media_generation_failure_finalizes_once_with_generate_stage(tmp_path, monkeypatch):
+    ws = MediaWorkspace(tmp_path)
+    svc, _ = _make_service(ws)
+    failure = PluginError("upstream failed", code="upstream_failed")
+    svc._client.generate_images = AsyncMock(side_effect=failure)
+    finalized = AsyncMock()
+    monkeypatch.setattr(svc, "_finish", finalized)
+    events = []
+    monkeypatch.setattr(
+        "core.service.safe_log", lambda _level, name, **fields: events.append((name, fields))
+    )
+
+    with pytest.raises(PluginError) as caught:
+        await svc.deliver_generated_images(FakeEvent(), "cat")
+
+    assert caught.value is failure
+    finalized.assert_awaited_once_with([], success=False)
+    failures = [fields for name, fields in events if name == "media_job_failed"]
+    assert len(failures) == 1
+    assert failures[0]["stage"] == "generate"
+
+
 async def test_deliver_edited_image_requires_input(tmp_path):
     ws = MediaWorkspace(tmp_path)
     s = FakeSession()

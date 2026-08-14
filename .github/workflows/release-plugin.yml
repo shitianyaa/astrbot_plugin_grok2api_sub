@@ -1,0 +1,232 @@
+name: Release plugin archive
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - CHANGELOG.md
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing v* tag to publish again
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-plugin-${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Package and publish
+    runs-on: ubuntu-latest
+    env:
+      PLUGIN_NAME: astrbot_plugin_grok2api_sub
+      RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || startsWith(github.ref, 'refs/tags/') && github.ref_name || '' }}
+
+    steps:
+      - name: Check out release source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.sha }}
+          fetch-depth: 0
+
+      - name: Resolve release tag
+        id: release
+        shell: bash
+        env:
+          BEFORE_SHA: ${{ github.event.before }}
+        run: |
+          set -euo pipefail
+
+          extract_changelog_tag() {
+            awk '/^## v[0-9]+\.[0-9]+\.[0-9]+([[:space:]]|$)/ { print $2; exit }'
+          }
+
+          if [[ "$GITHUB_EVENT_NAME" == "push" && "$GITHUB_REF" == "refs/heads/main" ]]; then
+            current_tag="$(extract_changelog_tag < CHANGELOG.md)"
+            [[ -n "$current_tag" ]] || {
+              echo "Unable to read the latest v* version from CHANGELOG.md" >&2
+              exit 1
+            }
+            previous_tag="$({
+              git show "${BEFORE_SHA}:CHANGELOG.md" 2>/dev/null || true
+            } | extract_changelog_tag)"
+            if [[ "$current_tag" == "$previous_tag" ]]; then
+              echo "CHANGELOG version unchanged: $current_tag"
+              echo "should_release=false" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            RELEASE_TAG="$current_tag"
+            echo "Detected CHANGELOG version change: ${previous_tag:-none} -> $RELEASE_TAG"
+          fi
+
+          [[ "$RELEASE_TAG" == v* ]] || {
+            echo "Release tag must start with v: $RELEASE_TAG" >&2
+            exit 1
+          }
+          echo "RELEASE_TAG=$RELEASE_TAG" >> "$GITHUB_ENV"
+          echo "release_tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
+          echo "should_release=true" >> "$GITHUB_OUTPUT"
+
+      - name: Validate release version
+        if: steps.release.outputs.should_release == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$RELEASE_TAG" == v* ]] || {
+            echo "Release tag must start with v: $RELEASE_TAG" >&2
+            exit 1
+          }
+
+          metadata_version="$(python3 - <<'PY'
+          from pathlib import Path
+
+          for line in Path("metadata.yaml").read_text(encoding="utf-8").splitlines():
+              key, separator, value = line.partition(":")
+              if separator and key.strip() == "version":
+                  print(value.strip().strip("\"'"))
+                  break
+          PY
+          )"
+          [[ -n "$metadata_version" ]] || {
+            echo "Unable to read version from metadata.yaml" >&2
+            exit 1
+          }
+          [[ "$RELEASE_TAG" == "$metadata_version" ]] || {
+            echo "Tag $RELEASE_TAG does not match metadata version $metadata_version" >&2
+            exit 1
+          }
+
+      - name: Create release tag
+        if: steps.release.outputs.should_release == 'true' && github.event_name == 'push' && github.ref == 'refs/heads/main'
+        shell: bash
+        run: |
+          set -euo pipefail
+          if git rev-parse --verify --quiet "refs/tags/$RELEASE_TAG" >/dev/null; then
+            tagged_sha="$(git rev-list -n 1 "$RELEASE_TAG")"
+            [[ "$tagged_sha" == "$GITHUB_SHA" ]] || {
+              echo "Tag $RELEASE_TAG already points to $tagged_sha" >&2
+              exit 1
+            }
+          else
+            git config user.name "github-actions[bot]"
+            git config user.email "41898024+github-actions[bot]@users.noreply.github.com"
+            git tag -a "$RELEASE_TAG" "$GITHUB_SHA" -m "$RELEASE_TAG"
+            git push origin "refs/tags/$RELEASE_TAG"
+          fi
+
+      - name: Build plugin archive
+        if: steps.release.outputs.should_release == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          package_dir="dist/$PLUGIN_NAME"
+          archive="$PLUGIN_NAME-$RELEASE_TAG.zip"
+          mkdir -p "$package_dir"
+
+          rsync -a --prune-empty-dirs \
+            --exclude='/.git/' \
+            --exclude='/.github/' \
+            --exclude='/.gitignore' \
+            --exclude='/tests/' \
+            --exclude='/docs/' \
+            --exclude='/testignore/' \
+            --exclude='/admin_dashboard/' \
+            --exclude='/.codegraph/' \
+            --exclude='/dist/' \
+            --exclude='/data/' \
+            --exclude='/__pycache__/' \
+            --exclude='*.py[cod]' \
+            --exclude='/.pytest_cache/' \
+            --exclude='/.ruff_cache/' \
+            ./ "$package_dir/"
+
+          test -f "$package_dir/main.py"
+          test -f "$package_dir/metadata.yaml"
+          test -f "$package_dir/requirements.txt"
+          (
+            cd dist
+            zip -r -9 "../$archive" "$PLUGIN_NAME"
+          )
+          sha256sum "$archive" > "$archive.sha256"
+
+      - name: Generate release notes
+        if: steps.release.outputs.should_release == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          previous_tag="$(git describe --tags --abbrev=0 "${RELEASE_TAG}^" 2>/dev/null || true)"
+          if [[ -n "$previous_tag" ]]; then
+            commit_range="$previous_tag..$RELEASE_TAG"
+            comparison_url="https://github.com/$GITHUB_REPOSITORY/compare/$previous_tag...$RELEASE_TAG"
+          else
+            commit_range="$RELEASE_TAG"
+            comparison_url="https://github.com/$GITHUB_REPOSITORY/commits/$RELEASE_TAG"
+          fi
+
+          awk -v heading="## $RELEASE_TAG" '
+            index($0, heading) == 1 { found = 1; next }
+            found && /^## / { exit }
+            found { print }
+          ' CHANGELOG.md > changelog-section.md
+
+          {
+            echo "## 版本信息"
+            echo
+            echo "- 插件：\`$PLUGIN_NAME\`"
+            echo "- 版本：\`$RELEASE_TAG\`"
+            if [[ -n "$previous_tag" ]]; then
+              echo "- 上一版本：\`$previous_tag\`"
+            fi
+            echo
+            echo "## 改动信息"
+            echo
+            if [[ -s changelog-section.md ]]; then
+              cat changelog-section.md
+            else
+              git log "$commit_range" --no-merges --format='- %s (`%h`)' || true
+            fi
+            echo
+            echo "## 贡献者"
+            echo
+            git log "$commit_range" --format='%aN' | sort -fu | sed 's/^/- /'
+            echo
+            echo "[查看完整改动]($comparison_url)"
+          } > release-notes.md
+
+      - name: Upload workflow artifact
+        if: steps.release.outputs.should_release == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.PLUGIN_NAME }}-${{ env.RELEASE_TAG }}
+          path: |
+            ${{ env.PLUGIN_NAME }}-${{ env.RELEASE_TAG }}.zip
+            ${{ env.PLUGIN_NAME }}-${{ env.RELEASE_TAG }}.zip.sha256
+          if-no-files-found: error
+
+      - name: Create or update GitHub Release
+        if: steps.release.outputs.should_release == 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          archive="$PLUGIN_NAME-$RELEASE_TAG.zip"
+          files=("$archive" "$archive.sha256")
+
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release upload "$RELEASE_TAG" "${files[@]}" --clobber
+            gh release edit "$RELEASE_TAG" \
+              --title "$RELEASE_TAG" \
+              --notes-file release-notes.md
+          else
+            gh release create "$RELEASE_TAG" "${files[@]}" \
+              --verify-tag \
+              --notes-file release-notes.md \
+              --title "$RELEASE_TAG"
+          fi

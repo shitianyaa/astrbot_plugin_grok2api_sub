@@ -45,6 +45,9 @@ ALLOWED_FIELDS = {
     "reason",
     "candidate_count",
     "catalog_count",
+    "candidate_count_visible",
+    "visible_failed",
+    "skipped_count",
     "query_chars",
     "text_chars",
     "source_count",
@@ -58,6 +61,7 @@ ALLOWED_FIELDS = {
     "resource",
     "section_count",
     "job_count",
+    "stage",
     "attempted_count",
     "delivered_count",
     "failed_count",
@@ -147,4 +151,4 @@ def safe_log(level: int, event_name: str, **fields: object) -> None:
         parts.append(f"{key}={sanitized}")
     tid = _TRACE.get()
     marker = f" trace_id={tid}" if tid else ""
-    logger.log(level, f"[grok2api_sub]{marker} " + " ".join(parts))
+    logger.log(level, f"[grok2api_sub]{marker} " + " | ".join(parts))
