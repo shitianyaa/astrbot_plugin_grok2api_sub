@@ -2,7 +2,7 @@
 
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/) 规范。
 
-## v0.1.6 (2026-08-15)
+## v0.2.0 (2026-08-15)
 
 ### Added
 
