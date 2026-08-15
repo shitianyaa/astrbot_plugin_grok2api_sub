@@ -64,7 +64,7 @@ jobs:
           fi
 
           metadata_tag="$(python -c 'import yaml; print(yaml.safe_load(open("metadata.yaml", encoding="utf-8"))["version"])')"
-          [[ "$metadata_tag" == "${tag#v}" ]] || { echo "metadata version $metadata_tag does not match $tag" >&2; exit 1; }
+          [[ "$metadata_tag" == "$tag" ]] || { echo "metadata version $metadata_tag does not match $tag" >&2; exit 1; }
           python scripts/check_repository.py --tag "$tag" --json release-check.json
           python -m json.tool _conf_schema.json > /dev/null
           python -m compileall main.py core tests scripts

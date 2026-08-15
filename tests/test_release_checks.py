@@ -197,6 +197,7 @@ def test_release_workflow_is_simple_and_immutable() -> None:
     assert set(jobs) == {"release"}
     assert jobs["release"]["environment"] == "release"
     assert jobs["release"]["permissions"] == {"contents": "write"}
+    assert '[[ "$metadata_tag" == "$tag" ]]' in text
     assert "--clobber" not in text
     assert "git push" not in text
     assert "Create release tag" not in text

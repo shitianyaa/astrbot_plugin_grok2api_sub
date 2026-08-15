@@ -4,6 +4,8 @@
 
 ## [Unreleased]
 
+## v0.1.5 (2026-08-15)
+
 ### Changed
 
 - 面板背景不再支持标签筛选；每次发送随机打乱 Wallhaven、LoliAPI 和 t.alcy 的尝试顺序，各站点均随机取图，单个图源失败后继续剩余图源。
@@ -28,8 +30,15 @@
 
 ### Fixed
 
+- 修复 GitHub Actions 中打包测试错误继承 runner `GITHUB_SHA`，导致 manifest 提交归因错误和 CI 失败的问题。
+- 修复 Release workflow 对 `metadata.yaml` 中 `v` 前缀版本的比较，确保 `vX.Y.Z` tag 可以通过发布前校验。
 - 修复成功空模型目录仍发送搜索请求、异常目录结构绕过重试，以及 HTTP-date `Retry-After` 按本地时区解释的问题。
 - 任务日志的远端重试次数改为汇总模型目录、生成、轮询和下载实际发出的额外请求，正常视频轮询不再混入重试计数。
+
+### Maintenance
+
+- 简化普通 CI 为单一 Python 3.12 质量检查 job，并精简 Release workflow 为单 job 的验证、打包和发布流程。
+- 移除 Dependabot 配置、重复构建和跨 job artifact 传递，Release Notes 改由 GitHub 自动生成。
 
 ## v0.1.4 (2026-08-14)
 
