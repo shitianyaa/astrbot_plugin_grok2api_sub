@@ -159,14 +159,14 @@ def test_defaults():
     assert c.save_media is False
     assert c.enable_web_search is True
     assert c.enable_x_search is True
-    assert c.search_reasoning_effort == "high"
+    assert c.search_reasoning_effort == "auto"
     assert c.prompt_max_chars == 4000
     assert c.video_aspect_ratios == ("1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3")
 
 
-def test_auto_search_reasoning_effort_is_accepted():
-    c = _cfg(capability_settings={"search_reasoning_effort": "auto"})
-    assert c.search_reasoning_effort == "auto"
+def test_explicit_search_reasoning_effort_is_accepted():
+    c = _cfg(capability_settings={"search_reasoning_effort": "high"})
+    assert c.search_reasoning_effort == "high"
 
 
 def test_empty_models_do_not_block_startup():

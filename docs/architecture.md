@@ -114,7 +114,7 @@ Provider；无论选哪个 Provider，插件都以完成态 `web_search_call` �
   `grok-4.5`），Provider 前缀只用于目录可见性匹配。
 - `grok-chat-*` 不支持 X 搜索：插件会在每个候选模型发起请求前移除 `x_search`，
   保留已启用的 Web 搜索；若因此没有任何可用工具则跳过该候选，不发送 Responses 请求。
-- `search_reasoning_effort` 默认 `high`，也可设为 `auto`。`auto`、不支持或未知的模型
+- `search_reasoning_effort` 默认 `auto`，也可设为 `high`/`medium`/`low` 等。`auto`、不支持或未知的模型
   都省略 `reasoning.effort`，由远端选择或使用默认值，不以此触发模型回退。
 
 ## 平台发送边界

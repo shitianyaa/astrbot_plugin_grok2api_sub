@@ -73,9 +73,9 @@
       "search_reasoning_effort": {
         "description": "联网搜索思考强度。",
         "type": "string",
-        "default": "high",
+        "default": "auto",
         "options": ["auto", "none", "low", "medium", "high", "xhigh"],
-        "hint": "默认 high；auto 表示不发送 reasoning 参数，由远端自动选择。当前候选模型不支持所选强度时也会省略该参数。"
+        "hint": "默认 auto（不发送 reasoning 参数，由远端自动选择）。当前候选模型不支持所选强度时也会省略该参数。"
       },
       "image_models": {
         "description": "文生图模型候选，每行一个，上方优先，最多 12 个。留空则生图不可用。",

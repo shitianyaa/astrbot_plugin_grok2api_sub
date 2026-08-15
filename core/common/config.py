@@ -564,7 +564,7 @@ class PluginConfig:
             ),
             search_reasoning_effort=_to_choice(
                 "capability_settings.search_reasoning_effort",
-                g(cap, "search_reasoning_effort", "high"),
+                g(cap, "search_reasoning_effort", "auto"),
                 _SEARCH_REASONING_EFFORTS,
             ),
             enable_llm_search_tool=_bool_flag(

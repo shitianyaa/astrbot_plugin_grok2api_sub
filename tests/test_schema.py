@@ -80,8 +80,9 @@ def test_capability_group_has_search_models(schema):
 
 
 def test_search_reasoning_effort_supports_auto(schema):
-    options = schema["capability_settings"]["items"]["search_reasoning_effort"]["options"]
-    assert options[0] == "auto"
+    item = schema["capability_settings"]["items"]["search_reasoning_effort"]
+    assert item["options"][0] == "auto"
+    assert item["default"] == "auto"
 
 
 def test_prompt_processing_uses_astrbot_provider_selectors(schema):

@@ -1122,7 +1122,7 @@ async def test_search_skips_catalog_missing_models_and_uses_first_visible(tmp_pa
         "required": True,
         "web_search": True,
         "x_search": True,
-        "reasoning_effort": "high",
+        "reasoning_effort": "auto",
     }
     assert task_events[1][2]["model"] == "grok-4.5"
     assert task_events[1][2]["result_status"] == "completed"
@@ -1135,7 +1135,9 @@ async def test_search_passes_enabled_tools_and_supported_reasoning_effort(tmp_pa
         models=("grok-4.5",),
         search_results=(_search_result("grok-4.5"),),
     )
-    service = _make_scripted_service(tmp_path, client, ("grok-4.5",))
+    service = _make_scripted_service(
+        tmp_path, client, ("grok-4.5",), search_reasoning_effort="high"
+    )
     await service.search(FakeEvent(), "question")
     assert client.search_options == [
         {

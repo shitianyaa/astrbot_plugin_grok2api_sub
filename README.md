@@ -124,7 +124,7 @@ python -m pip install -r requirements.txt
 | `search_models` | 多行列表 | 搜索候选模型列表（上方优先，首选 `grok-chat-fast` 等） |
 | `enable_web_search` | `true` | 是否启用 Web 联网搜索 |
 | `enable_x_search` | `true` | 是否启用 X/Twitter 平台搜索（chat 模型会自动降级为纯 Web） |
-| `search_reasoning_effort` | `high` | 搜索推理强度（`auto`/`none`/`low`/`medium`/`high`/`xhigh`） |
+| `search_reasoning_effort` | `auto` | 搜索推理强度（`auto`/`none`/`low`/`medium`/`high`/`xhigh`） |
 | `image_models` | 多行列表 | 文生图候选模型（首选 `grok-imagine-image-lite`） |
 | `image_edit_models` | 多行列表 | 改图候选模型（首选 `grok-imagine-image`） |
 | `video_models` | 多行列表 | 生视频候选模型（首选 `grok-imagine-video`） |

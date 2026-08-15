@@ -26,7 +26,7 @@ Schema 顶层只有 4 个 `object` 分组：`connection_settings`、`capability_
 | `search_models` | text | `grok-chat-fast`、`grok-build-0.1`、`grok-4.3`、`grok-4.5`、`grok-4.6`、`grok-composer-2.5-fast`、`grok-4.20-0309-non-reasoning`、`grok-4.20-0309-reasoning`、`grok-4.20-multi-agent-0309` | 多行文本，每行一个，**上方优先**，最多 12 个，每项 ≤255 字符，按首次出现保序去重；英文或中文逗号均直接报配置错误；留空禁用搜索 |
 | `enable_web_search` | bool | `true` | 是否将 `web_search` 工具传给远端 Responses；与 X 搜索不能同时关闭 |
 | `enable_x_search` | bool | `true` | 是否将 `x_search` 工具传给远端 Responses；`grok-chat-*` 不支持该工具，会自动保留已启用的 Web 搜索；与 Web 搜索不能同时关闭 |
-| `search_reasoning_effort` | string | `high` | `auto`、`none`、`low`、`medium`、`high`、`xhigh`；`auto` 不发送 `reasoning` 字段，由远端选择；已知模型不支持所选值或自定义模型时也省略该字段，保留该候选的搜索机会 |
+| `search_reasoning_effort` | string | `auto` | `auto`、`none`、`low`、`medium`、`high`、`xhigh`；`auto` 不发送 `reasoning` 字段，由远端选择；已知模型不支持所选值或自定义模型时也省略该字段，保留该候选的搜索机会 |
 | `image_models` | text | `grok-imagine-image-lite`、`grok-imagine-image`、`grok-imagine-image-quality` | 多行文本，每行一个，**上方优先**，最多 12 个；英文或中文逗号均直接报配置错误；留空禁用生图 |
 | `image_edit_models` | text | `grok-imagine-image`、`grok-imagine-image-quality` | 多行文本，每行一个，**上方优先**，最多 12 个；英文或中文逗号均直接报配置错误；留空禁用改图 |
 | `video_models` | text | `grok-imagine-video` | 多行文本，每行一个，最多 12 个；英文或中文逗号均直接报配置错误；留空禁用视频 |
