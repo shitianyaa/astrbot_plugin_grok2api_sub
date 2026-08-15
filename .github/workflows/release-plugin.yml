@@ -112,7 +112,7 @@ jobs:
           python scripts/collect_release_sources.py --repository "$GITHUB_REPOSITORY" --previous-tag '${{ needs.validate.outputs.previous_tag }}' --tag '${{ needs.validate.outputs.tag }}' --output-dir .release-sources
           python scripts/render_release_notes.py --tag '${{ needs.validate.outputs.tag }}' --previous-tag '${{ needs.validate.outputs.previous_tag }}' --repository "$GITHUB_REPOSITORY" --changelog CHANGELOG.md --prs-json .release-sources/prs.json --commits-json .release-sources/commits.json --history-contributors-json .release-sources/history-contributors.json --validate-only ${{ needs.validate.outputs.allow_unmapped_commits == 'true' && '--allow-unmapped-commits' || '' }}
       - name: Upload validation audit
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: release-validation-${{ needs.validate.outputs.tag }}
           path: |
@@ -141,7 +141,7 @@ jobs:
       - name: Build archive
         run: python scripts/package_plugin.py --tag '${{ needs.validate.outputs.tag }}' --output-dir dist
       - name: Upload tested archive
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: tested-release-${{ needs.validate.outputs.tag }}
           path: dist/
@@ -168,7 +168,7 @@ jobs:
       - name: Rebuild production archive
         run: python scripts/package_plugin.py --tag '${{ needs.validate.outputs.tag }}' --output-dir dist
       - name: Upload verified release
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: verified-release-${{ needs.validate.outputs.tag }}
           path: dist/
@@ -222,7 +222,7 @@ jobs:
           [[ "$actual" == "$expected" ]] || { echo "published asset set mismatch" >&2; exit 1; }
           gh release edit '${{ needs.validate.outputs.tag }}' --draft=false
       - name: Upload immutable handoff audit
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: published-release-audit-${{ needs.validate.outputs.tag }}
           path: |
