@@ -192,7 +192,12 @@ def _zip_datetime(epoch: int) -> tuple[int, int, int, int, int, int]:
 
 def _source_commit(root: Path) -> str:
     github_sha = os.environ.get("GITHUB_SHA", "").strip()
-    if re.fullmatch(r"[0-9a-fA-F]{40}", github_sha):
+    github_workspace = os.environ.get("GITHUB_WORKSPACE", "").strip()
+    if (
+        re.fullmatch(r"[0-9a-fA-F]{40}", github_sha)
+        and github_workspace
+        and root.resolve() == Path(github_workspace).resolve()
+    ):
         return github_sha.lower()
     result = subprocess.run(
         ["git", "rev-parse", "HEAD"],

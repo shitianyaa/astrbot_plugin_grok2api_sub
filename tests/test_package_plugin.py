@@ -44,6 +44,8 @@ def _fixture_repo(tmp_path: Path) -> Path:
 
 def test_build_package_uses_allowlist_and_verifies_manifest(tmp_path: Path, monkeypatch) -> None:
     root = _fixture_repo(tmp_path)
+    monkeypatch.setenv("GITHUB_SHA", "a" * 40)
+    monkeypatch.setenv("GITHUB_WORKSPACE", str(_ROOT))
     for relative in (
         "tests/test_secret.py",
         "docs/internal.md",
@@ -83,6 +85,14 @@ def test_build_package_uses_allowlist_and_verifies_manifest(tmp_path: Path, monk
     )
     assert manifest["source_commit"] == ""
     assert manifest["source_dirty"] is False
+
+
+def test_source_commit_uses_github_sha_only_for_workspace(tmp_path: Path, monkeypatch) -> None:
+    root = _fixture_repo(tmp_path)
+    monkeypatch.setenv("GITHUB_SHA", "A" * 40)
+    monkeypatch.setenv("GITHUB_WORKSPACE", str(root))
+
+    assert package_plugin._source_commit(root) == "a" * 40
 
 
 def test_build_package_marks_dirty_source_without_claiming_head(
