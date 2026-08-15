@@ -206,7 +206,6 @@ def test_release_workflow_is_simple_and_immutable() -> None:
     for required in (
         "package_plugin.py",
         "extract_changelog.py",
-        "manifest.json",
         ".sha256",
         "release-notes.md",
         "persist-credentials: false",

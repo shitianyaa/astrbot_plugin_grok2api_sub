@@ -95,17 +95,15 @@ jobs:
 
           archive="dist/${PLUGIN_NAME}-${tag}.zip"
           checksum="$archive.sha256"
-          manifest=dist/manifest.json
           notes="dist/release-notes.md"
 
           python scripts/extract_changelog.py --tag "$tag" --changelog CHANGELOG.md --output "$notes"
 
-          test -f "$archive" && test -f "$checksum" && test -f "$manifest" && test -f "$notes"
+          test -f "$archive" && test -f "$checksum" && test -f "$notes"
           grep -F "$(sha256sum "$archive" | awk '{print $1}')" "$checksum"
-          python -c 'import json; json.load(open("dist/manifest.json", encoding="utf-8"))'
 
           if [[ "${GITHUB_EVENT_NAME}" == "push" || "${INPUT_DRY_RUN:-false}" != "true" ]]; then
-            gh release create "$tag" "$archive" "$checksum" "$manifest" \
+            gh release create "$tag" "$archive" "$checksum" \
               --target "${GITHUB_SHA}" \
               --title "$tag" \
               --notes-file "$notes"

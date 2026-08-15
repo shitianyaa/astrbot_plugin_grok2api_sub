@@ -16,7 +16,7 @@
 - 检查版本格式与同名 Release 状态；
 - 校验全项目版本来源一致性、配置 JSON 格式与 Python 语法；
 - 运行全量 pytest 测试与 Ruff 代码检查；
-- 构建 ZIP、SHA-256 校验和与 `manifest.json`，并复核产物完整性；
+- 构建 ZIP 插件包与 SHA-256 校验和；
 - 调用 `scripts/extract_changelog.py` 从 `CHANGELOG.md` 抽取当前版本的变更说明；
 - 使用 `--notes-file` 将提取的 Markdown 内容发布至 GitHub Release。
 

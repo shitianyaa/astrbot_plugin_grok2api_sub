@@ -12,7 +12,6 @@
 ```powershell
 python -m pip install -e ".[dev]"
 python -m json.tool _conf_schema.json > $null
-python scripts/check_pr.py --event .tmp-event.json
 python scripts/check_repository.py --tag vX.Y.Z
 python -m compileall main.py core tests scripts
 python -m pytest -q
@@ -21,7 +20,7 @@ ruff format --check .
 git diff --check
 ```
 
-发布前额外运行 `python scripts/package_plugin.py --tag vX.Y.Z --output-dir .tmp-release-dist`，检查 ZIP、`.sha256` 和 `manifest.json`。脚本拒绝符号链接、敏感路径、危险归档成员和覆盖既有输出。
+发布前额外运行 `python scripts/package_plugin.py --tag vX.Y.Z --output-dir .tmp-release-dist`，检查 ZIP 与 `.sha256`。脚本拒绝符号链接、敏感路径、危险归档成员和覆盖既有输出。
 
 ## 平台侧管理员清单
 

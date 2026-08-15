@@ -281,52 +281,36 @@ def verify_archive(archive_path: Path, files: list[SourceFile], tag: str) -> Non
                 raise PackageError("archive Python syntax smoke check failed")
 
 
-def build_package(root: Path, tag: str, output_dir: Path, manifest_path: Path | None) -> dict:
+def build_package(root: Path, tag: str, output_dir: Path) -> dict:
     _validate_tag(tag)
     root = root.resolve()
     if _metadata_version(root / "metadata.yaml") != tag:
         raise PackageError(f"metadata.yaml version must match release tag {tag}")
 
     output_dir = output_dir.resolve()
-    manifest_path = (manifest_path or output_dir / "manifest.json").resolve()
     archive_path = output_dir / f"{PLUGIN_NAME}-{tag}.zip"
     checksum_path = archive_path.with_suffix(archive_path.suffix + ".sha256")
-    for path in (archive_path, checksum_path, manifest_path):
+    for path in (archive_path, checksum_path):
         _ensure_new_output(path)
 
     files = collect_source_files(root)
-    source_dirty = _source_dirty(root)
     epoch = _source_epoch(root)
     try:
         _write_archive(archive_path, files, epoch)
         verify_archive(archive_path, files, tag)
         archive_hash = _sha256_file(archive_path)
-        manifest = {
-            "schema": 1,
+        result = {
             "plugin": PLUGIN_NAME,
             "tag": tag,
-            "source_commit": "" if source_dirty else _source_commit(root),
-            "source_dirty": source_dirty,
             "archive": {"name": archive_path.name, "sha256": archive_hash},
-            "files": [
-                {
-                    "path": source.archive_path.removeprefix(f"{PLUGIN_NAME}/"),
-                    "sha256": source.sha256,
-                }
-                for source in files
-            ],
         }
         checksum_path.write_text(f"{archive_hash}  {archive_path.name}\n", encoding="ascii")
-        manifest_path.write_text(
-            json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
-            encoding="utf-8",
-        )
     except Exception:
-        for path in (archive_path, checksum_path, manifest_path):
+        for path in (archive_path, checksum_path):
             if path.exists():
                 path.unlink()
         raise
-    return manifest
+    return result
 
 
 def parse_args() -> argparse.Namespace:
@@ -334,18 +318,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--tag", required=True, help="Stable release tag, for example v0.1.4")
     parser.add_argument("--root", type=Path, default=Path(__file__).resolve().parents[1])
     parser.add_argument("--output-dir", type=Path, required=True)
-    parser.add_argument("--manifest", type=Path)
     return parser.parse_args()
 
 
 def main() -> int:
     args = parse_args()
     try:
-        manifest = build_package(args.root, args.tag, args.output_dir, args.manifest)
+        result = build_package(args.root, args.tag, args.output_dir)
     except (OSError, PackageError, zipfile.BadZipFile) as exc:
         print(f"release package failed: {exc}", file=os.sys.stderr)
         return 1
-    print(json.dumps(manifest, ensure_ascii=False, sort_keys=True))
+    print(json.dumps(result, ensure_ascii=False, sort_keys=True))
     return 0
 
 
