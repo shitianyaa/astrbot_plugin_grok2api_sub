@@ -152,7 +152,11 @@ def test_ci_workflow_has_read_only_fixed_action_contract() -> None:
     assert set(jobs) == {"quality"}
     quality = jobs["quality"]
     assert quality["permissions"] == {"contents": "read", "pull-requests": "read"}
-    assert {"3.10", "3.12"} <= set(quality["strategy"]["matrix"]["python-version"])
+    assert "strategy" not in quality
+    setup_python = next(step for step in quality["steps"] if step.get("name") == "Set up Python")
+    assert setup_python["with"]["python-version"] == "3.12"
+    assert "actions/cache@" not in text
+    assert "concurrency:" not in text
 
     action_refs = re.findall(r"uses:\s*([^\s]+)", text)
     assert action_refs
@@ -180,7 +184,7 @@ def test_ci_workflow_has_read_only_fixed_action_contract() -> None:
         assert command in text
 
 
-def test_release_workflow_is_immutable_and_split_by_permissions() -> None:
+def test_release_workflow_is_simple_and_immutable() -> None:
     workflow_path = Path(__file__).parents[1] / ".github" / "workflows" / "release-plugin.yml"
     text = workflow_path.read_text(encoding="utf-8")
     workflow = yaml.safe_load(text)
@@ -190,29 +194,34 @@ def test_release_workflow_is_immutable_and_split_by_permissions() -> None:
     assert workflow["on"]["push"]["tags"] == ["v*.*.*"]
     assert "branches" not in workflow["on"]["push"]
     jobs = workflow["jobs"]
-    assert {"validate", "release_notes_audit", "build", "build_production", "publish"} <= set(jobs)
-    assert jobs["publish"]["environment"] == "release"
-    assert jobs["publish"]["permissions"] == {"contents": "write"}
-    for name in ("validate", "release_notes_audit", "build", "build_production"):
-        assert jobs[name]["permissions"]["contents"] == "read"
+    assert set(jobs) == {"release"}
+    assert jobs["release"]["environment"] == "release"
+    assert jobs["release"]["permissions"] == {"contents": "write"}
     assert "--clobber" not in text
     assert "git push" not in text
     assert "Create release tag" not in text
-    assert 'git tag --merged "${tag}^" --sort=-version:refname' in text
     assert 'python -m pip install -e ".[dev]"' in text
     assert "requirements-dev.txt" not in text
     for required in (
-        "collect_release_sources.py",
-        "render_release_notes.py",
         "package_plugin.py",
         "manifest.json",
         ".sha256",
-        "retention-days:",
         "persist-credentials: false",
+        "gh release create",
+        "--generate-notes",
+        "--verify-tag",
     ):
         assert required in text
-    assert "needs.validate.outputs.allow_unmapped_commits == 'true'" in text
+    assert "allow_unmapped_commits" not in text
+    assert "release_notes_audit" not in text
+    assert "build_production" not in text
+    assert "actions/upload-artifact" not in text
+    assert "actions/download-artifact" not in text
     for reference in re.findall(r"uses:\s*([^\s]+)", text):
         owner_repo, _, commit = reference.partition("@")
         assert owner_repo.startswith("actions/")
         assert re.fullmatch(r"[0-9a-f]{40}", commit)
+
+
+def test_dependabot_configuration_is_not_present() -> None:
+    assert not (Path(__file__).parents[1] / ".github" / "dependabot.yml").exists()

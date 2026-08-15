@@ -30,7 +30,7 @@ git diff --check
 - `main` 分支保护、required CI checks、禁止直接 push 和强制线性历史策略。
 - `vX.Y.Z` tag ruleset，禁止移动或删除已发布 tag。
 - `release` environment 的 required reviewers；只有该 environment 可执行 Release 写入。
-- Actions 使用的 token 权限、artifact retention、Dependabot 权限和分支创建权限。
+- Actions 使用的 token 权限和分支创建权限。
 - 发布前至少完成一次 dry-run 和一次真实新 tag 演练；OneBot/QQ Official 真实验收单独记录，缺凭据写 `SKIP`。
 
 CODEOWNERS 只提供 reviewer 路由，不能替代分支保护。发布成功也不代表外部平台验收成功，必须分别记录。

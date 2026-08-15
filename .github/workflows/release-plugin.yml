@@ -7,57 +7,50 @@ name: Release plugin archive
   workflow_dispatch:
     inputs:
       tag:
-        description: Existing immutable vX.Y.Z tag to validate or publish
+        description: Existing immutable vX.Y.Z tag
         required: true
         type: string
       dry_run:
-        description: Validate and upload artifacts without creating a GitHub Release
+        description: Validate and build without publishing
         required: false
         default: true
         type: boolean
-      allow_unmapped_commits:
-        description: Allow explicit protected-environment override for direct commits
-        required: false
-        default: false
-        type: boolean
 
 permissions: {}
-
-concurrency:
-  group: release-plugin-${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
-  cancel-in-progress: false
 
 env:
   PLUGIN_NAME: astrbot_plugin_grok2api_sub
 
 jobs:
-  validate:
-    name: Validate immutable tag
+  release:
+    name: Validate and publish
     runs-on: ubuntu-latest
+    environment: release
     permissions:
-      contents: read
-      pull-requests: read
-    outputs:
-      tag: ${{ steps.context.outputs.tag }}
-      previous_tag: ${{ steps.context.outputs.previous_tag }}
-      dry_run: ${{ steps.context.outputs.dry_run }}
-      allow_unmapped_commits: ${{ steps.context.outputs.allow_unmapped_commits }}
+      contents: write
     steps:
-      - name: Check out repository
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Check out immutable tag
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
           ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
           fetch-depth: 0
           persist-credentials: false
-      - name: Resolve and validate tag
-        id: context
-        shell: bash
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: python -m pip install -e ".[dev]"
+
+      - name: Validate, build, and publish
         env:
           GH_TOKEN: ${{ github.token }}
           INPUT_TAG: ${{ inputs.tag }}
           INPUT_DRY_RUN: ${{ inputs.dry_run }}
-          INPUT_ALLOW_UNMAPPED: ${{ inputs.allow_unmapped_commits }}
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        shell: bash
         run: |
           set -euo pipefail
           tag="${INPUT_TAG:-${GITHUB_REF_NAME}}"
@@ -66,167 +59,29 @@ jobs:
           default_sha="$(git rev-parse "origin/$DEFAULT_BRANCH")"
           git merge-base --is-ancestor "$tag_sha" "$default_sha"
           if gh release view "$tag" >/dev/null 2>&1; then
-            echo "a GitHub Release already exists for $tag; immutable release path refuses overwrite" >&2
+            echo "a GitHub Release already exists for $tag" >&2
             exit 1
           fi
-          metadata_tag="$(python -c 'import yaml; print(yaml.safe_load(open("metadata.yaml", encoding="utf-8"))["version"])')"
-          [[ "$metadata_tag" == "$tag" ]] || { echo "metadata version $metadata_tag does not match $tag" >&2; exit 1; }
-          previous_tag="$(git tag --merged "${tag}^" --sort=-version:refname | awk '$0 ~ /^v[0-9]+\.[0-9]+\.[0-9]+$/ { print; exit }')"
-          [[ -n "$previous_tag" ]] || { echo "cannot determine previous stable tag" >&2; exit 1; }
-          dry_run="${INPUT_DRY_RUN:-false}"
-          allow_unmapped="${INPUT_ALLOW_UNMAPPED:-false}"
-          if [[ "$GITHUB_EVENT_NAME" == "push" ]]; then dry_run=false; fi
-          printf 'tag=%s\nprevious_tag=%s\ndry_run=%s\nallow_unmapped_commits=%s\n' "$tag" "$previous_tag" "$dry_run" "$allow_unmapped" >> "$GITHUB_OUTPUT"
 
-  release_notes_audit:
-    name: Audit release notes
-    needs: validate
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      pull-requests: read
-    steps:
-      - name: Check out immutable tag
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-        with:
-          ref: ${{ needs.validate.outputs.tag }}
-          fetch-depth: 0
-          persist-credentials: false
-      - name: Set up Python
-        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
-        with:
-          python-version: "3.12"
-      - name: Install validation dependencies
-        run: python -m pip install -e ".[dev]"
-      - name: Validate repository and release notes
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          python scripts/check_repository.py --tag '${{ needs.validate.outputs.tag }}' --json release-check.json
+          metadata_tag="$(python -c 'import yaml; print(yaml.safe_load(open("metadata.yaml", encoding="utf-8"))["version"])')"
+          [[ "$metadata_tag" == "${tag#v}" ]] || { echo "metadata version $metadata_tag does not match $tag" >&2; exit 1; }
+          python scripts/check_repository.py --tag "$tag" --json release-check.json
           python -m json.tool _conf_schema.json > /dev/null
           python -m compileall main.py core tests scripts
           python -m pytest -q
           ruff check .
           ruff format --check .
-          python scripts/collect_release_sources.py --repository "$GITHUB_REPOSITORY" --previous-tag '${{ needs.validate.outputs.previous_tag }}' --tag '${{ needs.validate.outputs.tag }}' --output-dir .release-sources
-          python scripts/render_release_notes.py --tag '${{ needs.validate.outputs.tag }}' --previous-tag '${{ needs.validate.outputs.previous_tag }}' --repository "$GITHUB_REPOSITORY" --changelog CHANGELOG.md --prs-json .release-sources/prs.json --commits-json .release-sources/commits.json --history-contributors-json .release-sources/history-contributors.json --validate-only ${{ needs.validate.outputs.allow_unmapped_commits == 'true' && '--allow-unmapped-commits' || '' }}
-      - name: Upload validation audit
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: release-validation-${{ needs.validate.outputs.tag }}
-          path: |
-            release-check.json
-            .release-sources/
-          if-no-files-found: error
-          retention-days: 7
+          python scripts/package_plugin.py --tag "$tag" --output-dir dist
 
-  build:
-    name: Build and smoke test
-    needs: [validate, release_notes_audit]
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-    steps:
-      - name: Check out immutable tag
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-        with:
-          ref: ${{ needs.validate.outputs.tag }}
-          fetch-depth: 0
-          persist-credentials: false
-      - name: Set up Python
-        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
-        with:
-          python-version: "3.12"
-      - name: Build archive
-        run: python scripts/package_plugin.py --tag '${{ needs.validate.outputs.tag }}' --output-dir dist
-      - name: Upload tested archive
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: tested-release-${{ needs.validate.outputs.tag }}
-          path: dist/
-          if-no-files-found: error
-          retention-days: 7
-
-  build_production:
-    name: Clean production rebuild
-    needs: [validate, release_notes_audit, build]
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-    steps:
-      - name: Check out immutable tag
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-        with:
-          ref: ${{ needs.validate.outputs.tag }}
-          fetch-depth: 0
-          persist-credentials: false
-      - name: Set up Python
-        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
-        with:
-          python-version: "3.12"
-      - name: Rebuild production archive
-        run: python scripts/package_plugin.py --tag '${{ needs.validate.outputs.tag }}' --output-dir dist
-      - name: Upload verified release
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: verified-release-${{ needs.validate.outputs.tag }}
-          path: dist/
-          if-no-files-found: error
-          retention-days: 7
-
-  publish:
-    name: Publish immutable GitHub Release
-    needs: [validate, release_notes_audit, build_production]
-    if: needs.validate.outputs.dry_run != 'true'
-    runs-on: ubuntu-latest
-    environment: release
-    permissions:
-      contents: write
-    steps:
-      - name: Check out immutable tag
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-        with:
-          ref: ${{ needs.validate.outputs.tag }}
-          fetch-depth: 0
-          persist-credentials: false
-      - name: Download verified release
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
-        with:
-          name: verified-release-${{ needs.validate.outputs.tag }}
-          path: dist
-      - name: Download release audit inputs
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
-        with:
-          name: release-validation-${{ needs.validate.outputs.tag }}
-          path: .release-validation
-      - name: Generate release notes and verify assets
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          python scripts/render_release_notes.py --tag '${{ needs.validate.outputs.tag }}' --previous-tag '${{ needs.validate.outputs.previous_tag }}' --repository "$GITHUB_REPOSITORY" --changelog CHANGELOG.md --prs-json .release-validation/.release-sources/prs.json --commits-json .release-validation/.release-sources/commits.json --history-contributors-json .release-validation/.release-sources/history-contributors.json --output release-notes.md --audit-output release-notes-audit.json ${{ needs.validate.outputs.allow_unmapped_commits == 'true' && '--allow-unmapped-commits' || '' }}
-          archive="dist/${PLUGIN_NAME}-${{ needs.validate.outputs.tag }}.zip"
+          archive="dist/${PLUGIN_NAME}-${tag}.zip"
           checksum="$archive.sha256"
           manifest=dist/manifest.json
           test -f "$archive" && test -f "$checksum" && test -f "$manifest"
           grep -F "$(sha256sum "$archive" | awk '{print $1}')" "$checksum"
           python -c 'import json; json.load(open("dist/manifest.json", encoding="utf-8"))'
-          if gh release view '${{ needs.validate.outputs.tag }}' >/dev/null 2>&1; then
-            echo "refusing to overwrite an existing Release" >&2
-            exit 1
+
+          if [[ "${GITHUB_EVENT_NAME}" == "push" || "${INPUT_DRY_RUN:-false}" != "true" ]]; then
+            gh release create "$tag" "$archive" "$checksum" "$manifest" --verify-tag --generate-notes --title "$tag"
+          else
+            echo "dry run: validation and build succeeded; release was not published"
           fi
-          gh release create '${{ needs.validate.outputs.tag }}' "$archive" "$checksum" "$manifest" --draft --verify-tag --title '${{ needs.validate.outputs.tag }}' --notes-file release-notes.md
-          expected="$(printf '%s\n' "${PLUGIN_NAME}-${{ needs.validate.outputs.tag }}.zip" "${PLUGIN_NAME}-${{ needs.validate.outputs.tag }}.zip.sha256" manifest.json | sort)"
-          actual="$(gh release view '${{ needs.validate.outputs.tag }}' --json assets --jq '.assets[].name' | sort)"
-          [[ "$actual" == "$expected" ]] || { echo "published asset set mismatch" >&2; exit 1; }
-          gh release edit '${{ needs.validate.outputs.tag }}' --draft=false
-      - name: Upload immutable handoff audit
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: published-release-audit-${{ needs.validate.outputs.tag }}
-          path: |
-            release-notes-audit.json
-            release-notes.md
-          if-no-files-found: error
-          retention-days: 30
