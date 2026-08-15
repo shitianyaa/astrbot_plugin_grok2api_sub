@@ -260,10 +260,16 @@ async def test_panel_render_uses_configured_resolution(monkeypatch, tmp_path, pl
     rendered.write_bytes(b"not-empty")
     destination = tmp_path / "destination.jpg"
     calls = []
+    logs = []
 
     class BackgroundProvider:
-        async def get_background(self, _tags):
-            return SimpleNamespace(source="cache", data_url="data:image/jpeg;base64,AA==")
+        async def get_background(self):
+            return SimpleNamespace(
+                source="cache",
+                provider="cache",
+                image_name="panel_background.jpg",
+                data_url="data:image/jpeg;base64,AA==",
+            )
 
     class Workspace:
         def allocate_image_path(self):
@@ -279,13 +285,17 @@ async def test_panel_render_uses_configured_resolution(monkeypatch, tmp_path, pl
     plugin = object.__new__(plugin_module.Grok2APISubPlugin)
     plugin._plugin_config = SimpleNamespace(
         panel_t2i_enabled=True,
-        panel_background_tags=(),
         panel_resolution="1080p",
     )
     plugin._panel_background = BackgroundProvider()
     plugin._workspace = Workspace()
     plugin.html_render = html_render
     monkeypatch.setattr(plugin, "_validate_rendered_image", lambda _path: None)
+    monkeypatch.setattr(
+        plugin_module,
+        "safe_log",
+        lambda level, event_name, **fields: logs.append((level, event_name, fields)),
+    )
 
     result = await plugin._render_panel_image(
         PanelReport(generated_at=0, period="24h", selected_sections=())
@@ -300,6 +310,87 @@ async def test_panel_render_uses_configured_resolution(monkeypatch, tmp_path, pl
         "quality": 92,
         "viewport": {"width": 1920, "height": 1080},
     }
+    assert logs[0] == (
+        logging.DEBUG,
+        "panel_background_ready",
+        {
+            "operation": "panel_render",
+            "background_source": "cache",
+            "background_provider": "cache",
+            "background_image_name": "panel_background.jpg",
+        },
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("source", "provider_name", "image_name", "expected_fields"),
+    [
+        (
+            "fresh",
+            "wallhaven",
+            "wallpaper.jpg",
+            {
+                "operation": "panel_render",
+                "background_source": "fresh",
+                "background_provider": "wallhaven",
+                "background_image_name": "wallpaper.jpg",
+            },
+        ),
+        (
+            "default",
+            "default",
+            "",
+            {
+                "operation": "panel_render",
+                "background_source": "default",
+                "background_provider": "default",
+            },
+        ),
+    ],
+)
+async def test_panel_background_ready_debug_fields(
+    monkeypatch,
+    plugin_module,
+    source,
+    provider_name,
+    image_name,
+    expected_fields,
+):
+    from types import SimpleNamespace
+
+    from astrbot_plugin_grok2api_sub.core.panel_models import PanelReport
+
+    logs = []
+
+    class BackgroundProvider:
+        async def get_background(self):
+            return SimpleNamespace(
+                source=source,
+                provider=provider_name,
+                image_name=image_name,
+                data_url="",
+            )
+
+    async def fail_render(*_args, **_kwargs):
+        raise OSError("expected test failure")
+
+    plugin = object.__new__(plugin_module.Grok2APISubPlugin)
+    plugin._plugin_config = SimpleNamespace(panel_t2i_enabled=True, panel_resolution="1080p")
+    plugin._panel_background = BackgroundProvider()
+    plugin.html_render = fail_render
+    monkeypatch.setattr(
+        plugin_module,
+        "safe_log",
+        lambda level, event_name, **fields: logs.append((level, event_name, fields)),
+    )
+
+    result = await plugin._render_panel_image(
+        PanelReport(generated_at=0, period="24h", selected_sections=())
+    )
+
+    assert result is None
+    assert logs[0] == (logging.DEBUG, "panel_background_ready", expected_fields)
 
 
 @pytest.mark.asyncio

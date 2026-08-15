@@ -1,9 +1,13 @@
 __pycache__/
 .pytest_cache/
 .ruff_cache/
+.codegraph/
+.claude/settings.local.json
 .venv/
 *.pyc
 build/
+dist/
+.tmp-release-*/
 *.egg-info/
 coverage.xml
 htmlcov/

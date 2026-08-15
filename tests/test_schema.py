@@ -137,7 +137,6 @@ def test_advanced_group_items(schema):
         "panel_sections",
         "panel_t2i_enabled",
         "panel_resolution",
-        "panel_background_tags",
         "panel_push_targets",
         "panel_cron_enabled",
         "panel_cron_expression",
@@ -176,7 +175,7 @@ def test_panel_sections_is_list_with_five_chinese_options_in_order(schema):
 def test_panel_schedule_schema_uses_native_template_list_and_safe_defaults(schema):
     items = schema["advanced_settings"]["items"]
     assert items["panel_t2i_enabled"]["default"] is True
-    assert items["panel_background_tags"]["type"] == "text"
+    assert "panel_background_tags" not in items
     assert items["panel_push_targets"]["type"] == "template_list"
     assert items["panel_push_targets"]["default"] == []
     assert items["panel_cron_expression"]["default"] == "0 9 * * *"

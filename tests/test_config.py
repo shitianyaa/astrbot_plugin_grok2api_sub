@@ -349,7 +349,6 @@ def test_panel_defaults_select_all_sections():
     assert cfg.has_admin_credentials is False
     assert cfg.panel_t2i_enabled is True
     assert cfg.panel_resolution == "1080p"
-    assert cfg.panel_background_tags == ()
     assert cfg.panel_push_targets == ()
     assert cfg.panel_cron_enabled is False
     assert cfg.panel_cron_expression == "0 9 * * *"
@@ -416,10 +415,9 @@ def test_panel_period_matches_constant():
     assert PANEL_PERIODS == ("24h", "7d", "30d", "90d")
 
 
-def test_panel_schedule_config_parses_tags_targets_and_interval():
+def test_panel_schedule_config_parses_targets_and_interval():
     cfg = _cfg(
         advanced_settings={
-            "panel_background_tags": "sky\nsky\ncity",
             "panel_push_targets": [
                 {"__template_key": "umo_target", "umo": "onebot:group:123", "enabled": True},
                 {"__template_key": "umo_target", "umo": "onebot:group:123", "enabled": True},
@@ -435,7 +433,6 @@ def test_panel_schedule_config_parses_tags_targets_and_interval():
             "panel_interval_minutes": 45,
         }
     )
-    assert cfg.panel_background_tags == ("sky", "city")
     assert cfg.panel_push_targets == ("onebot:group:123",)
     assert cfg.panel_cron_enabled is True
     assert cfg.panel_cron_expression == "*/15 8-18 * * 1-5"

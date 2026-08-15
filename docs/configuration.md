@@ -72,7 +72,6 @@ Schema 顶层只有 4 个 `object` 分组：`connection_settings`、`capability_
 | `panel_sections` | list[string] | 全选 | `/g2面板` 获取并发送的数据块多选，中文选项顺序即输出顺序；选项：`账号池`、`图片库`、`视频库`、`请求审计汇总`、`按模型统计`；置空则面板不发任何请求 |
 | `panel_t2i_enabled` | bool | `true` | 面板优先使用 AstrBot 全局已配置的 HTML-to-image 服务；关闭时固定发送纯文本 |
 | `panel_resolution` | string | `1080p` | 面板图片分辨率：`720p`（1280x720）、`1080p`（1920x1080）或 `1440p`（2560x1440） |
-| `panel_background_tags` | text | `""` | Wallhaven 背景图关键词，每行一个；留空随机取动漫图，每次发送随机选一行；关键词不进入日志或摘要 |
 | `panel_push_targets` | template_list | `[]` | 固定推送 UMO；每项填写 `platform:message_type:session_id` 与启用状态，完整 UMO 不写日志或 `redacted_summary()` |
 | `panel_cron_enabled` | bool | `false` | 启用五段 Cron 定时推送 |
 | `panel_cron_expression` | string | `0 9 * * *` | 分、时、日、月、周五段 Cron 表达式 |
@@ -83,7 +82,7 @@ Schema 顶层只有 4 个 `object` 分组：`connection_settings`、`capability_
 | `model_retry_count` | int | `2` | 0–5；搜索、生图、改图、模型目录和图片下载的额外重试次数，不含首次请求 |
 | `video_retry_count` | int | `2` | 0–5；视频创建、状态轮询和视频下载的额外重试次数，不含首次请求 |
 | `retry_base_delay_seconds` | float | `0.5` | 0.1–5.0 |
-| `retry_excluded_errors` | string | `""` | 英文逗号分隔的 HTTP 状态码或稳定错误码；留空表示不排除远端错误，例如 `400,401,403,404,422,auth_error,model_not_found,invalid_json,network_error` |
+| `retry_excluded_errors` | string | `""` | 英文逗号分隔的 HTTP 状态码或稳定错误码；留空表示不排除远端错误，例如 `400,401,403,404,422,auth_error,model_not_found,invalid_json,invalid_model_catalog,network_error` |
 | `save_media` | bool | `false` | false 发送后删除；true 成功文件移到 `archive/` 保留 |
 | `temp_retention_hours` | int | `24` | 1–168 |
 
@@ -92,13 +91,14 @@ Schema 顶层只有 4 个 `object` 分组：`connection_settings`、`capability_
 - 安全自愈：URL 末尾 `/` 去除、ID 转字符串、列表去重、search_models 去空白/忽略空项/去重。
 - 拒绝：非法协议、userinfo/query/fragment、越界值、非法 options、模型列表中的英文或中文逗号、超 12 个模型、超 255 字符模型名，抛配置错误。
 - `enable_web_search` 与 `enable_x_search` 同时关闭不属于配置错误，但会明确禁用搜索能力，避免发出没有工具的 Responses 请求。
-- 面板背景按 Wallhaven（动漫、SFW、16:9）→ LoliAPI 横屏 → t.alcy 横屏顺序请求；API 请求与图片下载均显式使用 `client_proxy_url`、`verify_tls`，不读取环境代理。所有来源都执行解码、体积和横向比例校验，但来源不保证排除 AI 图片。刷新失败时复用 `panel_background.jpg` 缓存；无缓存时由卡片 CSS 使用默认背景。
+- 面板背景每次随机打乱 Wallhaven（动漫、SFW、16:9）、LoliAPI 横屏和 t.alcy 横屏的请求顺序，各站点均随机取图；API 请求与图片下载均显式使用 `client_proxy_url`、`verify_tls`，不读取环境代理。所有来源都执行解码、体积和横向比例校验，但来源不保证排除 AI 图片。单个图源失败后继续剩余图源，全部失败时复用 `panel_background.jpg` 缓存；无缓存时由卡片 CSS 使用默认背景。
 - Cron 与间隔任务可同时启用。固定 UMO 和 `/g2面板订阅` 创建的 UMO 会合并去重；同一 UMO 在同一自然分钟最多有一次发送尝试。
 - 仅开启 X 搜索而候选全为 `grok-chat-*` 时同样明确禁用搜索能力；chat 模型不会收到没有可用工具的请求。
 - 每次尝试只使用该操作自己的单次超时。视频等待不再设置插件侧总时长，而是以 `video_poll_timeout_seconds`、`video_poll_interval_seconds` 和 `video_retry_count` 持续轮询远端终态。
 - 远端 HTTP、网络、JSON 解析和远端响应结构错误默认都可重试，包含生成 POST；这可能重复生成或重复扣费。需要避免某类错误重试时，加入 `retry_excluded_errors`。本地输入校验、媒体大小限制、路径校验和平台消息发送不会被自动重放。
-- INFO 日志只保留多行任务开始和完成/失败块。搜索、图片和视频任务完整记录原始提示词及实际请求提示词，并记录脱敏后的实际请求参数（搜索开关、推理强度、比例、时长、分辨率、数量、返回格式等）；任务结束记录实际模型、候选回退、远端重试、结果状态和耗时。内部 HTTP、管理面请求、轮询、模型尝试、命令包装和媒体发送细节写入 DEBUG。`trace_id` 不再使用；参考图 URL、媒体 URL、请求 ID、上游响应正文和凭据不会写入任务日志。
+- INFO 日志只保留多行任务开始和完成/失败块。搜索、图片和视频任务完整记录原始提示词及实际请求提示词，并记录脱敏后的实际请求参数（搜索开关、推理强度、比例、时长、分辨率、数量、返回格式等）；任务结束记录实际模型、候选回退、任务内实际发出的额外远端请求、结果状态和耗时。模型目录、生成、状态查询和下载的重试都会汇总，正常的多次视频轮询不算重试。内部 HTTP、管理面请求、轮询、模型尝试、命令包装和媒体发送细节写入 DEBUG。`trace_id` 不再使用；参考图 URL、媒体 URL、请求 ID、上游响应正文和凭据不会写入任务日志。
 - 单个候选先完成 `retry_count + 1` 次请求才进入下一候选。媒体仅在 `model_not_found` 或 `model_not_allowed` 时回退；搜索额外在 `search_not_performed` 时回退。排除这些错误码只会缩短当前候选的重试，不会阻止回退。
+- 模型目录必须包含数组类型的 `data`。结构异常按 `invalid_model_catalog` 进入模型重试组，耗尽后按目录请求失败回退原配置；成功空目录直接返回无可见候选，不发送搜索 POST。
 
 ## 安全约束
 

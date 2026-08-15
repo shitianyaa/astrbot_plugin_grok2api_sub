@@ -1,0 +1,81 @@
+name: Bug report
+description: 报告可复现的功能缺陷或回归
+title: "[Bug] "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        感谢报告问题。请先搜索已有 Issue，并确认没有在公开内容中粘贴 Client Key、JWT、Cookie、密码、真实媒体 URL 或完整日志。
+  - type: textarea
+    id: description
+    attributes:
+      label: 问题描述
+      description: 请说明实际发生了什么，以及用户受到的影响。
+      placeholder: 简洁描述问题和影响范围
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: 最小复现步骤
+      description: 请提供不含秘密和真实用户数据的最小步骤、命令或配置片段。
+      placeholder: |
+        1. 配置 ...
+        2. 执行 ...
+        3. 观察到 ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: 预期行为
+      description: 请说明你期望看到的结果。
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: 实际行为与错误
+      description: 请粘贴脱敏后的错误类型、关键输出或截图，不要粘贴完整响应和凭据。
+    validations:
+      required: true
+  - type: input
+    id: plugin-version
+    attributes:
+      label: 插件版本
+      placeholder: 例如 v0.1.4
+    validations:
+      required: true
+  - type: input
+    id: astrbot-version
+    attributes:
+      label: AstrBot 版本
+    validations:
+      required: true
+  - type: input
+    id: platform
+    attributes:
+      label: 平台与适配器
+      description: 例如 Windows + OneBot、Linux + QQ Official。
+    validations:
+      required: true
+  - type: textarea
+    id: configuration
+    attributes:
+      label: 相关配置（已脱敏）
+      description: 只填写字段名、类型和非敏感值；删除 Client Key、密码、JWT、Cookie、私有地址和用户数据。
+    validations:
+      required: true
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: 提交前确认
+      options:
+        - label: 我已搜索现有 Issue，并确认这不是重复报告。
+          required: true
+        - label: 我已移除凭据、用户数据、真实媒体 URL 和敏感日志。
+          required: true
+        - label: 我能在没有真实凭据的最小环境中复现，或已说明为什么不能。
+          required: true

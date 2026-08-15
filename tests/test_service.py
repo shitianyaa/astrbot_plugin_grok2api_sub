@@ -151,6 +151,17 @@ def _search_response():
     )
 
 
+def _search_without_tool_response():
+    return json.dumps(
+        {
+            "id": "resp-no-search",
+            "model": "first",
+            "status": "completed",
+            "output": [{"type": "message", "content": [{"type": "output_text", "text": "answer"}]}],
+        }
+    )
+
+
 async def test_search_returns_structured_result(tmp_path):
     ws = MediaWorkspace(tmp_path)
     s = FakeSession()
@@ -161,6 +172,30 @@ async def test_search_returns_structured_result(tmp_path):
     assert isinstance(r, SearchResult)
     assert r.text == "answer"
     assert r.search_performed is True
+
+
+async def test_invalid_catalog_retries_then_falls_back_with_task_retry_count(tmp_path, monkeypatch):
+    ws = MediaWorkspace(tmp_path)
+    session = FakeSession()
+    session.push(
+        FakeResponse(200, body=json.dumps({"data": None})),
+        FakeResponse(200, body=json.dumps({"data": None})),
+        FakeResponse(200, body=json.dumps({"data": None})),
+        FakeResponse(200, body=_search_response()),
+    )
+    task_events = []
+    monkeypatch.setattr(
+        "core.service.safe_task_log",
+        lambda _level, title, **fields: task_events.append((title, fields)),
+    )
+    service, _ = _make_service(ws, session=session)
+
+    result = await service.search(FakeEvent(), "question")
+
+    assert result.search_performed is True
+    assert sum(call["url"].endswith("/v1/models") for call in session.calls) == 3
+    completed = next(fields for title, fields in task_events if title == "请求完成")
+    assert completed["retry_count"] == 2
 
 
 async def test_manual_search_format(tmp_path):
@@ -444,6 +479,33 @@ async def test_media_lifecycle_logs_are_safe_and_correlated(tmp_path, monkeypatc
     assert levels["media_job_model_attempt"] == logging.DEBUG
 
 
+async def test_image_download_retry_is_included_in_task_summary(tmp_path, monkeypatch):
+    ws = MediaWorkspace(tmp_path)
+    session = FakeSession()
+    session.push(
+        FakeResponse(
+            200,
+            body=json.dumps(
+                {"data": [{"url": "https://upstream.example.com/v1/media/images/abc"}]}
+            ),
+        ),
+        FakeResponse(200, error=asyncio.TimeoutError()),
+    )
+    session.responses.append(_StreamResp([_png_bytes()]))
+    task_events = []
+    monkeypatch.setattr(
+        "core.service.safe_task_log",
+        lambda _level, title, **fields: task_events.append((title, fields)),
+    )
+    cfg = _cfg(capability_settings={"image_response_format": "url", "send_media_progress": False})
+    service, _ = _make_service(ws, cfg=cfg, session=session)
+
+    await service.deliver_generated_images(FakeEvent(), "cat")
+
+    completed = next(fields for title, fields in task_events if title == "请求完成")
+    assert completed["retry_count"] == 1
+
+
 async def test_deliver_images_is_always_single_result(tmp_path):
     ws = MediaWorkspace(tmp_path)
     s = FakeSession()
@@ -558,6 +620,10 @@ def _model_not_found_body() -> str:
     return json.dumps({"error": {"code": "model_not_found"}})
 
 
+def _model_not_allowed_body() -> str:
+    return json.dumps({"error": {"code": "model_not_allowed"}})
+
+
 async def test_image_fallback_exhausts_first_model_retries_before_second(tmp_path, monkeypatch):
     ws = MediaWorkspace(tmp_path)
     session = FakeSession()
@@ -607,6 +673,29 @@ async def test_image_excluded_model_error_skips_retry_but_keeps_fallback(tmp_pat
     await service.deliver_generated_images(FakeEvent(), "cat")
 
     assert [call["json"]["model"] for call in session.calls] == ["first", "second"]
+
+
+async def test_image_model_not_allowed_exhausts_retries_then_falls_back(tmp_path):
+    ws = MediaWorkspace(tmp_path)
+    session = FakeSession()
+    image = base64.b64encode(_png_bytes()).decode()
+    session.push(
+        FakeResponse(403, body=_model_not_allowed_body()),
+        FakeResponse(403, body=_model_not_allowed_body()),
+        FakeResponse(403, body=_model_not_allowed_body()),
+        FakeResponse(200, body=json.dumps({"data": [{"b64_json": image}]})),
+    )
+    cfg = _cfg(capability_settings={"image_models": "first\nsecond", "send_media_progress": False})
+    service, _ = _make_service(ws, cfg=cfg, session=session)
+
+    await service.deliver_generated_images(FakeEvent(), "cat")
+
+    assert [call["json"]["model"] for call in session.calls] == [
+        "first",
+        "first",
+        "first",
+        "second",
+    ]
 
 
 async def test_image_edit_fallback_exhausts_first_model_retries_before_second(tmp_path):
@@ -660,6 +749,49 @@ async def test_video_fallback_exhausts_first_model_retries_before_second(tmp_pat
         "first",
         "second",
     ]
+
+
+@pytest.mark.parametrize(
+    ("poll_responses", "expected_retries"),
+    [
+        (
+            [
+                FakeResponse(200, body=json.dumps({"status": "pending", "progress": 25})),
+                FakeResponse(200, body=json.dumps({"status": "done", "progress": 100})),
+            ],
+            0,
+        ),
+        (
+            [
+                FakeResponse(503, body="{}"),
+                FakeResponse(200, body=json.dumps({"status": "done", "progress": 100})),
+            ],
+            1,
+        ),
+    ],
+)
+async def test_video_summary_counts_poll_retries_but_not_normal_polls(
+    tmp_path, monkeypatch, poll_responses, expected_retries
+):
+    ws = MediaWorkspace(tmp_path)
+    session = FakeSession()
+    session.push(
+        FakeResponse(200, body=json.dumps({"request_id": "video_abc"})),
+        *poll_responses,
+    )
+    session.responses.append(_StreamResp([b"fake-mp4"]))
+    task_events = []
+    monkeypatch.setattr(
+        "core.service.safe_task_log",
+        lambda _level, title, **fields: task_events.append((title, fields)),
+    )
+    cfg = _cfg(capability_settings={"send_media_progress": False})
+    service, _ = _make_service(ws, cfg=cfg, session=session)
+
+    await service.deliver_video(FakeEvent(), "make a video")
+
+    completed = next(fields for title, fields in task_events if title == "请求完成")
+    assert completed["retry_count"] == expected_retries
 
 
 async def test_deliver_edited_image_requires_input(tmp_path):
@@ -1067,6 +1199,17 @@ async def test_catalog_failure_tries_original_first_model_only_on_success(tmp_pa
     assert client.search_calls == ["first"]
 
 
+async def test_empty_successful_catalog_exhausts_without_search_post(tmp_path):
+    client = ScriptedSearchClient(models=(), search_results=[])
+    service = _make_scripted_service(tmp_path, client, ("first", "second"))
+
+    with pytest.raises(PluginError) as caught:
+        await service.search(FakeEvent(), "question")
+
+    assert caught.value.code == "search_models_exhausted"
+    assert client.search_calls == []
+
+
 @pytest.mark.parametrize(
     "first_error",
     [
@@ -1094,6 +1237,30 @@ async def test_search_fallback_exhausts_first_model_retries_before_second(tmp_pa
         FakeResponse(404, body=_model_not_found_body()),
         FakeResponse(404, body=_model_not_found_body()),
         FakeResponse(404, body=_model_not_found_body()),
+        FakeResponse(200, body=_search_response()),
+    )
+    cfg = _cfg(capability_settings={"search_models": "first\nsecond"})
+    service, _ = _make_service(ws, cfg=cfg, session=session)
+
+    await service.search(FakeEvent(), "question")
+
+    calls = [call for call in session.calls if call["url"].endswith("/v1/responses")]
+    assert [call["json"]["model"] for call in calls] == [
+        "first",
+        "first",
+        "first",
+        "second",
+    ]
+
+
+async def test_search_not_performed_exhausts_retries_before_next_model(tmp_path):
+    ws = MediaWorkspace(tmp_path)
+    session = FakeSession()
+    session.push(
+        FakeResponse(200, body=json.dumps({"data": [{"id": "first"}, {"id": "second"}]})),
+        FakeResponse(200, body=_search_without_tool_response()),
+        FakeResponse(200, body=_search_without_tool_response()),
+        FakeResponse(200, body=_search_without_tool_response()),
         FakeResponse(200, body=_search_response()),
     )
     cfg = _cfg(capability_settings={"search_models": "first\nsecond"})

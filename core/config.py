@@ -126,26 +126,6 @@ def parse_panel_sections(value: object) -> tuple[str, ...]:
     return tuple(result)
 
 
-def parse_panel_background_tags(value: object) -> tuple[str, ...]:
-    """Parse optional multi-line Wallhaven keywords without logging them."""
-    if not isinstance(value, str):
-        _fail("advanced_settings.panel_background_tags", "必须是多行文本")
-    result: list[str] = []
-    for raw in value.splitlines():
-        tag = raw.strip()
-        if not tag:
-            continue
-        if len(tag) > 100:
-            _fail("advanced_settings.panel_background_tags", "单行标签不能超过 100 个字符")
-        if any(ord(ch) < 32 for ch in tag):
-            _fail("advanced_settings.panel_background_tags", "标签包含不可见字符")
-        if tag not in result:
-            result.append(tag)
-    if len(result) > 32:
-        _fail("advanced_settings.panel_background_tags", "最多配置 32 行标签")
-    return tuple(result)
-
-
 def _parse_umo(key: str, value: object) -> str:
     if not isinstance(value, str):
         _fail(key, "UMO 必须是字符串")
@@ -378,7 +358,6 @@ class PluginConfig:
     panel_sections: tuple[str, ...] = field(default_factory=lambda: PANEL_SECTION_ORDER)
     panel_t2i_enabled: bool = field(default=True)
     panel_resolution: str = field(default=DEFAULT_PANEL_RESOLUTION)
-    panel_background_tags: tuple[str, ...] = field(default_factory=tuple)
     panel_push_targets: tuple[str, ...] = field(default_factory=tuple)
     panel_cron_enabled: bool = field(default=False)
     panel_cron_expression: str = field(default="0 9 * * *")
@@ -546,7 +525,6 @@ class PluginConfig:
                 g(adv, "panel_resolution", DEFAULT_PANEL_RESOLUTION),
                 PANEL_RESOLUTIONS,
             ),
-            panel_background_tags=parse_panel_background_tags(g(adv, "panel_background_tags", "")),
             panel_push_targets=parse_panel_push_targets(g(adv, "panel_push_targets", [])),
             panel_cron_enabled=_bool_flag(
                 "advanced_settings.panel_cron_enabled", g(adv, "panel_cron_enabled"), False

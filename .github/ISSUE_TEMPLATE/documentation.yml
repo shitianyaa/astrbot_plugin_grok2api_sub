@@ -1,0 +1,48 @@
+name: Documentation
+description: 报告文档错误或提议文档改进
+title: "[Docs] "
+labels:
+  - documentation
+body:
+  - type: markdown
+    attributes:
+      value: |
+        文档问题包括 README、配置说明、命令说明、架构文档和发布说明。请不要在示例中使用真实凭据或私有地址。
+  - type: input
+    id: location
+    attributes:
+      label: 文档位置
+      description: 请填写文件路径、章节标题或公开链接。
+      placeholder: README.md 的“配置”章节
+    validations:
+      required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: 当前问题
+      description: 哪段内容缺失、过时、矛盾或难以理解？
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: 建议修改
+      description: 请给出准确文字、示例或可验证的修正方向。
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: 适用版本
+      description: 如果问题只存在于特定版本，请填写版本号。
+    validations:
+      required: false
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: 提交前确认
+      options:
+        - label: 我已搜索现有 Issue，并确认这不是重复报告。
+          required: true
+        - label: 我已移除示例中的凭据、用户数据和私有地址。
+          required: true

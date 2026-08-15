@@ -302,7 +302,7 @@
         "description": "不自动重试的错误，英文逗号分隔；可填 HTTP 状态码或稳定错误码，留空即全部远端错误重试。",
         "type": "string",
         "default": "",
-        "hint": "示例：400,401,403,404,422,auth_error,model_not_found,invalid_json,network_error"
+        "hint": "示例：400,401,403,404,422,auth_error,model_not_found,invalid_json,invalid_model_catalog,network_error"
       },
       "save_media": {
         "description": "是否在发送后保留生成媒体。",
@@ -341,12 +341,6 @@
         "default": "1080p",
         "options": ["720p", "1080p", "1440p"],
         "hint": "1080p 兼顾清晰度与文件大小；1440p 更清晰但生成和发送开销更高。"
-      },
-      "panel_background_tags": {
-        "description": "Wallhaven 背景图关键词，每行一个；留空随机取动漫图。每次面板发送随机选择一行。",
-        "type": "text",
-        "default": "",
-        "hint": "优先请求 Wallhaven 的动漫、SFW、16:9 图片，再回退 LoliAPI 与 t.alcy；所有来源均执行横向图片校验。来源不保证排除 AI 图片；获取失败时复用本地缓存背景。"
       },
       "panel_push_targets": {
         "description": "固定推送目标。填写 AstrBot UMO（platform:message_type:session_id）；与命令订阅目标合并去重。",

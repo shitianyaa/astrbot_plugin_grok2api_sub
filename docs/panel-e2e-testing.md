@@ -36,8 +36,6 @@ AstrBot 管理员命令
 | `advanced_settings` | `panel_sections` | 首次全选：账号池、图片库、视频库、请求审计汇总、按模型统计 |
 | `advanced_settings` | `panel_t2i_enabled` | `true`，用于图片路径；后续关闭以验证文本回退 |
 | `advanced_settings` | `panel_resolution` | 默认 `1080p`；也可选 `720p` 或 `1440p` |
-| `advanced_settings` | `panel_background_tags` | 每行一个 Wallhaven 关键词；留空表示随机动漫、SFW、横向背景 |
-
 首次验证不要填写 `panel_push_targets`，也不要启用 Cron 或间隔推送，避免向非测试会话发送。
 
 ## 3. 命令全链路验收
@@ -54,7 +52,7 @@ AstrBot 管理员命令
 - 图中只包含在 `panel_sections` 勾选的数据块；账号、媒体、审计和模型统计为聚合值，不出现邮箱、Client Key 名、请求 ID 或原始审计记录。
 - 审计卡应显示汇总请求、成功/失败、Token、计费请求和计费 Token；右侧“请求行为”卡显示请求类型、Provider、计量来源、流式/重试、工具和媒体输出。`审计行覆盖 X/Y` 中，`Y` 是 summary 请求数，`X` 是列表接口实际可读的安全审计行数；两者不同属于接口覆盖范围差异，不是插件将 X 误算为 Y。
 - 背景在玻璃卡片外部可见；文字无溢出、遮挡或空白占位。
-- 日志出现 `panel_background_ready`，字段 `background_source` 为 `fresh`、`cache` 或 `default`；不应出现凭据、完整 UMO、下载 URL 或原始管理数据。
+- DEBUG 日志出现 `panel_background_ready`，字段 `background_source` 为 `fresh`、`cache` 或 `default`，并包含 `background_provider`；远程图命中时还包含清理后的 `background_image_name`。DEBUG 日志按失败图源输出 `panel_background_provider_failed`；所有日志都不应出现凭据、完整 UMO、下载 URL、query 参数或原始管理数据。
 
 分别取消勾选一个数据块、重载配置并重复 `/g2面板`。通过标准是对应块不显示，且该块不发起管理请求。将 `panel_sections` 全部取消后再发送命令，应返回“未启用任何面板数据块”，且不发起管理请求。
 
@@ -74,7 +72,7 @@ AstrBot 管理员命令
 
 ## 5. 背景回退
 
-连续执行两次 `/g2面板`。正常情况下每次都会按 Wallhaven、LoliAPI、t.alcy 顺序尝试刷新背景。
+连续执行两次 `/g2面板`。正常情况下每次都会随机打乱 Wallhaven、LoliAPI、t.alcy 的尝试顺序，单个图源失败后继续尝试剩余图源。
 
 | 场景 | 预期日志 | 预期图片 |
 |---|---|---|

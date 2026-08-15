@@ -22,13 +22,15 @@ import re
 import time
 from collections.abc import Callable, Coroutine
 from dataclasses import dataclass
+from datetime import timezone
+from email.utils import parsedate_to_datetime
 from pathlib import Path
 from typing import TypeVar
 
 import aiohttp
 
 from .errors import APIError, ConfigurationError, PluginError, ProtocolError
-from .observability import record_task_attempt, safe_log
+from .observability import record_task_attempt, record_task_retry, safe_log
 
 logger = logging.getLogger("astrbot_plugin_grok2api_sub.transport")
 
@@ -78,10 +80,12 @@ def parse_retry_after(value: str | None, now: float) -> float | None:
     except ValueError:
         pass
     try:
-        parsed = time.strptime(v, "%a, %d %b %Y %H:%M:%S %Z")
-        epoch = time.mktime(parsed)
+        parsed = parsedate_to_datetime(v)
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        epoch = parsed.timestamp()
         return max(0.0, epoch - now)
-    except ValueError:
+    except (TypeError, ValueError, OverflowError):
         return None
 
 
@@ -239,6 +243,8 @@ class HTTPTransport:
             session = self._session_for()
             started_at = time.monotonic()
             record_task_attempt(operation)
+            if attempt > 1:
+                record_task_retry()
             safe_log(
                 logging.DEBUG,
                 "http_request_started",
@@ -395,6 +401,8 @@ class HTTPTransport:
             written = 0
             started_at = time.monotonic()
             record_task_attempt("download")
+            if attempt > 1:
+                record_task_retry()
             safe_log(
                 logging.DEBUG,
                 "http_request_started",

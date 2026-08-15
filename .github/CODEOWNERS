@@ -1,0 +1,11 @@
+# 默认审阅者；CODEOWNERS 不替代默认分支保护和 required checks 配置。
+* @shitianyaa
+
+# 代码、测试、文档和发布治理入口。
+*.py @shitianyaa
+core/ @shitianyaa
+tests/ @shitianyaa
+docs/ @shitianyaa
+.github/ @shitianyaa
+AGENTS.md @shitianyaa
+CONTRIBUTING.md @shitianyaa

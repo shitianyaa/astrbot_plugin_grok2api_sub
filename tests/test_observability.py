@@ -7,16 +7,19 @@ import logging
 from core.observability import (
     ALLOWED_FIELDS,
     operation_scope,
+    record_task_retry,
     safe_log,
     safe_task_log,
     sanitize_diagnostic,
     sanitize_prompt_json,
     task_attempts,
+    task_retry_count,
 )
 
 
 def test_media_model_log_fields_are_allowlisted_without_dead_alias():
     assert {"model", "model_index"} <= ALLOWED_FIELDS
+    assert {"background_provider", "background_image_name"} <= ALLOWED_FIELDS
     assert "model_models" not in ALLOWED_FIELDS
 
 
@@ -45,6 +48,16 @@ def test_operation_scope_shares_and_resets_task_attempts():
             record_task_attempt("search")
         assert task_attempts("search") == 2
     assert task_attempts("search") == 0
+
+
+def test_operation_scope_aggregates_and_resets_actual_retries():
+    assert task_retry_count() == 0
+    with operation_scope("search"):
+        record_task_retry()
+        with operation_scope("download"):
+            record_task_retry()
+        assert task_retry_count() == 2
+    assert task_retry_count() == 0
 
 
 def test_prompt_json_keeps_resolved_fields_and_redacts_sensitive_fragments():

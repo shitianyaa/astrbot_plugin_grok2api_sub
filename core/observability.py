@@ -55,6 +55,8 @@ ALLOWED_FIELDS = {
     "target_count",
     "trigger",
     "background_source",
+    "background_provider",
+    "background_image_name",
     "prompt_mode",
     "prompt_json",
     "resource",
@@ -158,6 +160,7 @@ class _TaskTelemetry:
     attempts: dict[str, int] = field(default_factory=dict)
     models: dict[str, str] = field(default_factory=dict)
     candidate_attempts: dict[str, int] = field(default_factory=dict)
+    retry_count: int = 0
 
 
 _TASK_TELEMETRY: contextvars.ContextVar[_TaskTelemetry | None] = contextvars.ContextVar(
@@ -229,6 +232,19 @@ def task_attempts(operation: str) -> int:
     if telemetry is None:
         return 0
     return telemetry.attempts.get(operation, 0)
+
+
+def record_task_retry() -> None:
+    """Record one additional remote attempt after an initial request."""
+    telemetry = _TASK_TELEMETRY.get()
+    if telemetry is not None:
+        telemetry.retry_count += 1
+
+
+def task_retry_count() -> int:
+    """Return all actual remote retries recorded for the active task."""
+    telemetry = _TASK_TELEMETRY.get()
+    return telemetry.retry_count if telemetry is not None else 0
 
 
 def record_task_model(operation: str, model: str) -> None:

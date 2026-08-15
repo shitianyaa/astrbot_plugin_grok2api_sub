@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import calendar
 import logging
 from pathlib import Path
 
@@ -333,6 +334,17 @@ def test_backoff_capped_at_30s():
 # -- retry-after parsing --------------------------------------------------
 def test_parse_retry_after_seconds():
     assert parse_retry_after("3", 0.0) == 3.0
+
+
+def test_parse_retry_after_http_date_uses_utc():
+    now = calendar.timegm((2026, 8, 15, 0, 0, 0))
+    assert parse_retry_after("Sat, 15 Aug 2026 00:00:10 GMT", now) == 10.0
+
+
+def test_parse_retry_after_past_date_and_invalid_value():
+    now = calendar.timegm((2026, 8, 15, 0, 0, 0))
+    assert parse_retry_after("Fri, 14 Aug 2026 23:59:59 GMT", now) == 0.0
+    assert parse_retry_after("not-a-date", now) is None
 
 
 # -- download ---------------------------------------------------------------

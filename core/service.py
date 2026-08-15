@@ -34,9 +34,9 @@ from .observability import (
     record_task_model,
     safe_log,
     safe_task_log,
-    task_attempts,
     task_candidate_attempts,
     task_model,
+    task_retry_count,
 )
 from .panel_models import (
     ModelSection,
@@ -194,7 +194,6 @@ class GrokService:
         source_prompt: str,
         request_prompt: str = "",
         request_params: dict[str, object] | None = None,
-        transport_operation: str = "",
     ) -> None:
         fields: dict[str, object] = {
             "operation": operation,
@@ -206,10 +205,7 @@ class GrokService:
             "model": task_model(operation),
             "candidate_fallbacks": max(task_candidate_attempts(operation) - 1, 0),
         }
-        if transport_operation:
-            fields["retry_count"] = max(
-                task_attempts(transport_operation) - task_candidate_attempts(operation), 0
-            )
+        fields["retry_count"] = task_retry_count()
         if isinstance(exc, PluginError):
             fields["error_code"] = exc.code
             if isinstance(exc, APIError):
@@ -257,9 +253,7 @@ class GrokService:
                     "request_params": request_params,
                     "model": task_model("search"),
                     "candidate_fallbacks": max(task_candidate_attempts("search") - 1, 0),
-                    "retry_count": max(
-                        task_attempts("search") - task_candidate_attempts("search"), 0
-                    ),
+                    "retry_count": task_retry_count(),
                     "stage": "search",
                     "elapsed_ms": self._elapsed_ms(started_at),
                     "error_code": exc.code if isinstance(exc, PluginError) else "unknown",
@@ -284,7 +278,7 @@ class GrokService:
                 search_performed=result.search_performed,
                 incomplete=result.incomplete,
                 candidate_fallbacks=max(outcome.candidate_attempts - 1, 0),
-                retry_count=max(task_attempts("search") - outcome.candidate_attempts, 0),
+                retry_count=task_retry_count(),
                 elapsed_ms=self._elapsed_ms(started_at),
                 source_count=len(result.sources),
             )
@@ -300,6 +294,7 @@ class GrokService:
         visibility; a catalog fetch failure falls back to the original order.
         """
         configured = self._config.search_models
+        catalog: tuple[str, ...] | None
         try:
             catalog = await self._client.list_models()
         except PluginError as exc:
@@ -309,9 +304,9 @@ class GrokService:
                 error_code=exc.code,
                 operation="search",
             )
-            catalog = ()
+            catalog = None
         candidates: tuple[str, ...]
-        if catalog:
+        if catalog is not None:
             from .search_models import partition_visible_models
 
             visible, _ = partition_visible_models(configured, catalog)
@@ -684,7 +679,7 @@ class GrokService:
                         request_params=request_params,
                         media_count=len(paths),
                         candidate_fallbacks=max(outcome.candidate_attempts - 1, 0),
-                        retry_count=max(task_attempts("image") - outcome.candidate_attempts, 0),
+                        retry_count=task_retry_count(),
                         elapsed_ms=self._elapsed_ms(started_at),
                     )
                 except asyncio.CancelledError:
@@ -700,7 +695,6 @@ class GrokService:
                         source_prompt=prompt,
                         request_prompt=request_prompt,
                         request_params=request_params,
-                        transport_operation="image",
                     )
                     raise
                 finally:
@@ -800,9 +794,7 @@ class GrokService:
                         request_params=request_params,
                         media_count=len(paths),
                         candidate_fallbacks=max(outcome.candidate_attempts - 1, 0),
-                        retry_count=max(
-                            task_attempts("image_edit") - outcome.candidate_attempts, 0
-                        ),
+                        retry_count=task_retry_count(),
                         elapsed_ms=self._elapsed_ms(started_at),
                     )
                 except asyncio.CancelledError:
@@ -818,7 +810,6 @@ class GrokService:
                         source_prompt=prompt,
                         request_prompt=request_prompt,
                         request_params=request_params,
-                        transport_operation="image_edit",
                     )
                     raise
                 finally:
@@ -960,9 +951,7 @@ class GrokService:
                         request_params=request_params,
                         media_count=1,
                         candidate_fallbacks=max(outcome.candidate_attempts - 1, 0),
-                        retry_count=max(
-                            task_attempts("video_create") - outcome.candidate_attempts, 0
-                        ),
+                        retry_count=task_retry_count(),
                         elapsed_ms=self._elapsed_ms(started_at),
                     )
                 except asyncio.CancelledError:
@@ -978,7 +967,6 @@ class GrokService:
                         source_prompt=prompt,
                         request_prompt=request_prompt,
                         request_params=request_params,
-                        transport_operation="video_create",
                     )
                     raise
                 finally:

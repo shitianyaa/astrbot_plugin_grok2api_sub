@@ -16,7 +16,7 @@ import random
 import warnings
 from dataclasses import dataclass
 from pathlib import Path
-from urllib.parse import urlsplit
+from urllib.parse import unquote, urlsplit
 
 import aiohttp
 
@@ -38,6 +38,15 @@ class PanelBackgroundError(PluginError):
 class PanelBackground:
     data_url: str
     source: str
+    provider: str
+    image_name: str
+
+
+@dataclass(frozen=True, slots=True)
+class _FetchedBackground:
+    content: bytes
+    provider: str
+    image_name: str
 
 
 class PanelBackgroundProvider:
@@ -63,12 +72,17 @@ class PanelBackgroundProvider:
         self._session: aiohttp.ClientSession | None = None
         self._lock = asyncio.Lock()
 
-    async def get_background(self, tags: tuple[str, ...]) -> PanelBackground:
+    async def get_background(self) -> PanelBackground:
         """Refresh first; fall back to the last valid cache then CSS default."""
         async with self._lock:
             try:
-                content = await self._refresh(tags)
-                return PanelBackground(self._as_data_url(content), "fresh")
+                fetched = await self._refresh()
+                return PanelBackground(
+                    self._as_data_url(fetched.content),
+                    "fresh",
+                    fetched.provider,
+                    fetched.image_name,
+                )
             except PanelBackgroundError as exc:
                 cached = await asyncio.to_thread(self._read_cache)
                 if cached is not None:
@@ -77,62 +91,90 @@ class PanelBackgroundProvider:
                         "panel_background_fallback",
                         operation="panel_render",
                         background_source="cache",
+                        background_provider="cache",
                         error_code=exc.code,
                     )
-                    return PanelBackground(self._as_data_url(cached), "cache")
+                    return PanelBackground(
+                        self._as_data_url(cached),
+                        "cache",
+                        "cache",
+                        self._cache_path.name,
+                    )
                 safe_log(
                     logging.DEBUG,
                     "panel_background_fallback",
                     operation="panel_render",
                     background_source="default",
+                    background_provider="default",
                     error_code=exc.code,
                 )
-                return PanelBackground("", "default")
+                return PanelBackground("", "default", "default", "")
 
     async def close(self) -> None:
         if self._session is not None:
             await self._session.close()
             self._session = None
 
-    async def _refresh(self, tags: tuple[str, ...]) -> bytes:
+    async def _refresh(self) -> _FetchedBackground:
+        providers = [
+            ("wallhaven", self._fetch_wallhaven),
+            ("loliapi", self._fetch_loliapi),
+            ("alcy", self._fetch_alcy),
+        ]
+        random.shuffle(providers)
         errors: list[PanelBackgroundError] = []
-        for fetch in (self._fetch_wallhaven, self._fetch_loliapi, self._fetch_alcy):
+        for provider, fetch in providers:
             try:
-                content = await fetch(tags)
-                await asyncio.to_thread(self._write_cache, content)
-                return content
+                fetched = await fetch()
+                await asyncio.to_thread(self._write_cache, fetched.content)
+                return fetched
             except PanelBackgroundError as exc:
                 errors.append(exc)
+                safe_log(
+                    logging.DEBUG,
+                    "panel_background_provider_failed",
+                    operation="panel_render",
+                    background_provider=provider,
+                    error_code=exc.code,
+                )
         raise errors[-1] if errors else PanelBackgroundError("panel_background_api")
 
-    async def _fetch_wallhaven(self, tags: tuple[str, ...]) -> bytes:
+    async def _fetch_wallhaven(self) -> _FetchedBackground:
         params: list[tuple[str, str]] = [
             ("categories", "010"),
             ("purity", "100"),
             ("ratios", "16x9"),
             ("sorting", "random"),
         ]
-        if tags:
-            params.append(("q", random.choice(tags)))
         payload = await self._get_json(_WALLHAVEN_ENDPOINT, params=params)
+        last_error = PanelBackgroundError("panel_background_wallhaven")
         for image_url in self._choose_wallhaven_urls(payload):
             try:
-                content = await self._download_image(image_url)
-                await asyncio.to_thread(self._validate_image, content)
-                return content
-            except PanelBackgroundError:
+                fetched = await self._download_image(image_url, provider="wallhaven")
+                await asyncio.to_thread(self._validate_image, fetched.content)
+                return fetched
+            except PanelBackgroundError as exc:
+                last_error = exc
                 continue
-        raise PanelBackgroundError("panel_background_wallhaven")
+        raise last_error
 
-    async def _fetch_loliapi(self, _tags: tuple[str, ...]) -> bytes:
-        content = await self._download_image(_LOLIAPI_ENDPOINT, allow_redirects=True)
-        await asyncio.to_thread(self._validate_image, content)
-        return content
+    async def _fetch_loliapi(self) -> _FetchedBackground:
+        fetched = await self._download_image(
+            _LOLIAPI_ENDPOINT,
+            provider="loliapi",
+            allow_redirects=True,
+        )
+        await asyncio.to_thread(self._validate_image, fetched.content)
+        return fetched
 
-    async def _fetch_alcy(self, _tags: tuple[str, ...]) -> bytes:
-        content = await self._download_image(_ALCY_ENDPOINT, allow_redirects=True)
-        await asyncio.to_thread(self._validate_image, content)
-        return content
+    async def _fetch_alcy(self) -> _FetchedBackground:
+        fetched = await self._download_image(
+            _ALCY_ENDPOINT,
+            provider="alcy",
+            allow_redirects=True,
+        )
+        await asyncio.to_thread(self._validate_image, fetched.content)
+        return fetched
 
     async def _get_json(self, url: str, *, params: list[tuple[str, str]] | None = None) -> object:
         try:
@@ -194,8 +236,9 @@ class PanelBackgroundProvider:
         self,
         url: str,
         *,
+        provider: str,
         allow_redirects: bool = False,
-    ) -> bytes:
+    ) -> _FetchedBackground:
         try:
             async with (await self._get_session()).get(
                 url,
@@ -205,9 +248,10 @@ class PanelBackgroundProvider:
             ) as response:
                 if response.status != 200:
                     raise PanelBackgroundError("panel_background_download")
+                response_url = getattr(response, "url", None)
+                final_url = str(response_url) if response_url is not None else url
                 if allow_redirects:
-                    final_url = getattr(response, "url", None)
-                    if final_url is not None and not self._is_safe_url(str(final_url)):
+                    if not self._is_safe_url(final_url):
                         raise PanelBackgroundError("panel_background_redirect")
                 parts: list[bytes] = []
                 size = 0
@@ -218,9 +262,27 @@ class PanelBackgroundProvider:
                     parts.append(chunk)
                 if not parts:
                     raise PanelBackgroundError("panel_background_empty")
-                return b"".join(parts)
+                return _FetchedBackground(
+                    b"".join(parts),
+                    provider,
+                    self._safe_image_name(final_url),
+                )
         except (aiohttp.ClientError, asyncio.TimeoutError):
             raise PanelBackgroundError("panel_background_download") from None
+
+    @staticmethod
+    def _safe_image_name(value: str) -> str:
+        """Return a bounded URL-path basename without logging URL details."""
+        try:
+            decoded_path = unquote(urlsplit(value).path).replace("\\", "/")
+        except ValueError:
+            return "unknown"
+        name = decoded_path.rsplit("/", 1)[-1]
+        if name in {"", ".", ".."}:
+            return "unknown"
+        sanitized = "".join(ch if ch.isalnum() or ch in "._-" else "_" for ch in name)
+        sanitized = sanitized[:128]
+        return sanitized if sanitized not in {"", ".", ".."} else "unknown"
 
     @staticmethod
     def _is_safe_url(value: str) -> bool:

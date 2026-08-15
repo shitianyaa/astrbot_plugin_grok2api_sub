@@ -107,7 +107,8 @@ Provider；无论选哪个 Provider，插件都以完成态 `web_search_call` �
 
 - `/v1/models` 目录只证明**可见性**，不证明搜索能力；完成态 `web_search_call`
   或 `x_search_call` 才证明本次执行了联网搜索。
-- 目录 GET 失败时回退到"原配置顺序"（不跳过 not_visible）。
+- 目录 GET 或 `data` 结构校验失败时回退到“原配置顺序”（不跳过 not_visible）；结构错误使用可重试的 `invalid_model_catalog`。
+- 成功返回空目录时，所有候选均视为 not_visible，直接抛 `search_models_exhausted`，不发送搜索 POST。
 - 实际搜索 POST 始终发送用户配置的原字符串（`Build/grok-4.5` 不会被重写为
   `grok-4.5`），Provider 前缀只用于目录可见性匹配。
 - `grok-chat-*` 不支持 X 搜索：插件会在每个候选模型发起请求前移除 `x_search`，
@@ -135,10 +136,12 @@ Provider；无论选哪个 Provider，插件都以完成态 `web_search_call` �
   视频状态轮询和视频下载。两项均表示首次调用以外的额外次数，默认 `2`。
 - `retry_excluded_errors` 为空时，远端 HTTP、网络、JSON 解析和远端响应结构错误均允许重试；
   可按 HTTP 状态码或稳定错误码关闭特定重试。`Retry-After` 仍优先于指数退避。
+- 数字秒和 HTTP-date 两种 `Retry-After` 均受支持；HTTP-date 固定按 UTC 解释，最终退避上限为 30 秒。
 - 生成 POST 也遵循此策略，因此可能产生重复生成或重复扣费。平台发送、访问控制、用户输入、媒体大小
   与路径安全错误均位于传输层之外，绝不自动重放。
 - 每一次 HTTP 尝试只使用其操作自己的单次总超时。重试不裁剪单次超时，也不由视频轮询生命周期
   重新分配时间预算。
+- 任务汇总在每个 HTTP 调用真正发出第 2 次及后续请求时累计一次重试；模型目录、生成、轮询和下载共享任务计数，独立的正常轮询请求均从首次尝试开始，不计为重试。
 
 ## 视频状态机
 

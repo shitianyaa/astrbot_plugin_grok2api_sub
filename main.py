@@ -602,12 +602,18 @@ class Grok2APISubPlugin(Star):
         provider = self._panel_background
         if provider is None:
             return None
-        background = await provider.get_background(self._cfg.panel_background_tags)
+        background = await provider.get_background()
+        background_log_fields = {
+            "operation": "panel_render",
+            "background_source": background.source,
+            "background_provider": background.provider,
+        }
+        if background.image_name:
+            background_log_fields["background_image_name"] = background.image_name
         safe_log(
             logging.DEBUG,
             "panel_background_ready",
-            operation="panel_render",
-            background_source=background.source,
+            **background_log_fields,
         )
         try:
             template, options = panel_render_spec(self._cfg.panel_resolution)

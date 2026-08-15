@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import asyncio
+import json
 
 import pytest
 
 from core.client import Grok2APIClient
-from core.errors import PluginError
+from core.errors import PluginError, ProtocolError
+from core.transport import HTTPTransport
+from tests.fakes import FakeResponse, FakeSession
 
 
 class FakeClock:
@@ -32,7 +35,8 @@ class FakeJSONTransport:
         value = self.responses.pop(0)
         if isinstance(value, BaseException):
             raise value
-        return value
+        parser = kwargs.get("response_parser")
+        return parser(value) if parser is not None else value
 
     async def close(self) -> None:
         return None
@@ -40,6 +44,10 @@ class FakeJSONTransport:
 
 def _client(transport, clock) -> Grok2APIClient:
     return Grok2APIClient(transport, monotonic=clock)
+
+
+async def _no_sleep(_delay: float) -> None:
+    return None
 
 
 async def test_model_catalog_is_cached_for_300_seconds():
@@ -113,3 +121,38 @@ async def test_duplicate_and_empty_model_ids_removed_and_sorted():
     )
     client = _client(transport, clock)
     assert await client.list_models() == ("a", "b", "c")
+
+
+async def test_invalid_model_catalog_retries_inside_transport_then_succeeds():
+    session = FakeSession()
+    session.push(
+        FakeResponse(200, body=json.dumps({"data": None})),
+        FakeResponse(200, body=json.dumps({"data": None})),
+        FakeResponse(200, body=json.dumps({"data": [{"id": "grok-4.5"}]})),
+    )
+    transport = HTTPTransport(
+        "https://grok.example.com",
+        "synthetic",
+        sleep=_no_sleep,
+        session_factory=lambda: session,
+    )
+    client = Grok2APIClient(transport, model_retry_count=2)
+
+    assert await client.list_models() == ("grok-4.5",)
+    assert len(session.calls) == 3
+
+
+async def test_invalid_model_catalog_exhaustion_uses_stable_error():
+    session = FakeSession()
+    session.push(FakeResponse(200, body=json.dumps({"data": None})))
+    transport = HTTPTransport(
+        "https://grok.example.com",
+        "synthetic",
+        sleep=_no_sleep,
+        session_factory=lambda: session,
+    )
+    client = Grok2APIClient(transport, model_retry_count=0)
+
+    with pytest.raises(ProtocolError) as caught:
+        await client.list_models()
+    assert caught.value.code == "invalid_model_catalog"

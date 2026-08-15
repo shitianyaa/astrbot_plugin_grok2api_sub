@@ -29,6 +29,8 @@ This repository is an AstrBot plugin providing Grok2API search, image, image-edi
 - Runtime, packaging, metadata, README badge, and CHANGELOG versions must agree.
 - Do not change versions, commit, push, publish, or create releases unless the user explicitly authorizes it.
 - Never add AI attribution trailers to commits or release text.
+- Release workflow accepts only immutable `vX.Y.Z` tags. It must not create or move tags, overwrite an existing Release, or use `--clobber`.
+- Release Notes use the PR `release-note` metadata contract and public GitHub login/PR or commit URLs for attribution; never infer identities from email addresses.
 - Before staging, inspect `git diff` and stage only files belonging to the requested change.
 
 ## Validation

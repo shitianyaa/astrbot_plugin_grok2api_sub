@@ -15,6 +15,14 @@ dependencies = [
     "Pillow>=10.0.0",
 ]
 
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.23.0",
+    "PyYAML>=6.0.0",
+    "ruff==0.15.22",
+]
+
 [tool.setuptools]
 packages = ["core"]
 

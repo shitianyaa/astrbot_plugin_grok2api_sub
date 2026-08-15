@@ -3,7 +3,7 @@
 ## 本地单元测试
 
 ```powershell
-python -m pip install -r requirements.txt -r requirements-dev.txt
+python -m pip install -e ".[dev]"
 $env:PYTHONIOENCODING='utf-8'
 python -m json.tool _conf_schema.json
 python -m compileall main.py core tests
@@ -65,14 +65,16 @@ ruff format --check .
 
 - 401/403：提示 Client Key/权限错误，不打印 Key。
 - 404：区分 base URL/endpoint 和 video job 不存在。
-- 429/503：所有远端请求按所属重试组退避；`Retry-After` 优先，排除列表可禁止重试。
+- 429/503：所有远端请求按所属重试组退避；数字秒与 UTC HTTP-date `Retry-After` 优先，排除列表可禁止重试。
+- `/v1/models` 结构异常：按 `invalid_model_catalog` 重试，耗尽后使用原配置顺序；成功空目录不发送搜索 POST。
 - 生成 POST read timeout：按所属重试组重试；可能重复生成或扣费，配置排除项可停止重试。
 - Responses 无完成态 `web_search_call` 或 `x_search_call`：当前模型按 `model_retry_count` 耗尽后，再继续候选回退。
 - 视频 failed、单次状态查询超时、下载超限：各有单一、可理解回复，临时文件清理。
+- 任务汇总重试数：目录、生成、单次轮询和下载的实际额外请求均计入；正常 pending 状态产生的新一轮查询不计为重试。
 - 输入图片损坏、超限、解压炸弹：在调用 API 前拒绝。
 - 整理/优化模型未配置、超时、工具调用或返回非法 JSON：在调用 grok2api 前拒绝。
 - QQ 发送异常：不重发，由媒体任务最终失败块汇总；底层 `delivery_unknown` 仅在 DEBUG 输出。
-- Wallhaven、LoliAPI、t.alcy 或背景图片下载失败：按来源顺序回退，最后复用最新有效背景缓存；无缓存时仍发送内置背景的面板图片。
+- Wallhaven、LoliAPI、t.alcy 或背景图片下载失败：按本次随机图源顺序继续回退，最后复用最新有效背景缓存；无缓存时仍发送内置背景的面板图片。
 - T2I 失败：面板数据不重取，直接发送相同 `PanelReport` 的文本回退。
 - 插件重载：Tool 不重复注册，HTTP session、任务和临时文件正确清理。
 

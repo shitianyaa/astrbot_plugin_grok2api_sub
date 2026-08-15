@@ -42,6 +42,19 @@ def _retry(
     )
 
 
+def _parse_model_catalog(data: dict) -> tuple[str, ...]:
+    """Parse a model catalog inside the transport retry boundary."""
+    items = data.get("data")
+    if not isinstance(items, list):
+        raise ProtocolError(
+            "上游返回了无效的模型目录",
+            code="invalid_model_catalog",
+            retryable=True,
+        )
+    ids = {str(item["id"]) for item in items if isinstance(item, dict) and item.get("id")}
+    return tuple(sorted(ids))
+
+
 def _parse_created_video_request(data: dict) -> str:
     """Validate the remote creation response as a retryable wire failure."""
     request_id = str(data.get("request_id") or "")
@@ -99,7 +112,7 @@ class Grok2APIClient:
             now = self._monotonic()
             if not force_refresh and 0 < now < self._models_cache_expires_at:
                 return self._models_cache
-            data = await self._transport.request_json(
+            models = await self._transport.request_json(
                 "GET",
                 "/v1/models",
                 json_body=None,
@@ -111,13 +124,8 @@ class Grok2APIClient:
                     self._retry_excluded_errors,
                 ),
                 operation="models",
+                response_parser=_parse_model_catalog,
             )
-            items = data.get("data", [])
-            ids: set[str] = set()
-            for item in items:
-                if isinstance(item, dict) and item.get("id"):
-                    ids.add(str(item["id"]))
-            models = tuple(sorted(ids))
             # only a successful GET updates both cache and TTL
             self._models_cache = models
             self._models_cache_expires_at = self._monotonic() + 300.0
