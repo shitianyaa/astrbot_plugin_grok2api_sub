@@ -14,7 +14,6 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      pull-requests: read
 
     steps:
       - name: Check out source
@@ -29,11 +28,6 @@ jobs:
 
       - name: Install dependencies
         run: python -m pip install -e ".[dev]"
-
-      - name: Validate pull request release-note declaration
-        if: ${{ github.event_name == 'pull_request' }}
-        shell: bash
-        run: python scripts/check_pr.py --event "$GITHUB_EVENT_PATH"
 
       - name: Validate repository version sources
         shell: bash

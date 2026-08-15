@@ -721,4 +721,4 @@ class PluginConfig:
 
 
 def version() -> str:
-    return "v0.1.5"
+    return "v0.1.6"

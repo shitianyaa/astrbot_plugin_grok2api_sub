@@ -1,26 +1,27 @@
 # 发布说明
 
-## 发布前准备
+## 发布流程
 
-1. 更新 `metadata.yaml`、`pyproject.toml`、`core/config.py`、README 版本徽章和 `CHANGELOG.md`，确保版本一致。
-2. 合并改动到默认分支，等待普通 CI 通过。
-3. 创建并推送不可变的 `vX.Y.Z` tag，或在 GitHub Actions 中手动输入已存在的 tag。
+1. 更新 `metadata.yaml`、`pyproject.toml`、`core/config.py`、README 版本徽章和 `CHANGELOG.md`，确保版本一致并包含该版本的变更记录。
+2. 合并/推送代码到 `main` 分支：
+   - 工作流自动检测 `metadata.yaml` 中的版本号。
+   - 若该版本尚未在 GitHub 发布，自动触发测试、打包、提取 `CHANGELOG.md` 对应的 Release Notes，并创建 Git Tag 和 GitHub Release。
+   - 若该版本已发布（常规 commit），工作流自动跳过发版。
+3. （备选）亦可直接推送不可变的 `vX.Y.Z` tag，或在 GitHub Actions 中手动输入 tag 进行 `workflow_dispatch` 发布或 dry-run 验证。
 
-## 自动验证
+## 自动验证与打包
 
-`Release plugin archive` 只有一个 job，会依次完成：
+`Release plugin archive` 包含以下步骤：
 
-- 检查稳定版 tag、默认分支祖先关系和同名 Release；
-- 校验版本来源、配置 JSON 和 Python 语法；
-- 运行 pytest 与 Ruff；
-- 构建 ZIP、SHA-256 和 `manifest.json`，并复核产物。
-
-正式发布时使用 GitHub 自带的 `--generate-notes` 生成 Release Notes，不再额外维护 Release Notes 收集脚本的 CI 编排。
-
-手动运行时默认 `dry_run=true`，只验证和打包，不发布。Tag push 会在全部验证通过后创建 GitHub Release。工作流不会创建、移动或覆盖 tag，也不会覆盖已有 Release。
+- 检查版本格式与同名 Release 状态；
+- 校验全项目版本来源一致性、配置 JSON 格式与 Python 语法；
+- 运行全量 pytest 测试与 Ruff 代码检查；
+- 构建 ZIP、SHA-256 校验和与 `manifest.json`，并复核产物完整性；
+- 调用 `scripts/extract_changelog.py` 从 `CHANGELOG.md` 抽取当前版本的变更说明；
+- 使用 `--notes-file` 将提取的 Markdown 内容发布至 GitHub Release。
 
 ## 失败处理
 
-- 验证失败：修复代码或版本信息后创建新的提交；不要移动已经发布的 tag。
-- Release Notes 内容不完整：直接编辑 GitHub Release 文本，或在后续版本的 PR 描述中补充变更说明。
-- 同名 Release 已存在：工作流会直接停止；需要修复时发布新的补丁版本。
+- 验证失败：修复代码或版本信息后提交；不要移动已经发布的 tag。
+- CHANGELOG 提取失败：检查 `CHANGELOG.md` 是否包含 `## vX.Y.Z (YYYY-MM-DD)` 格式标题且内容非空。
+- 同名 Release 已存在：工作流在 push 到 main 时会自动安全跳过；如需发布新修复请提升版本号。

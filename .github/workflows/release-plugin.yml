@@ -2,13 +2,15 @@ name: Release plugin archive
 
 "on":
   push:
+    branches:
+      - main
     tags:
       - "v*.*.*"
   workflow_dispatch:
     inputs:
       tag:
-        description: Existing immutable vX.Y.Z tag
-        required: true
+        description: Existing immutable vX.Y.Z tag (optional if running on main)
+        required: false
         type: string
       dry_run:
         description: Validate and build without publishing
@@ -29,7 +31,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - name: Check out immutable tag
+      - name: Check out source
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
           ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
@@ -53,17 +55,35 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          tag="${INPUT_TAG:-${GITHUB_REF_NAME}}"
-          [[ "$tag" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] || { echo "invalid stable tag: $tag" >&2; exit 1; }
-          tag_sha="$(git rev-list -n 1 "$tag")"
-          default_sha="$(git rev-parse "origin/$DEFAULT_BRANCH")"
-          git merge-base --is-ancestor "$tag_sha" "$default_sha"
-          if gh release view "$tag" >/dev/null 2>&1; then
-            echo "a GitHub Release already exists for $tag" >&2
-            exit 1
+          metadata_tag="$(python -c 'import yaml; print(yaml.safe_load(open("metadata.yaml", encoding="utf-8"))["version"])')"
+          tag="${INPUT_TAG:-}"
+          if [[ -z "$tag" ]]; then
+            if [[ "${GITHUB_EVENT_NAME}" == "push" && "${GITHUB_REF_TYPE:-}" == "branch" ]]; then
+              tag="$metadata_tag"
+            else
+              tag="${GITHUB_REF_NAME}"
+            fi
           fi
 
-          metadata_tag="$(python -c 'import yaml; print(yaml.safe_load(open("metadata.yaml", encoding="utf-8"))["version"])')"
+          [[ "$tag" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] || { echo "invalid stable tag: $tag" >&2; exit 1; }
+
+          if [[ "${GITHUB_EVENT_NAME}" == "push" && "${GITHUB_REF_TYPE:-}" == "branch" ]]; then
+            if gh release view "$tag" >/dev/null 2>&1; then
+              echo "Release $tag already exists on GitHub; skipping automated release for routine commit on main."
+              exit 0
+            fi
+          else
+            if gh release view "$tag" >/dev/null 2>&1; then
+              echo "a GitHub Release already exists for $tag" >&2
+              exit 1
+            fi
+            tag_sha="$(git rev-list -n 1 "$tag" 2>/dev/null || echo "")"
+            default_sha="$(git rev-parse "origin/$DEFAULT_BRANCH" 2>/dev/null || git rev-parse HEAD)"
+            if [[ -n "$tag_sha" ]]; then
+              git merge-base --is-ancestor "$tag_sha" "$default_sha"
+            fi
+          fi
+
           [[ "$metadata_tag" == "$tag" ]] || { echo "metadata version $metadata_tag does not match $tag" >&2; exit 1; }
           python scripts/check_repository.py --tag "$tag" --json release-check.json
           python -m json.tool _conf_schema.json > /dev/null
@@ -76,12 +96,19 @@ jobs:
           archive="dist/${PLUGIN_NAME}-${tag}.zip"
           checksum="$archive.sha256"
           manifest=dist/manifest.json
-          test -f "$archive" && test -f "$checksum" && test -f "$manifest"
+          notes="dist/release-notes.md"
+
+          python scripts/extract_changelog.py --tag "$tag" --changelog CHANGELOG.md --output "$notes"
+
+          test -f "$archive" && test -f "$checksum" && test -f "$manifest" && test -f "$notes"
           grep -F "$(sha256sum "$archive" | awk '{print $1}')" "$checksum"
           python -c 'import json; json.load(open("dist/manifest.json", encoding="utf-8"))'
 
           if [[ "${GITHUB_EVENT_NAME}" == "push" || "${INPUT_DRY_RUN:-false}" != "true" ]]; then
-            gh release create "$tag" "$archive" "$checksum" "$manifest" --verify-tag --generate-notes --title "$tag"
+            gh release create "$tag" "$archive" "$checksum" "$manifest" \
+              --target "${GITHUB_SHA}" \
+              --title "$tag" \
+              --notes-file "$notes"
           else
             echo "dry run: validation and build succeeded; release was not published"
           fi

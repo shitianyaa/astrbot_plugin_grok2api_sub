@@ -4,6 +4,21 @@
 
 ## [Unreleased]
 
+## v0.1.6 (2026-08-15)
+
+### Changed
+
+- **Release 工作流升级**：支持推送至 `main` 分支自动检测版本号更新并触发 GitHub Release；自动抽取 `CHANGELOG.md` 中对应版本的完整更新日志并写入 Release Notes 正文，替代原本仅输出 Commit 列表的 `--generate-notes`。
+- **CI 工作流精简**：移除已废弃的 PR release-note 结构校验，并将 CI 权限收敛为只读 `contents: read`。
+
+### Added
+
+- **Changelog 提取工具**：新增 `scripts/extract_changelog.py` 及其完整单元测试，用于在发版时精准解析并提取版本更新记录。
+
+### Removed
+
+- **废弃脚本与冗余测试清理**：移除历史遗留的离线渲染脚本（`render_release_notes.py`、`collect_release_sources.py`、`check_pr.py`）、脆弱的源码字符串匹配测试（`test_main_contract.py`）以及已废弃的测试夹具目录。
+
 ## v0.1.5 (2026-08-15)
 
 ### Changed

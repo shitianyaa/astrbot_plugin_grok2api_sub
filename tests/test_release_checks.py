@@ -151,7 +151,7 @@ def test_ci_workflow_has_read_only_fixed_action_contract() -> None:
     jobs = workflow["jobs"]
     assert set(jobs) == {"quality"}
     quality = jobs["quality"]
-    assert quality["permissions"] == {"contents": "read", "pull-requests": "read"}
+    assert quality["permissions"] == {"contents": "read"}
     assert "strategy" not in quality
     setup_python = next(step for step in quality["steps"] if step.get("name") == "Set up Python")
     assert setup_python["with"]["python-version"] == "3.12"
@@ -192,7 +192,7 @@ def test_release_workflow_is_simple_and_immutable() -> None:
     assert workflow["permissions"] == {}
     assert set(workflow["on"]) == {"push", "workflow_dispatch"}
     assert workflow["on"]["push"]["tags"] == ["v*.*.*"]
-    assert "branches" not in workflow["on"]["push"]
+    assert workflow["on"]["push"]["branches"] == ["main"]
     jobs = workflow["jobs"]
     assert set(jobs) == {"release"}
     assert jobs["release"]["environment"] == "release"
@@ -205,12 +205,13 @@ def test_release_workflow_is_simple_and_immutable() -> None:
     assert "requirements-dev.txt" not in text
     for required in (
         "package_plugin.py",
+        "extract_changelog.py",
         "manifest.json",
         ".sha256",
+        "release-notes.md",
         "persist-credentials: false",
         "gh release create",
-        "--generate-notes",
-        "--verify-tag",
+        "--notes-file",
     ):
         assert required in text
     assert "allow_unmapped_commits" not in text
