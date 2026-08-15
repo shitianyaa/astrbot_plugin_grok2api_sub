@@ -137,7 +137,10 @@ def _pyproject_version(root: Path, result: CheckResult) -> str | None:
     if text is None:
         return None
     try:
-        import tomllib
+        try:
+            import tomllib
+        except ModuleNotFoundError:
+            import tomli as tomllib
 
         data = tomllib.loads(text)
     except Exception as exc:  # pragma: no cover - exact parser exception varies by Python version.

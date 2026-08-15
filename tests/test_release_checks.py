@@ -4,8 +4,12 @@ import json
 import re
 from pathlib import Path
 
-import tomllib
 import yaml
+
+try:
+    import tomllib
+except ModuleNotFoundError:  # Python 3.10
+    import tomli as tomllib
 
 from scripts.check_repository import check_release
 
@@ -16,10 +20,13 @@ def test_dev_dependencies_are_declared_in_pyproject() -> None:
 
     dev = pyproject["project"]["optional-dependencies"]["dev"]
     assert {item.split("=", 1)[0].split(">", 1)[0] for item in dev} == {
+        "AstrBot",
+        "Jinja2",
         "pytest",
         "pytest-asyncio",
         "PyYAML",
         "ruff",
+        "tomli",
     }
     assert not (root / "requirements-dev.txt").exists()
 
