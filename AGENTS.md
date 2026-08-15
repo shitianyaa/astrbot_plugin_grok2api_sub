@@ -1,49 +1,66 @@
-# Repository Development Rules
+# 仓库开发规范与规则
 
-## Scope
+## 适用范围
 
-This repository is an AstrBot plugin providing Grok2API search, image, image-edit, video, and panel features. Keep changes focused on the requested behavior and preserve unrelated user work.
+本仓库是为 AstrBot 提供的 Grok2API 插件，支持联网搜索、文生图、改图、视频生成以及管理面板功能。改动应严格聚焦于请求的目标行为，并保护用户其他不相关的修改。
 
-## Safety
+## 安全规范
 
-- Never read, print, commit, or hardcode `.env` values, Client Keys, tokens, passwords, cookies, JWTs, or private URLs.
-- Do not place credentials, Bearer/JWT values, Base64 media, signed URLs, userinfo, media URLs, request IDs, or upstream response bodies in logs.
-- Treat remote API responses and image URLs as untrusted. Validate schemes, redirects, image bytes, size, decoding, dimensions, and aspect ratio before use.
+- 严禁读取、打印、提交或硬编码 `.env` 配置、API Key、Token、密码、Cookie、JWT 或私有 URL。
+- 禁止在日志中输出凭据、Bearer/JWT 值、Base64 媒体数据、签名 URL、用户信息、媒体 URL、请求 ID 或上游原始响应正文。
+- 远端 API 响应与图片 URL 必须视为不可信输入。使用前必须对协议（scheme）、重定向、图片字节合法性、体积、解码、尺寸及宽高比进行校验。
 
-## Repository Workflow
+## 开发与协作规范
 
-- If `.codegraph/` exists, run `codegraph explore` before searching or reading source files.
-- Keep factual task notes in `Progress/YYYY-MM-DD*.md`; never commit `Progress/`.
-- Use `apply_patch` for manual edits. Do not use destructive Git commands or discard unrelated changes.
-- Do not add dependencies without checking the existing stack and documenting the reason.
+- 针对架构重构、规则修改、元数据更新、测试增删等重大决策，必须先向用户阐明方案与选型，待用户确认后再执行代码修改。
+- 手动修改时优先使用精确替换。切勿使用破坏性 Git 命令或丢弃不相关的用户改动。
+- 若存在 `.codegraph/` 目录，在搜索或读取源文件前应优先运行 `codegraph explore`。
+- 事实性任务记录保存在 `Progress/YYYY-MM-DD*.md`；严禁将 `Progress/` 提交到 Git。
+- 未经确认现有依赖技术栈并记录充分理由前，切勿随意引入新依赖。
 
-## Code Conventions
+## 本地测试与调试隔离
 
-- Follow existing Python, aiohttp, AstrBot, and pytest patterns.
-- Keep INFO logs concise task blocks; put transport, polling, model-attempt, panel subrequest, and delivery details at DEBUG.
-- Preserve the retry contract: exhaust one model's retry group before fallback; only stable model-selection errors switch candidates.
-- Preserve the media background fallback order and cache/CSS fallback behavior unless the task explicitly changes it.
+- 所有真机网络调用脚本、端到端测试、临时产物（图片/视频/缓存）必须严格隔离在 `testignore/` 目录（或其子目录）中执行。严禁在项目根目录、父级目录或系统用户目录下随意创建一次性测试文件或残留输出。
+- 测试脚本的调用逻辑与事件流必须严格与插件运行时的真实架构保持一致（包括生命周期、事件对象、消息链组装、配置加载与服务调度），严禁手拼脱离实际的模拟请求。
 
-## Version and Git
+## 配置 Schema 与文案约定
 
-- Runtime, packaging, metadata, README badge, and CHANGELOG versions must agree.
-- Do not change versions, commit, push, publish, or create releases unless the user explicitly authorizes it.
-- Never add AI attribution trailers to commits or release text.
-- Release workflow accepts only immutable `vX.Y.Z` tags. It must not create or move tags, overwrite an existing Release, or use `--clobber`.
-- Release Notes use the PR `release-note` metadata contract and public GitHub login/PR or commit URLs for attribution; never infer identities from email addresses.
-- Before staging, inspect `git diff` and stage only files belonging to the requested change.
+- 配置项术语保持标准直观（如 `api_key`），杜绝生造词与历史别名（如 Client Key）。
+- `_conf_schema.json` 中的 `description` 与 `hint` 保持精炼，直击配置核心用途，严禁堆砌常识性说教文案。
 
-## Validation
+## 代码与日志约定
 
-Run the relevant focused tests first, then:
+- 遵循既有的 Python、aiohttp、AstrBot 和 pytest 设计模式。
+- INFO 级别日志仅保留简洁的任务块；网络传输、轮询、单次模型尝试、面板子请求以及平台发送细节均置于 DEBUG 级别。
+- 严格遵循重试契约：单个候选模型在重试次数耗尽后才允许回退到下一个候选模型；仅当发生稳定的模型不可用/无权限错误时才触发候选切换。
+- 多模态处理具备自愈能力：图片宽高比按对数距离自动对齐到支持的合法集合（`closest_aspect_ratio`）；默认模型候选必须与远端各端点实际能力精确匹配。
+- 保持媒体背景的轮询降级顺序以及本地缓存/CSS 默认样式的回退行为，除非任务明确要求修改。
+
+## 测试套件维护
+
+- `tests/` 目录严格聚焦于插件运行时业务功能与协议安全（搜索、生图、改图、视频、面板、鉴权、权限、配置校验）。
+- 避免在主测试套件中堆积非功能性测试（如仅用于发版的工具脚本）或过度白盒的私有变量镜像断言。
+
+## 版本管理与 Git
+
+- 运行时版本、打包版本、元数据（metadata.yaml）、README 徽标与 CHANGELOG 版本必须严格一致。
+- 除非用户明确授权，否则切勿擅自修改版本号、提交（commit）、推送（push）、发布（publish）或创建 Release。
+- 严禁在提交信息（commit message）或 Release 说明中添加 AI 署名后缀（Attribution Trailers）。
+- 发布工作流仅接受不可变的 `vX.Y.Z` 标签（Tag）。不得创建或移动 Tag，不得覆盖已有 Release，不得使用 `--clobber`。
+- Release Notes 遵循 PR 的 `release-note` 元数据约定，并使用公开的 GitHub 账号/PR/Commit 链接进行致谢；切勿从邮箱地址推断身份。
+- 在暂存变更（git stage）前，仔细检查 `git diff`，仅暂存属于本次目标改动的文件。
+
+## 自动化验证门禁
+
+先运行相关的定向测试，然后执行全套验证：
 
 ```powershell
 python -m json.tool _conf_schema.json
-python -m compileall main.py core tests
+python -m compileall main.py core tests scripts
 python -m pytest -q
 ruff check .
 ruff format --check .
 git diff --check
 ```
 
-Report warnings, skipped checks, external-service limitations, and remaining risks explicitly.
+执行完毕后，明确报告所有警告、跳过的检查项、外部服务限制以及潜在风险。

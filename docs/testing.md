@@ -41,11 +41,11 @@ ruff format --check .
 ## Fake 设计
 
 - `tests/fakes.py` 提供 `FakeSession`/`FakeResponse`/`StreamReader`，无需真实网络。
-- 测试中禁止出现真实 Client Key；一律使用 `g2a_test_key` 之类的占位符。
+- 测试中禁止出现真实 API Key；一律使用 `g2a_test_key` 之类的占位符。
 
 ## 真实环境验收矩阵
 
-使用专门测试 Client Key 和测试群，不在测试记录中粘贴 Key。
+使用专门测试 API Key 和测试群，不在测试记录中粘贴 Key。
 
 | 场景 | OneBot 私聊 | OneBot 群聊 | QQ Official C2C | QQ Official 群聊 |
 |---|---:|---:|---:|---:|
@@ -63,7 +63,7 @@ ruff format --check .
 
 ## 失败验收矩阵
 
-- 401/403：提示 Client Key/权限错误，不打印 Key。
+- 401/403：提示 API Key/权限错误，不打印 Key。
 - 404：区分 base URL/endpoint 和 video job 不存在。
 - 429/503：所有远端请求按所属重试组退避；数字秒与 UTC HTTP-date `Retry-After` 优先，排除列表可禁止重试。
 - `/v1/models` 结构异常：按 `invalid_model_catalog` 重试，耗尽后使用原配置顺序；成功空目录不发送搜索 POST。

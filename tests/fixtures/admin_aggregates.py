@@ -2,7 +2,7 @@
 
 These mirror the observed field shapes of the four aggregate admin endpoints
 (accounts summary, image stats, video stats, audit summary). None of
-these endpoints carries personal identifiers (no account email, Client Key name,
+these endpoints carries personal identifiers (no account email, API Key name,
 or request ID), so the values here are safe. Values are sanitized placeholders;
 when a real deployment snapshot is available, replace the literals below with
 the actual aggregate payloads. Do **not** place audit rows or credentials here.

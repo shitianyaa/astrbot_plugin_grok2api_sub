@@ -30,6 +30,7 @@ REQUIRED_ROOT_FILES = (
     "LICENSE",
 )
 OPTIONAL_ROOT_FILES = ("logo.png",)
+OPTIONAL_DIRECTORIES = ("assets", "templates")
 EXCLUDED_NAMES = {"__pycache__", ".pytest_cache", ".ruff_cache"}
 FORBIDDEN_NAMES = {
     ".env",
@@ -123,27 +124,44 @@ def collect_source_files(root: Path) -> list[SourceFile]:
             _assert_regular_file(root, path)
             paths.append(path)
 
-    core_dir = root / "core"
-    if core_dir.is_symlink() or not core_dir.is_dir():
+    scan_dirs = [root / "core"]
+    if scan_dirs[0].is_symlink() or not scan_dirs[0].is_dir():
         raise PackageError("release input requires a regular core/ directory")
-    for directory, dirnames, filenames in os.walk(core_dir, followlinks=False):
-        directory_path = Path(directory)
-        for name in tuple(dirnames):
-            child = directory_path / name
-            relative = child.relative_to(root)
-            if child.is_symlink():
-                raise PackageError(f"symbolic links are not allowed in release input: {relative}")
-            if _is_forbidden_path(relative):
-                dirnames.remove(name)
-        for name in filenames:
-            path = directory_path / name
-            relative = path.relative_to(root)
-            if path.is_symlink():
-                raise PackageError(f"symbolic links are not allowed in release input: {relative}")
-            if _is_forbidden_path(relative):
-                continue
-            _assert_regular_file(root, path)
-            paths.append(path)
+
+    for dir_name in OPTIONAL_DIRECTORIES:
+        opt_dir = root / dir_name
+        if opt_dir.is_symlink():
+            raise PackageError(f"symbolic links are not allowed in release input: {dir_name}")
+        if opt_dir.exists():
+            if not opt_dir.is_dir():
+                raise PackageError(
+                    f"release input requires a regular {dir_name}/ directory if present"
+                )
+            scan_dirs.append(opt_dir)
+
+    for scan_dir in scan_dirs:
+        for directory, dirnames, filenames in os.walk(scan_dir, followlinks=False):
+            directory_path = Path(directory)
+            for name in tuple(dirnames):
+                child = directory_path / name
+                relative = child.relative_to(root)
+                if child.is_symlink():
+                    raise PackageError(
+                        f"symbolic links are not allowed in release input: {relative}"
+                    )
+                if _is_forbidden_path(relative):
+                    dirnames.remove(name)
+            for name in filenames:
+                path = directory_path / name
+                relative = path.relative_to(root)
+                if path.is_symlink():
+                    raise PackageError(
+                        f"symbolic links are not allowed in release input: {relative}"
+                    )
+                if _is_forbidden_path(relative):
+                    continue
+                _assert_regular_file(root, path)
+                paths.append(path)
 
     files: list[SourceFile] = []
     for path in sorted(paths, key=lambda item: item.relative_to(root).as_posix()):

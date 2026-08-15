@@ -2,7 +2,7 @@ blank_issues_enabled: false
 contact_links:
   - name: 安全漏洞私下报告
     url: https://github.com/shitianyaa/astrbot_plugin_grok2api_sub/security/advisories/new
-    about: 不要公开发布凭据、Cookie、JWT、Client Key、私有 URL 或可利用的漏洞细节。
+    about: 不要公开发布凭据、Cookie、JWT、API Key、私有 URL 或可利用的漏洞细节。
   - name: 贡献指南
     url: https://github.com/shitianyaa/astrbot_plugin_grok2api_sub/blob/main/CONTRIBUTING.md
     about: 提交 Pull Request 前请阅读分支、测试、文档同步和 Release Notes 约定。

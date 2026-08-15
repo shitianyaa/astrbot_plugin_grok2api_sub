@@ -1,7 +1,7 @@
-# Project Instructions
+# 项目开发指南
 
-Read `AGENTS.md` before changing this repository; it is the canonical source for safety, workflow, testing, logging, and Git rules.
+在修改本仓库前请先阅读 `AGENTS.md`；它是安全规范、协作流程、测试隔离、日志记录与 Git 规则的权威来源。
 
-AstrBot plugin changes must preserve platform routing, message delivery, configured proxy/TLS behavior, model retry/fallback semantics, and user-visible error contracts. Remote image sources are optional: try the configured source order, validate the result, and fall back to the local cache or CSS default when all sources fail.
+对 AstrBot 插件的修改必须保留平台路由、消息下发、配置的代理/TLS 行为、模型重试/回退语义以及面向用户的错误契约。远程背景图源为可选能力：按配置的图源顺序尝试，校验结果，并在所有图源均失败时回退到本地缓存或 CSS 默认背景。
 
-Do not inspect or expose credentials from `.env` or local test fixtures. Do not log signed URLs, media URLs, request IDs, upstream bodies, or raw authentication material. Keep Progress notes untracked and run the repository validation commands before reporting completion.
+严禁查看或暴露 `.env` 或本地测试用例中的凭据。禁止在日志中打印签名 URL、媒体 URL、请求 ID、上游响应体或明文鉴权信息。所有真实测试与临时文件严格限制在 `testignore/` 目录中进行，保持工作区整洁，并在报告完成前运行全套仓库验证门禁。

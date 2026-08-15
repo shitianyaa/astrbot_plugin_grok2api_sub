@@ -37,7 +37,7 @@ def _cfg(**over) -> PluginConfig:
     base = {
         "connection_settings": {
             "api_base_url": "https://h.com",
-            "client_api_key": "k",
+            "api_key": "k",
         },
         "capability_settings": {
             "search_models": "grok-4.5",
@@ -89,7 +89,7 @@ def _make_service(ws, cfg=None, session=None, prompt_processor=None):
     session = session or FakeSession()
     t = HTTPTransport(
         cfg.api_base_url,
-        cfg.client_api_key,
+        cfg.api_key,
         sleep=_no_retry_sleep,
         session_factory=lambda: session,
     )
@@ -544,7 +544,7 @@ async def test_service_forwards_resolved_image_and_video_parameters(tmp_path):
     cfg = _cfg(capability_settings={"send_media_progress": False})
     client = Grok2APIClient(
         HTTPTransport(
-            cfg.api_base_url, cfg.client_api_key, sleep=_no_retry_sleep, session_factory=lambda: s
+            cfg.api_base_url, cfg.api_key, sleep=_no_retry_sleep, session_factory=lambda: s
         )
     )
     svc = GrokService(cfg, client, ws, DeliveryAdapter(ws), prompt_processor=Processor())
@@ -580,7 +580,7 @@ async def test_prompt_processing_error_stops_before_image_request(tmp_path):
     cfg = _cfg(capability_settings={"send_media_progress": False})
     client = Grok2APIClient(
         HTTPTransport(
-            cfg.api_base_url, cfg.client_api_key, sleep=_no_retry_sleep, session_factory=lambda: s
+            cfg.api_base_url, cfg.api_key, sleep=_no_retry_sleep, session_factory=lambda: s
         )
     )
     svc = GrokService(cfg, client, ws, DeliveryAdapter(ws), prompt_processor=Processor())
@@ -823,7 +823,7 @@ async def test_deliver_edited_image_uses_reference_aware_prompt_processor(tmp_pa
     processor = Processor()
     client = Grok2APIClient(
         HTTPTransport(
-            cfg.api_base_url, cfg.client_api_key, sleep=_no_retry_sleep, session_factory=lambda: s
+            cfg.api_base_url, cfg.api_key, sleep=_no_retry_sleep, session_factory=lambda: s
         )
     )
     svc = GrokService(cfg, client, ws, DeliveryAdapter(ws), prompt_processor=processor)
@@ -849,7 +849,7 @@ async def test_reference_image_progress_message_has_no_prompt_processing_notice(
     cfg = _cfg()
     client = Grok2APIClient(
         HTTPTransport(
-            cfg.api_base_url, cfg.client_api_key, sleep=_no_retry_sleep, session_factory=lambda: s
+            cfg.api_base_url, cfg.api_key, sleep=_no_retry_sleep, session_factory=lambda: s
         )
     )
     svc = GrokService(cfg, client, ws, DeliveryAdapter(ws), prompt_processor=Processor())
@@ -918,7 +918,7 @@ async def test_deliver_video_prefers_explicit_url_and_hides_it_from_logs(tmp_pat
     cfg = _cfg(capability_settings={"send_media_progress": False})
     client = Grok2APIClient(
         HTTPTransport(
-            cfg.api_base_url, cfg.client_api_key, sleep=_no_retry_sleep, session_factory=lambda: s
+            cfg.api_base_url, cfg.api_key, sleep=_no_retry_sleep, session_factory=lambda: s
         )
     )
     processor = Processor()
@@ -957,7 +957,7 @@ async def test_deliver_video_without_reference_uses_global_path_and_omits_image(
     cfg = _cfg(capability_settings={"send_media_progress": False})
     client = Grok2APIClient(
         HTTPTransport(
-            cfg.api_base_url, cfg.client_api_key, sleep=_no_retry_sleep, session_factory=lambda: s
+            cfg.api_base_url, cfg.api_key, sleep=_no_retry_sleep, session_factory=lambda: s
         )
     )
     processor = Processor()
@@ -1375,7 +1375,7 @@ def _make_panel_service(ws, cfg=None, admin_session=None):
     )
     t = HTTPTransport(
         cfg.api_base_url,
-        cfg.client_api_key,
+        cfg.api_key,
         sleep=_no_retry_sleep,
         session_factory=lambda: session,
     )
@@ -1405,12 +1405,12 @@ async def test_panel_preflight_guards_credentials_and_sections(tmp_path):
     assert len(s.calls) == 0
 
 
-async def test_panel_builds_all_selected_blocks_and_no_client_key_required(tmp_path):
+async def test_panel_builds_all_selected_blocks_and_no_api_key_required(tmp_path):
     ws = MediaWorkspace(tmp_path)
     cfg = _cfg(
         connection_settings={
             "api_base_url": "https://h.com/v1",
-            "client_api_key": "",  # panel must not require a Client Key
+            "api_key": "",  # panel must not require an API Key
             "admin_username": "a",
             "admin_password": "p",
         },
@@ -1462,7 +1462,7 @@ async def test_panel_builds_all_selected_blocks_and_no_client_key_required(tmp_p
         sum("/request-audits" in call["url"] and "summary" not in call["url"] for call in s.calls)
         == 1
     )
-    # every call went to the admin surface (never the Client Key /v1 transport)
+    # every call went to the admin surface (never the API Key /v1 transport)
     assert all("/api/admin/" in c["url"] for c in s.calls)
 
 

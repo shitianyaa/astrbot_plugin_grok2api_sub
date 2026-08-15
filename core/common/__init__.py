@@ -1,0 +1,82 @@
+"""Common infrastructure modules for Grok2API Sub plugin."""
+
+from .access import check_access, redacted_id
+from .config import PluginConfig
+from .errors import (
+    APIError,
+    ConfigurationError,
+    MediaLimitError,
+    NotSupportedError,
+    PluginError,
+    ProtocolError,
+    SearchNotPerformedError,
+    _sanitize_user_message,
+)
+from .models import (
+    AccessDecision,
+    ImageGenerationRequest,
+    ImageResult,
+    SearchResult,
+    SearchSource,
+    VideoGenerationRequest,
+    VideoJob,
+)
+from .observability import (
+    operation_scope,
+    record_task_attempt,
+    record_task_model,
+    record_task_retry,
+    safe_log,
+    safe_task_log,
+    sanitize_diagnostic,
+    sanitize_prompt_json,
+    task_attempts,
+    task_candidate_attempts,
+    task_model,
+    task_retry_count,
+)
+from .platform import PlatformKind, resolve_platform
+from .prompt_processor import PromptProcessor
+from .sender import DeliveryAdapter, DeliveryError
+from .transport import HTTPTransport, RetryPolicy, SleepFn
+
+__all__ = [
+    "APIError",
+    "AccessDecision",
+    "ConfigurationError",
+    "DeliveryAdapter",
+    "DeliveryError",
+    "HTTPTransport",
+    "ImageGenerationRequest",
+    "ImageResult",
+    "MediaLimitError",
+    "NotSupportedError",
+    "PlatformKind",
+    "PluginConfig",
+    "PluginError",
+    "PromptProcessor",
+    "ProtocolError",
+    "RetryPolicy",
+    "SearchNotPerformedError",
+    "SearchResult",
+    "SearchSource",
+    "SleepFn",
+    "VideoGenerationRequest",
+    "VideoJob",
+    "_sanitize_user_message",
+    "check_access",
+    "operation_scope",
+    "record_task_attempt",
+    "record_task_model",
+    "record_task_retry",
+    "redacted_id",
+    "resolve_platform",
+    "safe_log",
+    "safe_task_log",
+    "sanitize_diagnostic",
+    "sanitize_prompt_json",
+    "task_attempts",
+    "task_candidate_attempts",
+    "task_model",
+    "task_retry_count",
+]

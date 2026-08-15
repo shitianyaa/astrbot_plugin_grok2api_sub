@@ -8,7 +8,7 @@ from core.config import PluginConfig
 
 def _cfg(**over) -> PluginConfig:
     base = {
-        "connection_settings": {"api_base_url": "https://h.com", "client_api_key": "k"},
+        "connection_settings": {"api_base_url": "https://h.com", "api_key": "k"},
         "access_settings": {
             "user_whitelist": [],
             "user_blacklist": [],

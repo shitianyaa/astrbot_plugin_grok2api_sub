@@ -103,7 +103,8 @@ jobs:
             gh release create "$tag" "$archive" "$checksum" \
               --target "${GITHUB_SHA}" \
               --title "$tag" \
-              --notes-file "$notes"
+              --notes-file "$notes" \
+              --generate-notes
           else
             echo "dry run: build succeeded; release was not published"
           fi

@@ -1,66 +1,8 @@
-"""Immutable domain models shared across the client, service and sender.
+"""Backward-compatibility bridge: re-exports from core.common.models."""
 
-Layers only exchange these structured objects, never loose API dicts.
-"""
+import sys
 
-from __future__ import annotations
+from .common import models as _m
 
-from dataclasses import dataclass
-from typing import Literal
-
-
-@dataclass(frozen=True, slots=True)
-class SearchSource:
-    url: str
-    title: str = ""
-    snippet: str = ""
-
-
-@dataclass(frozen=True, slots=True)
-class SearchResult:
-    response_id: str
-    model: str
-    status: str
-    text: str
-    sources: tuple[SearchSource, ...]
-    search_performed: bool
-    incomplete: bool = False
-
-
-@dataclass(frozen=True, slots=True)
-class ImageResult:
-    content: bytes
-    media_type: str
-    source_url: str = ""
-
-
-@dataclass(frozen=True, slots=True)
-class VideoJob:
-    request_id: str
-    status: Literal["pending", "done", "failed"]
-    progress: int = 0
-    content_url: str = ""
-    error_code: str = ""
-    error_message: str = ""
-
-
-@dataclass(frozen=True, slots=True)
-class ImageGenerationRequest:
-    prompt: str
-    aspect_ratio: str = ""
-    resolution: str = "1k"
-
-
-@dataclass(frozen=True, slots=True)
-class VideoGenerationRequest:
-    prompt: str
-    duration: int = 6
-    aspect_ratio: str = ""
-    resolution: str = "720p"
-
-
-@dataclass(frozen=True, slots=True)
-class AccessDecision:
-    allowed: bool
-    reason_code: str = ""
-    user_message: str = ""
+globals().update({k: v for k, v in _m.__dict__.items() if not k.startswith("__")})
+sys.modules[__name__] = _m

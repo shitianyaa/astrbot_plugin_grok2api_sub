@@ -15,7 +15,7 @@ def _default_raw() -> dict:
         "connection_settings": {
             "enabled": True,
             "api_base_url": "https://grok.example.com",
-            "client_api_key": "key-1",
+            "api_key": "key-1",
             "verify_tls": True,
             "client_proxy_url": "",
         },
@@ -119,7 +119,7 @@ def test_invalid_search_model_lists_are_rejected(value):
 
 
 def test_empty_remote_connection_can_initialize_as_disabled_capability():
-    cfg = _cfg(connection_settings={"api_base_url": "", "client_api_key": ""})
+    cfg = _cfg(connection_settings={"api_base_url": "", "api_key": ""})
     assert cfg.has_api_base_url is False
     assert cfg.missing_capability("search") == "未配置远端 API 地址"
 
@@ -172,7 +172,7 @@ def test_auto_search_reasoning_effort_is_accepted():
 def test_empty_models_do_not_block_startup():
     c = _cfg(
         capability_settings={"search_models": "", "image_models": ""},
-        connection_settings={"api_base_url": "", "client_api_key": ""},
+        connection_settings={"api_base_url": "", "api_key": ""},
     )
     assert c.missing_capability("search") is not None
     assert c.missing_capability("image") is not None
@@ -180,8 +180,8 @@ def test_empty_models_do_not_block_startup():
     assert isinstance(c, PluginConfig)
 
 
-def test_empty_client_key_disables_all():
-    c = _cfg(connection_settings={"client_api_key": ""})
+def test_empty_api_key_disables_all():
+    c = _cfg(connection_settings={"api_key": ""})
     for cap in ("search", "image", "image_edit", "video"):
         assert c.capability_enabled(cap) is False
 
@@ -327,16 +327,16 @@ def test_proxy_with_auth_accepted_but_redacted():
 
 # -- redaction ------------------------------------------------------------
 def test_redacted_summary_never_contains_key():
-    c = _cfg(connection_settings={"client_api_key": "g2a_secret_value"})
+    c = _cfg(connection_settings={"api_key": "g2a_secret_value"})
     summary = c.redacted_summary()
-    assert summary["client_key_configured"] is True
+    assert summary["api_key_configured"] is True
     assert "g2a_secret_value" not in repr(summary)
     assert "g2a_sec" not in repr(summary)
 
 
 def test_redacted_summary_reports_not_configured():
-    c = _cfg(connection_settings={"client_api_key": ""})
-    assert c.redacted_summary()["client_key_configured"] is False
+    c = _cfg(connection_settings={"api_key": ""})
+    assert c.redacted_summary()["api_key_configured"] is False
 
 
 # -- panel configuration ---------------------------------------------------

@@ -11,7 +11,7 @@ AstrBot 管理员命令
   -> 当前会话或定时 UMO 发送
 ```
 
-`/g2面板` 不调用 LLM，也不要求 `client_api_key`。管理密码、Client Key、管理 JWT、完整 UMO 和远端原始响应均不得写入文档、终端输出或日志。
+`/g2面板` 不调用 LLM，也不要求 `api_key`。管理密码、API Key、管理 JWT、完整 UMO 和远端原始响应均不得写入文档、终端输出或日志。
 
 ## 1. 前置条件
 
@@ -29,7 +29,7 @@ AstrBot 管理员命令
 |---|---|---|
 | `connection_settings` | `enabled` | `true` |
 | `connection_settings` | `api_base_url` | grok2api 根地址，不带 `/v1` |
-| `connection_settings` | `admin_username` / `admin_password` | 管理面登录凭据；不填入 Client Key、JWT 或 SSO/OAuth |
+| `connection_settings` | `admin_username` / `admin_password` | 管理面登录凭据；不填入 API Key、JWT 或 SSO/OAuth |
 | `connection_settings` | `verify_tls` | 正式证书使用 `true` |
 | `connection_settings` | `client_proxy_url` | 需要代理时填写；管理面和背景请求共用 |
 | `advanced_settings` | `panel_period` | 选 `24h`、`7d`、`30d` 或 `90d`；默认 `7d` |
@@ -49,7 +49,7 @@ AstrBot 管理员命令
 通过标准：
 
 - 默认收到一张 1920x1080 的 JPEG 面板图，而不是 LLM 改写后的文字；尺寸应与 `panel_resolution` 一致。
-- 图中只包含在 `panel_sections` 勾选的数据块；账号、媒体、审计和模型统计为聚合值，不出现邮箱、Client Key 名、请求 ID 或原始审计记录。
+- 图中只包含在 `panel_sections` 勾选的数据块；账号、媒体、审计和模型统计为聚合值，不出现邮箱、API Key 名、请求 ID 或原始审计记录。
 - 审计卡应显示汇总请求、成功/失败、Token、计费请求和计费 Token；右侧“请求行为”卡显示请求类型、Provider、计量来源、流式/重试、工具和媒体输出。`审计行覆盖 X/Y` 中，`Y` 是 summary 请求数，`X` 是列表接口实际可读的安全审计行数；两者不同属于接口覆盖范围差异，不是插件将 X 误算为 Y。
 - 背景在玻璃卡片外部可见；文字无溢出、遮挡或空白占位。
 - DEBUG 日志出现 `panel_background_ready`，字段 `background_source` 为 `fresh`、`cache` 或 `default`，并包含 `background_provider`；远程图命中时还包含清理后的 `background_image_name`。DEBUG 日志按失败图源输出 `panel_background_provider_failed`；所有日志都不应出现凭据、完整 UMO、下载 URL、query 参数或原始管理数据。

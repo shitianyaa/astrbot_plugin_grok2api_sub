@@ -13,10 +13,10 @@ Schema 顶层只有 4 个 `object` 分组：`connection_settings`、`capability_
 |---|---|---:|---|
 | `enabled` | bool | `true` | 总开关 |
 | `api_base_url` | string | `""` | 远端 grok2api 根地址；只允许 http/https，禁止 userinfo/query/fragment，移除末尾 `/`；留空则所有能力禁用（`未配置远端 API 地址`） |
-| `client_api_key` | string | `""` | 运行配置保存，禁止写日志 |
+| `api_key` | string | `""` | grok2api API Key；运行配置保存，禁止写日志 |
 | `verify_tls` | bool | `true` | 生产保持开启 |
 | `client_proxy_url` | string | `""` | AstrBot 到 grok2api 的代理；只允许 http/https；允许认证但日志只显示协议/主机/端口 |
-| `admin_username` | string | `""` | 管理面登录用户名；与搜索 Client Key 相互独立，仅 `/g2面板` 使用；不写日志 |
+| `admin_username` | string | `""` | 管理面登录用户名；与搜索 API Key 相互独立，仅 `/g2面板` 使用；不写日志 |
 | `admin_password` | string | `""` | 管理面登录密码；**泄露即有权读取上游账号与聚合数据（仅 bot 主人接线）**；不写日志 |
 
 ## 能力设置（capability_settings）
@@ -28,7 +28,7 @@ Schema 顶层只有 4 个 `object` 分组：`connection_settings`、`capability_
 | `enable_x_search` | bool | `true` | 是否将 `x_search` 工具传给远端 Responses；`grok-chat-*` 不支持该工具，会自动保留已启用的 Web 搜索；与 Web 搜索不能同时关闭 |
 | `search_reasoning_effort` | string | `high` | `auto`、`none`、`low`、`medium`、`high`、`xhigh`；`auto` 不发送 `reasoning` 字段，由远端选择；已知模型不支持所选值或自定义模型时也省略该字段，保留该候选的搜索机会 |
 | `image_models` | text | `grok-imagine-image-lite`、`grok-imagine-image`、`grok-imagine-image-quality` | 多行文本，每行一个，**上方优先**，最多 12 个；英文或中文逗号均直接报配置错误；留空禁用生图 |
-| `image_edit_models` | text | `grok-imagine-image-lite`、`grok-imagine-image`、`grok-imagine-image-quality` | 多行文本，每行一个，**上方优先**，最多 12 个；英文或中文逗号均直接报配置错误；留空禁用改图 |
+| `image_edit_models` | text | `grok-imagine-image`、`grok-imagine-image-quality` | 多行文本，每行一个，**上方优先**，最多 12 个；英文或中文逗号均直接报配置错误；留空禁用改图 |
 | `video_models` | text | `grok-imagine-video` | 多行文本，每行一个，最多 12 个；英文或中文逗号均直接报配置错误；留空禁用视频 |
 | `prompt_processing.mode` | string | `off` | `off` 原文直传；`extract` 调用整理模型，仅补全参数；`enhance` 调用优化模型，改写提示词并补全参数 |
 | `prompt_processing.extract_provider_id` | string | `""` | AstrBot 原生供应商选择器；仅整理模式使用，必须选择已配置文本模型 |
@@ -42,7 +42,7 @@ Schema 顶层只有 4 个 `object` 分组：`connection_settings`、`capability_
 | `image_response_format` | string | `b64_json` | `b64_json`、`url`；无论哪种都落盘后发送 |
 | `send_media_progress` | bool | `true` | 生图、改图、视频在任务锁取得后各发一次尽力而为的进度提示；提示发送失败不取消任务 |
 
-启用 `extract` 或 `enhance` 后，处理成功且字段校验完成的最终请求 JSON 会写入 DEBUG 级别的本地 `prompt_processing_resolved` 日志，供管理员核对提示词与参数质量。该记录不会发送给聊天用户；`off` 模式、失败输出和未经校验的模型原文不会记录。Client Key、Bearer/JWT、密码/secret、代理 userinfo 与 Base64 仍会脱敏。参考图不会把消息图片、data URL 或显式 URL 传给文本模型；模型只接收“是否存在参考图”的布尔上下文。开启 `disable_prompt_processing_with_reference_image` 后，有参考图的请求直接使用 `off` 模式；消息或回复中的视频参考图会在处理器没有给出比例时自动匹配最近支持比例，显式 URL 不下载、不识别尺寸。
+启用 `extract` 或 `enhance` 后，处理成功且字段校验完成的最终请求 JSON 会写入 DEBUG 级别的本地 `prompt_processing_resolved` 日志，供管理员核对提示词与参数质量。该记录不会发送给聊天用户；`off` 模式、失败输出和未经校验的模型原文不会记录。API Key、Bearer/JWT、密码/secret、代理 userinfo 与 Base64 仍会脱敏。参考图不会把消息图片、data URL 或显式 URL 传给文本模型；模型只接收“是否存在参考图”的布尔上下文。开启 `disable_prompt_processing_with_reference_image` 后，有参考图的请求直接使用 `off` 模式；消息或回复中的视频参考图会在处理器没有给出比例时自动匹配最近支持比例，显式 URL 不下载、不识别尺寸。
 
 ## 访问控制（access_settings）
 
@@ -104,4 +104,4 @@ Schema 顶层只有 4 个 `object` 分组：`connection_settings`、`capability_
 
 - 管理员 JWT、账号 SSO/OAuth、QQ AppID/AppSecret 均不应填入插件。
 - 代理 URL 允许认证，但日志只显示协议、主机、端口。
-- `redacted_summary()` 只返回 `client_api_key_configured` 与 `admin_configured`，绝不返回 Key、管理密码或明文凭据本体。
+- `redacted_summary()` 只返回 `api_key_configured` 与 `admin_configured`，绝不返回 Key、管理密码或明文凭据本体。

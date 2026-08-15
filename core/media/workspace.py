@@ -20,8 +20,8 @@ from dataclasses import dataclass
 from math import log
 from pathlib import Path
 
-from .errors import ConfigurationError, MediaLimitError, NotSupportedError, ProtocolError
-from .models import ImageResult
+from ..common.errors import ConfigurationError, MediaLimitError, NotSupportedError, ProtocolError
+from ..common.models import ImageResult
 
 logger = logging.getLogger("astrbot_plugin_grok2api_sub.media")
 

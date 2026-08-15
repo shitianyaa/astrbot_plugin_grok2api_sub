@@ -79,7 +79,7 @@ def test_command_handlers_register_greedy_params(plugin_module):
 async def test_send_reports_success(monkeypatch, plugin_module):
     events = []
     monkeypatch.setattr(
-        "astrbot_plugin_grok2api_sub.main.safe_log",
+        "astrbot_plugin_grok2api_sub.core.handlers.base.safe_log",
         lambda level, name, **fields: events.append((level, name, fields)),
     )
 
@@ -106,7 +106,7 @@ async def test_send_missing_sender_is_not_silent(monkeypatch, plugin_module):
 
     events = []
     monkeypatch.setattr(
-        "astrbot_plugin_grok2api_sub.main.safe_log",
+        "astrbot_plugin_grok2api_sub.core.handlers.base.safe_log",
         lambda _level, name, **fields: events.append((name, fields)),
     )
 
@@ -156,7 +156,9 @@ async def test_scheduled_panel_deduplicates_same_target_in_one_minute(monkeypatc
         calls.append((targets, text))
         return 1, 0, 0
 
-    monkeypatch.setattr(plugin_module.dt, "datetime", FixedDateTime)
+    monkeypatch.setattr(
+        "astrbot_plugin_grok2api_sub.core.handlers.panel.dt.datetime", FixedDateTime
+    )
     monkeypatch.setattr(plugin, "_render_panel_image", no_image)
     monkeypatch.setattr(plugin, "_send_panel_text_to_targets", sent)
 
@@ -202,10 +204,11 @@ async def test_scheduled_panel_logs_actual_delivery_counts(monkeypatch, plugin_m
     async def partial_delivery(_targets, _text):
         return 1, 1, 1
 
-    monkeypatch.setattr(plugin_module.dt, "datetime", FixedDateTime)
     monkeypatch.setattr(
-        plugin_module,
-        "safe_task_log",
+        "astrbot_plugin_grok2api_sub.core.handlers.panel.dt.datetime", FixedDateTime
+    )
+    monkeypatch.setattr(
+        "astrbot_plugin_grok2api_sub.core.handlers.panel.safe_task_log",
         lambda _level, title, **fields: events.append((title, fields)),
     )
     monkeypatch.setattr(plugin, "_render_panel_image", no_image)
@@ -292,8 +295,7 @@ async def test_panel_render_uses_configured_resolution(monkeypatch, tmp_path, pl
     plugin.html_render = html_render
     monkeypatch.setattr(plugin, "_validate_rendered_image", lambda _path: None)
     monkeypatch.setattr(
-        plugin_module,
-        "safe_log",
+        "astrbot_plugin_grok2api_sub.core.handlers.panel.safe_log",
         lambda level, event_name, **fields: logs.append((level, event_name, fields)),
     )
 
@@ -380,8 +382,7 @@ async def test_panel_background_ready_debug_fields(
     plugin._panel_background = BackgroundProvider()
     plugin.html_render = fail_render
     monkeypatch.setattr(
-        plugin_module,
-        "safe_log",
+        "astrbot_plugin_grok2api_sub.core.handlers.panel.safe_log",
         lambda level, event_name, **fields: logs.append((level, event_name, fields)),
     )
 

@@ -51,7 +51,7 @@ def test_connection_group_items(schema):
     assert set(items) == {
         "enabled",
         "api_base_url",
-        "client_api_key",
+        "api_key",
         "verify_tls",
         "client_proxy_url",
         "admin_username",

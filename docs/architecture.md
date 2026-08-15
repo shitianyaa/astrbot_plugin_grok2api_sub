@@ -1,23 +1,24 @@
-# 架构
+# 架构设计
 
-## 模块依赖
+## 模块分层与依赖架构
 
 ```text
-main.py -> config / service / prompt_processor / tools / sender / panel_background / panel_card / panel_schedule / observability
-service.py -> client / media / models / errors / access / parser / prompt_processor / observability
-service.py -> admin_client / panel_models（仅 /g2面板 路径）
-client.py -> transport / parsers / models / errors
-sender.py -> platform / models / observability + AstrBot message components
-panel_renderer.py / panel_card.py -> panel_models（纯渲染数据层）
-panel_background.py -> Wallhaven / LoliAPI / t.alcy（显式 proxy/TLS，不读取环境代理）
-panel_schedule.py -> UMO 订阅存储与午夜对齐规则
-models.py / errors.py / parsers.py / observability.py -> 不依赖 AstrBot
+main.py (Star 入口: 生命周期 / 命令装饰器 / LLM Tool 请求钩子)
+  ├── core/handlers/ (指令混入层: HelpMixin, SearchMixin, MediaMixin, PanelMixin, BaseHandler)
+  └── core/service.py (服务门面 GrokService)
+        ├── core/search/ (搜索领域: SearchToolPolicy, Grok2APISearchTool, parsers, models)
+        ├── core/media/ (媒体生成领域: MediaWorkspace, parser)
+        ├── core/panel/ (管理面板领域: AdminClient, PanelReport, PanelSubscriptionStore, BackgroundProvider, card/renderer)
+        └── core/common/ (公共基础设施: config, errors, access, transport, observability, platform, sender, prompt_processor, models)
+
+assets/ (静态资源)
+  └── fonts/ (文楷字体与开源授权)
 ```
 
-- `main.py` 只保留生命周期、命令装饰器和 LLM Tool 暴露策略。
-- 业务层（`service.py`、`sender.py`）不直接调用 OneBot action，也不直接调用
-  QQ OpenAPI；所有 HTTP 都经由 `transport.py`，所有发送都经由 `sender.py`。
-  例外仅 `admin_client.py`：它是管理面专用的独立只读客户端，见下节。
+- `main.py` 作为纯净的生命周期和指令调度入口，继承各业务 Mixin 与 `Star`。
+- `core/handlers/` 拆分为独立领域模块 (`help.py`, `search.py`, `media.py`, `panel.py`)，指令直接路由到对应处理函数。
+- `core/service.py` 统筹搜索、媒体生成、会话并发锁与管理面板采集。
+- 业务层（`core/`）不直接调用 OneBot action，也不直接调用 QQ OpenAPI；所有业务 HTTP 经由 `transport.py`，所有发送经由 `sender.py`。例外仅 `admin_client.py`：它是管理面专用的独立只读客户端，见下节。
 
 ## 媒体提示词处理
 
@@ -27,11 +28,11 @@ models.py / errors.py / parsers.py / observability.py -> 不依赖 AstrBot
 - 返回内容必须是无多余字段的 JSON。比例、图片 `1k/2k`、视频 `6/10/15` 秒和 `480p/720p/1080p` 逐项白名单校验；模型异常、工具调用响应、超时或格式错误都会在 grok2api 生成请求前终止本次命令。
 - `prompt_processing.disable_prompt_processing_with_reference_image=true` 时，检测到改图消息图片或视频消息图片/显式 URL 参考图会强制使用 `off`；因此不会调用文本模型，关闭时则完全遵循全局模式。
 - 消息或回复中的视频参考图在 Pillow 校验和归一化时保留宽高；若处理器没有返回比例，服务层以固定白名单选择最近比例。显式 URL 保持不透明转发，不下载、不读取尺寸。
-- `prompt_processor.py` 的内部处理过程均在 DEBUG 记录。用户启用 `extract` 或 `enhance` 且输出通过严格校验后，会额外写入一条本地 `prompt_processing_resolved`，包含实际发送的 `prompt` 与媒体参数 JSON，便于核对质量；自动填入的本地参考图比例会在该日志前合并。直传模式、原始输入、失败输出和 provider 标识不记录。该 JSON 会继续脱敏 Client Key、Bearer/JWT、密码/secret 赋值、代理 userinfo 与 Base64。
+- `prompt_processor.py` 的内部处理过程均在 DEBUG 记录。用户启用 `extract` 或 `enhance` 且输出通过严格校验后，会额外写入一条本地 `prompt_processing_resolved`，包含实际发送的 `prompt` 与媒体参数 JSON，便于核对质量；自动填入的本地参考图比例会在该日志前合并。直传模式、原始输入、失败输出和 provider 标识不记录。该 JSON 会继续脱敏 API Key、Bearer/JWT、密码/secret 赋值、代理 userinfo 与 Base64。
 
 ## 管理面板安全域（`/g2面板`）
 
-管理面与 Client Key `/v1` 通道是两条互不重叠的通路：
+管理面与 API Key `/v1` 通道是两条互不重叠的通路：
 
 ```text
 AstrBot WebUI 配置
@@ -40,7 +41,7 @@ AstrBot WebUI 配置
   -> GrokService.build_panel()
   -> PanelReport（汇总字段 + 脱敏审计行为聚合）
   -> PanelBackgroundProvider（Wallhaven / LoliAPI / t.alcy / 缓存 / CSS 默认背景）
-  -> panel_card.py HTML 模板
+  -> panel/card.py HTML 模板
   -> Star.html_render()（AstrBot T2I）
   -> 受控 workspace 图片 -> MessageChain
 
@@ -55,11 +56,11 @@ T2I 失败：PanelReport -> format_panel_text() -> MessageChain 文本回复
 - 超时用 `connect_timeout_seconds` + 固定 30s 管理读超时，与 `search_timeout_seconds` 无关。
 - 审计汇总的请求数、Token、费用、计费状态、统计区间和计价元数据来自 summary 接口；审计行只保留时间、状态、模型、operation、provider、usageSource、流式、重试、工具和媒体等非身份字段，用于行为、UTC 调用趋势与模型聚合。趋势按 `24h=1h`、`7d=6h`、`30d=1d`、`90d=1w` 分桶，列表覆盖不足时保留 `X/Y` 覆盖提示，不伪造完整明细。
 - 面板预检是独立的 `_panel_preflight()`，**不复用** `_preflight`/`missing_capability`
-  （二者强制要求 Client Key），因此只配管理凭据、不配 Client Key 也能用 `/g2面板`。
-- `PanelReport` 只保留聚合值；账号邮箱、Client Key 名、请求 ID 与原始审计行在解析时即丢弃。
-- **T2I 边界**：`panel_card.py` 只消费 `PanelReport`，不改动取数、鉴权与脱敏规则。图片
+  （二者强制要求 API Key），因此只配管理凭据、不配 API Key 也能用 `/g2面板`。
+- `PanelReport` 只保留聚合值；账号邮箱、API Key 名、请求 ID 与原始审计行在解析时即丢弃。
+- **T2I 边界**：`panel/card.py` 只消费 `PanelReport`，不改动取数、鉴权与脱敏规则。图片
   调用经 `Star.html_render()` 使用 AstrBot 全局的 T2I 配置，插件不持有 T2I 主机或凭据，也不使用 Playwright。`panel_resolution` 将固定 1280x720 逻辑布局原生栅格化为 720p、1080p 或 1440p；渲染结果在发送前会验证为真实图片，错误 JSON 或 HTML 不会被当作图片发送。
-- **定时投递**：`main.py` 使用 AstrBot `CronJobManager.add_basic_job()` 注册非持久化处理器；插件重载时重建处理器并清理同名前缀的遗留任务。`panel_schedule.py` 的命令订阅与 Schema 固定目标合并后去重，Cron 与间隔触发在自然分钟维度再去重。
+- **定时投递**：`main.py` 使用 AstrBot `CronJobManager.add_basic_job()` 注册非持久化处理器；插件重载时重建处理器并清理同名前缀的遗留任务。`core/panel/scheduler.py` 的命令订阅与 Schema 固定目标合并后去重，Cron 与间隔触发在自然分钟维度再去重。
 
 ## 联网搜索的双层决策
 
@@ -145,7 +146,7 @@ Provider；无论选哪个 Provider，插件都以完成态 `web_search_call` �
 
 ## 视频状态机
 
-```
+```text
 create_video -> request_id -> wait_for_video (poll) -> done/failed
    -> download /v1/videos/{id}/content (.part, 原子改名) -> send_video
 ```

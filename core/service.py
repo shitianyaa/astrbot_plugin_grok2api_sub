@@ -1,10 +1,4 @@
-"""Application service: orchestration, concurrency, per-session locks.
-
-Every public method first validates enabled/platform/access/Client Key/model
-before any HTTP call. Global semaphores bound concurrent searches and media
-jobs. A per-session (unified_msg_origin) lock ensures a second media task in the
-same conversation is rejected instead of duplicated.
-"""
+"""Application service: orchestration, model fallback, and lifecycle management."""
 
 from __future__ import annotations
 
@@ -15,21 +9,21 @@ import time
 import uuid
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from .access import check_access
-from .admin_client import AdminClient
-from .client import Grok2APIClient
-from .config import PluginConfig
-from .errors import (
+from .common.access import check_access
+from .common.errors import (
     APIError,
     PluginError,
     ProtocolError,
     SearchNotPerformedError,
 )
-from .media import MediaWorkspace, closest_aspect_ratio
-from .models import SearchResult
-from .observability import (
+from .common.models import (
+    ImageGenerationRequest,
+    SearchResult,
+    VideoGenerationRequest,
+)
+from .common.observability import (
     operation_scope,
     record_task_model,
     safe_log,
@@ -38,7 +32,10 @@ from .observability import (
     task_model,
     task_retry_count,
 )
-from .panel_models import (
+from .common.platform import PlatformKind, resolve_platform
+from .media.workspace import MediaWorkspace, closest_aspect_ratio
+from .panel.client import AdminClient
+from .panel.models import (
     ModelSection,
     PanelReport,
     PanelSectionError,
@@ -50,17 +47,26 @@ from .panel_models import (
     parse_image_block,
     parse_video_block,
 )
-from .parsers import format_search_result
-from .platform import PlatformKind, resolve_platform
-from .prompt_processor import PromptProcessor
-from .sender import DeliveryAdapter
+from .search.models import (
+    partition_visible_models,
+    reasoning_effort_for_model,
+    search_tools_for_model,
+)
+from .search.parsers import format_search_result
+
+if TYPE_CHECKING:
+    from .client import Grok2APIClient
+    from .common.config import PluginConfig
+    from .common.prompt_processor import PromptProcessor
+    from .common.sender import DeliveryAdapter
 
 logger = logging.getLogger("astrbot_plugin_grok2api_sub.service")
 
-
 _PANEL_CACHE_TTL = 60.0
 _MAX_MODEL_ROWS = 5000
-# The only per-row audit fields the panel may retain (personal identifiers dropped).
+# The only per-row audit fields the panel may retain: createdAt, status,
+# model, operation, provider, usageSource, stream, retryCount, tools, media.
+# Account emails, API Key names, request IDs, and query bodies are discarded.
 _SAFE_ROW_KEYS = (
     "createdAt",
     "statusCode",
@@ -82,6 +88,9 @@ _SAFE_ROW_KEYS = (
 )
 
 
+# The only per-row audit fields the panel may retain: createdAt, status,
+# model, operation, provider, usageSource, stream, retryCount, tools, media.
+# Account emails, API Key names, request IDs, and query bodies are discarded.
 def _row_subset(item: dict) -> dict:
     """Retain only the approved per-row fields; discard emails/keys/request IDs."""
     return {k: item.get(k) for k in _SAFE_ROW_KEYS}
@@ -117,7 +126,6 @@ class GrokService:
         self._panel_cache: dict[tuple[Any, ...], PanelReport] = {}
         self._terminating = False
 
-    # -- preflight ---------------------------------------------------------
     def _preflight(self, event: Any, capability: str) -> None:
         if self._terminating:
             raise PluginError("插件正在关闭", code="terminating")
@@ -134,7 +142,6 @@ class GrokService:
             raise PluginError(missing, code="capability_unavailable")
 
     def _session_guard(self, event: Any) -> asyncio.Lock:
-        """Return a session lock, raising immediately if already occupied."""
         key = getattr(event, "unified_msg_origin", "") or "global"
         lock = self._session_locks.get(key)
         if lock is None:
@@ -148,7 +155,6 @@ class GrokService:
         return self._workspace.workspace / f"{prefix}_{uuid.uuid4().hex}.png"
 
     async def _finish(self, paths: list[Path], success: bool) -> None:
-        """Finalize generated files: delete unless save_media keeps successful ones."""
         keep = self._config.save_media and success
         if not keep:
             await self._workspace.finalize_delivery(paths, success=False)
@@ -156,7 +162,6 @@ class GrokService:
             await self._workspace.finalize_delivery(paths, success=True, keep=True)
 
     async def _send_media_progress(self, event: Any, operation: str, text: str) -> None:
-        """Send a non-essential progress notice without cancelling an accepted job."""
         if not self._config.send_media_progress:
             return
         try:
@@ -221,6 +226,8 @@ class GrokService:
         return config.prompt_processing_mode
 
     # -- search ------------------------------------------------------------
+    # search() deliberately does not call rewrite: the caller (command handler
+    # or tool) decides whether/when to rewrite so tool execution stays unmutated.
     async def search(self, event: Any, query: str, *, required: bool = True) -> SearchResult:
         with operation_scope("search"):
             started_at = time.monotonic()
@@ -242,7 +249,11 @@ class GrokService:
                     candidate_models=", ".join(self._config.search_models),
                 )
                 async with self._search_sem:
-                    outcome = await self._search_with_fallback(query, required=required)
+                    outcome = await self._search_with_fallback(
+                        query,
+                        self._config.search_models,
+                        required=required,
+                    )
             except asyncio.CancelledError:
                 raise
             except Exception as exc:  # noqa: BLE001
@@ -284,17 +295,14 @@ class GrokService:
             )
             return result
 
-    async def _search_with_fallback(self, query: str, *, required: bool) -> _ModelFallbackOutcome:
-        """Try configured search models in user order with strict fallback.
-
-        Every remote result first uses the current model's retry policy. After
-        those attempts are exhausted, only ``model_not_found``,
-        ``model_not_allowed`` and ``search_not_performed`` advance to the next
-        candidate; all other failures propagate. The catalog only filters
-        visibility; a catalog fetch failure falls back to the original order.
-        """
-        configured = self._config.search_models
-        catalog: tuple[str, ...] | None
+    async def _search_with_fallback(
+        self,
+        query: str,
+        configured: tuple[str, ...],
+        *,
+        required: bool = True,
+    ) -> _ModelFallbackOutcome:
+        catalog: tuple[str, ...] | None = None
         try:
             catalog = await self._client.list_models()
         except PluginError as exc:
@@ -305,31 +313,21 @@ class GrokService:
                 operation="search",
             )
             catalog = None
-        candidates: tuple[str, ...]
+        visible_candidates: tuple[str, ...]
         if catalog is not None:
-            from .search_models import partition_visible_models
-
             visible, _ = partition_visible_models(configured, catalog)
-            candidates = visible or ()
+            visible_candidates = visible
             safe_log(
                 logging.DEBUG,
                 "model_catalog_loaded",
-                operation="search",
                 catalog_count=len(catalog),
-                candidate_count=len(candidates),
+                candidate_count=len(visible),
+                operation="search",
             )
         else:
-            candidates = configured
+            visible_candidates = configured
 
-        if not candidates:
-            raise PluginError(
-                self._exhausted_message(configured),
-                code="search_models_exhausted",
-            )
-
-        from .search_models import reasoning_effort_for_model, search_tools_for_model
-
-        for index, model in enumerate(candidates):
+        for index, model in enumerate(visible_candidates):
             enable_web_search, enable_x_search = search_tools_for_model(
                 model,
                 enable_web_search=self._config.enable_web_search,
@@ -413,12 +411,6 @@ class GrokService:
     async def rewrite_search_result(
         self, event: Any, query: str, result: SearchResult
     ) -> SearchResult:
-        """Rewrite manual-search text, retaining the raw result on any failure.
-
-        ``search()`` deliberately does not call this method: the registered LLM
-        Tool must keep returning its original structured result for the main
-        conversation model to use directly.
-        """
         processor = self._prompt_processor
         if processor is None or not result.text.strip():
             return result
@@ -449,7 +441,6 @@ class GrokService:
         models: tuple[str, ...],
         started_at: float,
     ) -> _ModelFallbackOutcome:
-        """Try image models in order, advancing on model_not_found/allowed."""
         if not models:
             raise PluginError("未配置生图模型", code="capability_unavailable")
         for index, model in enumerate(models):
@@ -498,7 +489,6 @@ class GrokService:
         models: tuple[str, ...],
         started_at: float,
     ) -> _ModelFallbackOutcome:
-        """Try image edit models in order, advancing on model_not_found/allowed."""
         if not models:
             raise PluginError("未配置改图模型", code="capability_unavailable")
         for index, model in enumerate(models):
@@ -545,7 +535,6 @@ class GrokService:
         models: tuple[str, ...],
         started_at: float,
     ) -> _ModelFallbackOutcome:
-        """Try video models in order, advancing on model_not_found/allowed."""
         if not models:
             raise PluginError("未配置视频模型", code="capability_unavailable")
         for index, model in enumerate(models):
@@ -816,7 +805,6 @@ class GrokService:
                     self._release_session_lock(event, lock)
 
     def _find_input_image_component(self, event: Any) -> object:
-        """First Image component in the current chain, else the Reply chain."""
         from astrbot.api.message_components import Image, Reply
 
         chain = getattr(getattr(event, "message_obj", None), "message", None) or []
@@ -974,8 +962,6 @@ class GrokService:
 
     async def _resolve_image_request(self, prompt: str):
         if self._prompt_processor is None:
-            from .models import ImageGenerationRequest
-
             return ImageGenerationRequest(prompt=prompt)
         return await self._prompt_processor.resolve_image(prompt)
 
@@ -1009,8 +995,6 @@ class GrokService:
         reference_aspect_ratio: str,
     ):
         if self._prompt_processor is None:
-            from .models import VideoGenerationRequest
-
             return VideoGenerationRequest(prompt=prompt, aspect_ratio=reference_aspect_ratio)
         return await self._prompt_processor.resolve_video(
             prompt,
@@ -1029,13 +1013,9 @@ class GrokService:
             self._session_locks.pop(key, None)
 
     # -- panel (admin management) ------------------------------------------
+    # _panel_preflight deliberately separate from _preflight: it requires admin
+    # credentials and enabled sections, but no API Key.
     def _panel_preflight(self) -> None:
-        """Gates `/g2面板` independently of the Client Key transport.
-
-        Deliberately separate from `_preflight`/`missing_capability`, both of
-        which require `has_client_key`. The panel needs only the management base,
-        both admin credentials, and at least one selected section.
-        """
         cfg = self._config
         if self._terminating:
             raise PluginError("插件正在关闭", code="terminating")
@@ -1049,12 +1029,6 @@ class GrokService:
             raise PluginError("未启用任何面板数据块", code="no_panel_section")
 
     async def build_panel(self, event: Any, *, log_task: bool = True) -> PanelReport:
-        """Collect the selected blocks for one period, cached for 60 seconds.
-
-        The cache is checked before authentication so a repeat request inside the
-        TTL makes no management call. Only complete, non-truncated reports are
-        cached; failures and truncated model stats are rebuilt.
-        """
         with operation_scope("panel_build"):
             started_at = time.monotonic()
             try:
@@ -1097,6 +1071,7 @@ class GrokService:
                     operation="panel_build",
                     section_count=len(sections),
                 )
+            # In-memory TTL cache check: short-circuit upstream admin collection within TTL window.
             cached = self._panel_cache.get(key)
             if cached is not None and (time.monotonic() - cached.generated_at) < _PANEL_CACHE_TTL:
                 if log_task:
@@ -1152,6 +1127,7 @@ class GrokService:
     async def _collect_panel(
         self, admin: AdminClient, period: str, sections: tuple[str, ...]
     ) -> PanelReport:
+        # Sequential by design: refresh tokens rotate, so never fan out.
         account = image = video = audit = None
         behavior = trend = model = None
         errors: list[PanelSectionError] = []
@@ -1160,7 +1136,6 @@ class GrokService:
             code = exc.code if isinstance(exc, PluginError) else type(exc).__name__
             errors.append(PanelSectionError(section=section, code=code, message=""))
 
-        # Sequential by design: refresh tokens rotate, so never fan out.
         if "账号池" in sections:
             try:
                 account = parse_account_block(await admin.fetch_accounts_summary())
@@ -1220,12 +1195,7 @@ class GrokService:
         )
 
     async def _fetch_audit_rows(self, admin: AdminClient) -> tuple[list[dict], bool]:
-        """Cursor-paginate `/request-audits`, retaining only safe row fields.
-
-        Stops at `_MAX_MODEL_ROWS` retained rows or a repeated/malformed cursor,
-        reporting `truncated=True` rather than claiming a complete aggregate. No
-        `period` is passed to the list endpoint; windowing is local.
-        """
+        # Cursor-paginate /request-audits, retaining only safe fields.
         rows: list[dict] = []
         cursor: str | None = None
         seen: set[str] = set()

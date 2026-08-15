@@ -8,7 +8,7 @@
 - 安全漏洞不要公开创建 Issue，请使用仓库的 [GitHub Security Advisory](https://github.com/shitianyaa/astrbot_plugin_grok2api_sub/security/advisories/new) 私下报告。
 - 一次 Pull Request 只解决一个可描述的主题；跨主题改动请拆分提交。
 - 默认从 `main` 创建短生命周期分支，例如 `fix/panel-timeout` 或 `docs/release-guide`。
-- 不要提交 `data/`、`Progress/`、`.env`、Client Key、JWT、Cookie、密码、真实媒体 URL、完整上游响应或构建产物。
+- 不要提交 `data/`、`Progress/`、`.env`、API Key、JWT、Cookie、密码、真实媒体 URL、完整上游响应或构建产物。
 
 ## 提交 Pull Request
 

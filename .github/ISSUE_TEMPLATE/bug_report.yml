@@ -7,7 +7,7 @@ body:
   - type: markdown
     attributes:
       value: |
-        感谢报告问题。请先搜索已有 Issue，并确认没有在公开内容中粘贴 Client Key、JWT、Cookie、密码、真实媒体 URL 或完整日志。
+        感谢报告问题。请先搜索已有 Issue，并确认没有在公开内容中粘贴 API Key、JWT、Cookie、密码、真实媒体 URL 或完整日志。
   - type: textarea
     id: description
     attributes:
@@ -45,7 +45,7 @@ body:
     id: plugin-version
     attributes:
       label: 插件版本
-      placeholder: 例如 v0.1.5
+      placeholder: 例如 v0.1.6
     validations:
       required: true
   - type: input
@@ -65,7 +65,7 @@ body:
     id: configuration
     attributes:
       label: 相关配置（已脱敏）
-      description: 只填写字段名、类型和非敏感值；删除 Client Key、密码、JWT、Cookie、私有地址和用户数据。
+      description: 只填写字段名、类型和非敏感值；删除 API Key、密码、JWT、Cookie、私有地址和用户数据。
     validations:
       required: true
   - type: checkboxes

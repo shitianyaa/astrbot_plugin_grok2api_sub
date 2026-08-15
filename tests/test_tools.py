@@ -189,7 +189,7 @@ def test_policy_has_model_from_empty_search_models_disables():
     policy = SearchToolPolicy(
         enabled=cfg.enabled,
         enable_tool=cfg.enable_llm_search_tool,
-        has_key=cfg.has_client_key,
+        has_key=cfg.has_api_key,
         has_model=bool(cfg.search_models),
     )
     assert policy.allow() is False
@@ -202,7 +202,7 @@ def test_policy_has_model_from_nonempty_search_models_enables():
     policy = SearchToolPolicy(
         enabled=cfg.enabled,
         enable_tool=cfg.enable_llm_search_tool,
-        has_key=cfg.has_client_key,
+        has_key=cfg.has_api_key,
         has_model=bool(cfg.search_models),
     )
     assert policy.allow() is True
@@ -215,7 +215,7 @@ def test_policy_disables_when_all_remote_search_tools_are_off():
     policy = SearchToolPolicy(
         enabled=cfg.enabled,
         enable_tool=cfg.enable_llm_search_tool,
-        has_key=cfg.has_client_key,
+        has_key=cfg.has_api_key,
         has_model=bool(cfg.search_models and (cfg.enable_web_search or cfg.enable_x_search)),
     )
     assert policy.allow() is False

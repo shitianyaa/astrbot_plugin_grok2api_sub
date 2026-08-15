@@ -1,6 +1,6 @@
 {
   "connection_settings": {
-    "description": "连接设置：远端 grok2api 地址、Client Key、TLS 与代理。",
+    "description": "连接设置：远端 grok2api 地址、API Key、TLS 与代理。",
     "type": "object",
     "items": {
       "enabled": {
@@ -16,11 +16,11 @@
         "obvious_hint": true,
         "hint": "填写 https://grok.example.com 这类可由 AstrBot 访问的远端地址；不要附加 /v1。"
       },
-      "client_api_key": {
-        "description": "grok2api Client Key。仅用于鉴权，绝不写入日志。",
+      "api_key": {
+        "description": "grok2api API Key",
         "type": "string",
         "default": "",
-        "hint": "只使用 Client Key，不要填写管理员 JWT、账号 SSO/OAuth 或 QQ AppID/AppSecret。"
+        "hint": "填写远端 grok2api 分配的 API Key。"
       },
       "verify_tls": {
         "description": "是否校验证书。生产环境请保持开启。",
@@ -86,7 +86,7 @@
       "image_edit_models": {
         "description": "改图模型候选，每行一个，上方优先，最多 12 个。留空则改图不可用。",
         "type": "text",
-        "default": "grok-imagine-image-lite\ngrok-imagine-image\ngrok-imagine-image-quality",
+        "default": "grok-imagine-image\ngrok-imagine-image-quality",
         "hint": "每行填写一个模型名，按上方优先。远端失败先按重试设置重试，只有 model_not_found/model_not_allowed 耗尽后才切换下一行。"
       },
       "video_models": {

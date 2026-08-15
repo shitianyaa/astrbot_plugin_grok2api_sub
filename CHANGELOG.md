@@ -2,22 +2,28 @@
 
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/) 规范。
 
-## [Unreleased]
-
 ## v0.1.6 (2026-08-15)
-
-### Changed
-
-- **Release 工作流升级**：支持推送至 `main` 分支自动检测版本号更新并触发 GitHub Release；自动抽取 `CHANGELOG.md` 中对应版本的完整更新日志并写入 Release Notes 正文，替代原本仅输出 Commit 列表的 `--generate-notes`。
-- **CI 工作流精简**：移除已废弃的 PR release-note 结构校验，并将 CI 权限收敛为只读 `contents: read`。
 
 ### Added
 
-- **Changelog 提取工具**：新增 `scripts/extract_changelog.py` 及其完整单元测试，用于在发版时精准解析并提取版本更新记录。
+- **Release 提取工具**：新增 `scripts/extract_changelog.py`，支持在 GitHub Actions 触发 Release 时精准抽取版本发布说明。
+
+### Changed
+
+- **架构模块化分层**：将 `core/` 拆分为 `common/`（基础设施）、`search/`（搜索领域）、`media/`（媒体领域）、`panel/`（管理面板）、`handlers/`（指令混入层）清晰子包，规范 `GrokService` 门面与 `main.py` 混入 MRO 继承链。
+- **配置与术语统一**：全局统一使用标准 `api_key` / `API Key`，精简 Schema 提示文案，默认改图模型对齐上游实际支持。
+- **文档与 README 视觉升级**：重构 README 目录导航、QQ 交流群入口与纯净功能矩阵，全面汉化项目规范。
+- **Release 工作流升级**：支持推送至 `main` 分支自动检测版本更新并触发 GitHub Release，自动注入对应版本的完整 Release Notes。
+
+### Fixed
+
+- **循环导入修复**：修复 `core/common/config.py` 引用兼容 shim 导致的 `core.panel_models` 独立导入失败与测试依赖执行顺序的问题。
+- **清理冗余死代码**：移除 `core/media.py` 影子 shim，彻底清理未使用的 `SearchPipeline` 与 `MediaPipeline` 重复实现。
+- **日志与测试规范化**：消除指令 Handler 中的日志魔数，精简非功能性测试与过度白盒接线测试，全套测试套件运行纯粹化。
 
 ### Removed
 
-- **废弃脚本与冗余测试清理**：移除历史遗留的离线渲染脚本（`render_release_notes.py`、`collect_release_sources.py`、`check_pr.py`）、脆弱的源码字符串匹配测试（`test_main_contract.py`）以及已废弃的测试夹具目录。
+- **废弃脚本与过渡测试清理**：移除历史遗留的离线渲染脚本与冗余测试，收敛发布构建资产。
 
 ## v0.1.5 (2026-08-15)
 
@@ -96,9 +102,9 @@
 
 - **媒体提示词处理**：`/g2生图` 与 `/g2视频` 改为完整提示词直传，不再解析数量、时长或比例前缀；新增关闭、参数整理、提示词优化三种模式，以及独立的 AstrBot 整理/优化供应商选择器。图片支持 `1k`/`2k` 与七种比例；视频支持 `6s`/`10s`/`15s`、`480p`/`720p`/`1080p` 与七种比例。整理/优化模型输出严格校验，失败时终止请求而不静默降级。
 - **`/g2面板` 管理面板（ADMIN）**：新增 `core/admin_client.py` 只读管理客户端（独立 aiohttp 会话、`asyncio.Lock` 保护的 token 轮换、401→refresh→单次重放、`connect_timeout_seconds` + 固定 30s 管理读超时），只允许账号摘要、图片/视频统计、审计摘要与审计列表五个 GET；管理请求按 `api_base_url` 的 scheme+authority 同源拼接，忽略 `/v1` 后缀。
-- **面板配置**：`connection_settings` 增加 `admin_username`/`admin_password`（与 Client Key 相互独立，仅面板使用，不入日志与 `redacted_summary`）；`advanced_settings` 增加 `panel_period`（`24h`/`7d`/`30d`/`90d`，默认 `7d`）与 `panel_sections`（五块中文多选，默认全选，可置空）。顶层仍为 4 个分组。
-- **面板聚合与渲染**：`core/panel_models.py` 提供防御式 DTO（缺字段→0、未知 key 忽略）、`Decimal` 成本换算（`1e8 ticks = $1`）、本地按 `createdAt` 切窗的 `aggregate_models`；`core/panel_renderer.py` 输出纯文本，最多显示 20 个模型并标注省略/截断。`GrokService.build_panel` 走独立 `_panel_preflight()`（不复用 `_preflight`/`missing_capability`，因此**不要求 Client Key**），完整报告缓存 60 秒，逐块顺序抓取、单块失败不阻断其余块。
-- 审计逐条只保留 `createdAt`/`statusCode`/`errorCode`/`durationMs`/`totalTokens`/`modelPublicId`/`modelUpstreamModel`，游标分页上限 5000 行并显式标记截断；账号邮箱、Client Key 名、请求 ID 与原始审计行不进入 `PanelReport`。
+- **面板配置**：`connection_settings` 增加 `admin_username`/`admin_password`（与 API Key 相互独立，仅面板使用，不入日志与 `redacted_summary`）；`advanced_settings` 增加 `panel_period`（`24h`/`7d`/`30d`/`90d`，默认 `7d`）与 `panel_sections`（五块中文多选，默认全选，可置空）。顶层仍为 4 个分组。
+- **面板聚合与渲染**：`core/panel_models.py` 提供防御式 DTO（缺字段→0、未知 key 忽略）、`Decimal` 成本换算（`1e8 ticks = $1`）、本地按 `createdAt` 切窗的 `aggregate_models`；`core/panel_renderer.py` 输出纯文本，最多显示 20 个模型并标注省略/截断。`GrokService.build_panel` 走独立 `_panel_preflight()`（不复用 `_preflight`/`missing_capability`，因此**不要求 API Key**），完整报告缓存 60 秒，逐块顺序抓取、单块失败不阻断其余块。
+- 审计逐条只保留 `createdAt`/`statusCode`/`errorCode`/`durationMs`/`totalTokens`/`modelPublicId`/`modelUpstreamModel`，游标分页上限 5000 行并显式标记截断；账号邮箱、API Key 名、请求 ID 与原始审计行不进入 `PanelReport`。
 - **面板图片与定时推送**：`/g2面板` 现通过 AstrBot HTML-to-image 渲染 720p/1080p/1440p（默认 1080p）的 16:9 卡片，T2I 失败退回文本；新增 Lolicon 非 R18/排除 AI 横向背景、缓存回退、固定 UMO 模板列表、会话订阅命令、Cron 与从午夜对齐的间隔推送。同一 UMO 在同一分钟只发送一次，定时路径不调用主 LLM。
 
 ### Removed
@@ -124,6 +130,6 @@
 
 ### Security
 
-- 统一日志脱敏：新增 `core/observability.py`，`safe_log` 只接受白名单字段，所有值经 `sanitize_diagnostic` 清除 Client Key、代理 userinfo、Base64 和超长文本。
+- 统一日志脱敏：新增 `core/observability.py`，`safe_log` 只接受白名单字段，所有值经 `sanitize_diagnostic` 清除 API Key、代理 userinfo、Base64 和超长文本。
 - 请求关联：每个命令/操作通过 `operation_scope` 建立 12 位随机 `trace_id`，通过 `ContextVar` 传播到 HTTP 日志。
 - 日志中只记录已验证的相对路径，不记录完整 URL 或 Authorization 头。
