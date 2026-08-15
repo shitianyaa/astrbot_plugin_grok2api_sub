@@ -17,6 +17,8 @@ testignore/
 # goal-mode task tracking (local only)
 goal-1/
 # local agent plans and progress records (never publish)
+.agents/
+.agent/
 .superpowers/
 Progress/
 docs/superpowers/plans/

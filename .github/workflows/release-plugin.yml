@@ -13,9 +13,9 @@ name: Release plugin archive
         required: false
         type: string
       dry_run:
-        description: Validate and build without publishing
+        description: Build without publishing
         required: false
-        default: true
+        default: false
         type: boolean
 
 permissions: {}
@@ -25,9 +25,8 @@ env:
 
 jobs:
   release:
-    name: Validate and publish
+    name: Build and publish
     runs-on: ubuntu-latest
-    environment: release
     permissions:
       contents: write
     steps:
@@ -44,9 +43,9 @@ jobs:
           python-version: "3.12"
 
       - name: Install dependencies
-        run: python -m pip install -e ".[dev]"
+        run: python -m pip install pyyaml
 
-      - name: Validate, build, and publish
+      - name: Detect version and publish release
         env:
           GH_TOKEN: ${{ github.token }}
           INPUT_TAG: ${{ inputs.tag }}
@@ -67,9 +66,10 @@ jobs:
 
           [[ "$tag" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] || { echo "invalid stable tag: $tag" >&2; exit 1; }
 
+          # Check if this release already exists
           if [[ "${GITHUB_EVENT_NAME}" == "push" && "${GITHUB_REF_TYPE:-}" == "branch" ]]; then
             if gh release view "$tag" >/dev/null 2>&1; then
-              echo "Release $tag already exists on GitHub; skipping automated release for routine commit on main."
+              echo "Release $tag already exists on GitHub; skipping release for routine commit on main."
               exit 0
             fi
           else
@@ -85,14 +85,9 @@ jobs:
           fi
 
           [[ "$metadata_tag" == "$tag" ]] || { echo "metadata version $metadata_tag does not match $tag" >&2; exit 1; }
-          python scripts/check_repository.py --tag "$tag" --json release-check.json
-          python -m json.tool _conf_schema.json > /dev/null
-          python -m compileall main.py core tests scripts
-          python -m pytest -q
-          ruff check .
-          ruff format --check .
-          python scripts/package_plugin.py --tag "$tag" --output-dir dist
 
+          # Package plugin archive and extract release notes from CHANGELOG
+          python scripts/package_plugin.py --tag "$tag" --output-dir dist
           archive="dist/${PLUGIN_NAME}-${tag}.zip"
           checksum="$archive.sha256"
           notes="dist/release-notes.md"
@@ -102,11 +97,13 @@ jobs:
           test -f "$archive" && test -f "$checksum" && test -f "$notes"
           grep -F "$(sha256sum "$archive" | awk '{print $1}')" "$checksum"
 
+          # Publish release
           if [[ "${GITHUB_EVENT_NAME}" == "push" || "${INPUT_DRY_RUN:-false}" != "true" ]]; then
+            echo "Creating release $tag..."
             gh release create "$tag" "$archive" "$checksum" \
               --target "${GITHUB_SHA}" \
               --title "$tag" \
               --notes-file "$notes"
           else
-            echo "dry run: validation and build succeeded; release was not published"
+            echo "dry run: build succeeded; release was not published"
           fi

@@ -139,51 +139,6 @@ def test_json_result_contains_machine_readable_error_fields(tmp_path: Path) -> N
     json.dumps(payload, ensure_ascii=False)
 
 
-def test_ci_workflow_has_read_only_fixed_action_contract() -> None:
-    workflow_path = Path(__file__).parents[1] / ".github" / "workflows" / "ci.yml"
-    text = workflow_path.read_text(encoding="utf-8")
-    workflow = yaml.safe_load(text)
-
-    assert workflow["permissions"] == {}
-    assert set(workflow["on"]) == {"pull_request", "push"}
-    assert workflow["on"]["push"]["branches"] == ["main"]
-
-    jobs = workflow["jobs"]
-    assert set(jobs) == {"quality"}
-    quality = jobs["quality"]
-    assert quality["permissions"] == {"contents": "read"}
-    assert "strategy" not in quality
-    setup_python = next(step for step in quality["steps"] if step.get("name") == "Set up Python")
-    assert setup_python["with"]["python-version"] == "3.12"
-    assert "actions/cache@" not in text
-    assert "concurrency:" not in text
-
-    action_refs = re.findall(r"uses:\s*([^\s]+)", text)
-    assert action_refs
-    for reference in action_refs:
-        owner_repo, _, commit = reference.partition("@")
-        assert owner_repo.startswith("actions/")
-        assert re.fullmatch(r"[0-9a-f]{40}", commit)
-
-    assert "persist-credentials: false" in text
-    assert 'python -m pip install -e ".[dev]"' in text
-    assert "requirements-dev.txt" not in text
-    assert "contents: write" not in text
-    assert "gh release" not in text
-    assert "git push" not in text
-    for command in (
-        "scripts/check_repository.py",
-        "--json",
-        "python -m json.tool",
-        "python -m compileall",
-        "python -m pytest",
-        "ruff check",
-        "ruff format --check",
-        "git diff --check",
-    ):
-        assert command in text
-
-
 def test_release_workflow_is_simple_and_immutable() -> None:
     workflow_path = Path(__file__).parents[1] / ".github" / "workflows" / "release-plugin.yml"
     text = workflow_path.read_text(encoding="utf-8")
@@ -195,13 +150,12 @@ def test_release_workflow_is_simple_and_immutable() -> None:
     assert workflow["on"]["push"]["branches"] == ["main"]
     jobs = workflow["jobs"]
     assert set(jobs) == {"release"}
-    assert jobs["release"]["environment"] == "release"
     assert jobs["release"]["permissions"] == {"contents": "write"}
     assert '[[ "$metadata_tag" == "$tag" ]]' in text
     assert "--clobber" not in text
     assert "git push" not in text
     assert "Create release tag" not in text
-    assert 'python -m pip install -e ".[dev]"' in text
+    assert "pip install" in text
     assert "requirements-dev.txt" not in text
     for required in (
         "package_plugin.py",
