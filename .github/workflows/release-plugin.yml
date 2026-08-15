@@ -44,7 +44,7 @@ jobs:
       allow_unmapped_commits: ${{ steps.context.outputs.allow_unmapped_commits }}
     steps:
       - name: Check out repository
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
           fetch-depth: 0
@@ -87,7 +87,7 @@ jobs:
       pull-requests: read
     steps:
       - name: Check out immutable tag
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ needs.validate.outputs.tag }}
           fetch-depth: 0
@@ -129,7 +129,7 @@ jobs:
       contents: read
     steps:
       - name: Check out immutable tag
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ needs.validate.outputs.tag }}
           fetch-depth: 0
@@ -156,7 +156,7 @@ jobs:
       contents: read
     steps:
       - name: Check out immutable tag
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ needs.validate.outputs.tag }}
           fetch-depth: 0
@@ -185,7 +185,7 @@ jobs:
       contents: write
     steps:
       - name: Check out immutable tag
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ needs.validate.outputs.tag }}
           fetch-depth: 0
