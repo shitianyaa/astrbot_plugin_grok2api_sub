@@ -411,6 +411,8 @@ class GrokService:
     async def rewrite_search_result(
         self, event: Any, query: str, result: SearchResult
     ) -> SearchResult:
+        if not self._config.enable_search_rewrite:
+            return result
         processor = self._prompt_processor
         if processor is None or not result.text.strip():
             return result
@@ -575,7 +577,9 @@ class GrokService:
         raise PluginError("所有视频模型均不可用", code="media_models_exhausted")
 
     # -- images ------------------------------------------------------------
-    async def deliver_generated_images(self, event: Any, prompt: str) -> None:
+    async def deliver_generated_images(
+        self, event: Any, prompt: str, *, skip_prompt_processing: bool = False
+    ) -> None:
         operation = "image_generate"
         with operation_scope(operation):
             preflight_started_at = time.monotonic()
@@ -611,7 +615,7 @@ class GrokService:
                 request_prompt = ""
                 request_params: dict[str, object] = {}
                 try:
-                    request = await self._resolve_image_request(prompt)
+                    request = await self._resolve_image_request(prompt, skip=skip_prompt_processing)
                     request_prompt = request.prompt
                     request_params = {
                         "n": 1,
@@ -689,7 +693,9 @@ class GrokService:
                 finally:
                     self._release_session_lock(event, lock)
 
-    async def deliver_edited_image(self, event: Any, prompt: str) -> None:
+    async def deliver_edited_image(
+        self, event: Any, prompt: str, *, skip_prompt_processing: bool = False
+    ) -> None:
         operation = "image_edit"
         with operation_scope(operation):
             preflight_started_at = time.monotonic()
@@ -727,7 +733,9 @@ class GrokService:
                 try:
                     data_url = await self._find_input_image(event)
                     stage = "prompt_processing"
-                    resolved_prompt = await self._resolve_image_edit_prompt(prompt)
+                    resolved_prompt = await self._resolve_image_edit_prompt(
+                        prompt, skip=skip_prompt_processing
+                    )
                     request_prompt = resolved_prompt
                     request_params = {
                         "n": 1,
@@ -828,7 +836,12 @@ class GrokService:
 
     # -- video -------------------------------------------------------------
     async def deliver_video(
-        self, event: Any, prompt: str, *, reference_image_url: str = ""
+        self,
+        event: Any,
+        prompt: str,
+        *,
+        reference_image_url: str = "",
+        skip_prompt_processing: bool = False,
     ) -> None:
         operation = "video_generate"
         with operation_scope(operation):
@@ -874,6 +887,7 @@ class GrokService:
                         prompt,
                         has_reference_image=bool(image_data_url),
                         reference_aspect_ratio=reference_aspect_ratio,
+                        skip=skip_prompt_processing,
                     )
                     request_prompt = request.prompt
                     request_params = {
@@ -960,13 +974,13 @@ class GrokService:
                 finally:
                     self._release_session_lock(event, lock)
 
-    async def _resolve_image_request(self, prompt: str):
-        if self._prompt_processor is None:
+    async def _resolve_image_request(self, prompt: str, *, skip: bool = False):
+        if self._prompt_processor is None or skip:
             return ImageGenerationRequest(prompt=prompt)
         return await self._prompt_processor.resolve_image(prompt)
 
-    async def _resolve_image_edit_prompt(self, prompt: str) -> str:
-        if self._prompt_processor is None:
+    async def _resolve_image_edit_prompt(self, prompt: str, *, skip: bool = False) -> str:
+        if self._prompt_processor is None or skip:
             return prompt
         return await self._prompt_processor.resolve_image_edit(prompt, has_reference_image=True)
 
@@ -993,8 +1007,9 @@ class GrokService:
         *,
         has_reference_image: bool,
         reference_aspect_ratio: str,
+        skip: bool = False,
     ):
-        if self._prompt_processor is None:
+        if self._prompt_processor is None or skip:
             return VideoGenerationRequest(prompt=prompt, aspect_ratio=reference_aspect_ratio)
         return await self._prompt_processor.resolve_video(
             prompt,

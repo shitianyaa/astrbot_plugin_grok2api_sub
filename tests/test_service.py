@@ -270,6 +270,59 @@ async def test_rewrite_search_result_skips_when_processor_is_unavailable(tmp_pat
     assert rewritten is original
 
 
+async def test_rewrite_search_result_skips_when_rewrite_disabled(tmp_path):
+    processor = _SearchRewriteProcessor()
+    cfg = _cfg(capability_settings={"enable_search_rewrite": False})
+    service, _ = _make_service(MediaWorkspace(tmp_path), cfg=cfg, prompt_processor=processor)
+    original = _rewrite_result()
+
+    rewritten = await service.rewrite_search_result(FakeEvent(), "用户问题", original)
+
+    assert rewritten is original
+    assert processor.calls == []
+
+
+async def test_deliver_images_passes_skip_prompt_processing_to_resolver(tmp_path):
+    from core.models import ImageGenerationRequest
+
+    skip_seen: list[bool] = []
+
+    class RecordingProcessor:
+        async def resolve_image(self, prompt, **kwargs):
+            return ImageGenerationRequest(prompt=prompt)
+
+    resolver = RecordingProcessor()
+    ws = MediaWorkspace(tmp_path)
+    s = FakeSession()
+    # 生图成功响应（image b64），供 deliver_* 正常返回；FakeSession 按队列弹栈。
+    s.push(
+        FakeResponse(
+            200,
+            body=json.dumps({"data": [{"b64_json": base64.b64encode(_png_bytes()).decode()}]}),
+        )
+    )
+    cfg = _cfg(capability_settings={"send_media_progress": False})
+    t = HTTPTransport(
+        cfg.api_base_url,
+        cfg.api_key,
+        sleep=_no_retry_sleep,
+        session_factory=lambda: s,
+    )
+    svc = GrokService(cfg, Grok2APIClient(t), ws, DeliveryAdapter(ws), prompt_processor=resolver)
+
+    orig_resolve = svc._resolve_image_request
+
+    async def _mock_resolve(prompt: str, *, skip: bool = False):
+        skip_seen.append(skip)
+        return await orig_resolve(prompt, skip=skip)
+
+    svc._resolve_image_request = _mock_resolve
+
+    await svc.deliver_generated_images(FakeEvent(), "猫", skip_prompt_processing=True)
+
+    assert skip_seen == [True]
+
+
 async def test_rewrite_search_result_falls_back_without_logging_query_or_body(
     tmp_path, monkeypatch
 ):
