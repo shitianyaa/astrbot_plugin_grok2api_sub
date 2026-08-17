@@ -2,7 +2,7 @@
 
 <div align="center">
 
-<a href="https://github.com/shitianyaa/astrbot_plugin_grok2api_sub/releases"><img alt="Version" src="https://img.shields.io/badge/version-0.2.0-22c55e?style=for-the-badge" /></a>
+<a href="https://github.com/shitianyaa/astrbot_plugin_grok2api_sub/releases"><img alt="Version" src="https://img.shields.io/badge/version-0.2.1-22c55e?style=for-the-badge" /></a>
 <a href="https://github.com/Soulter/AstrBot"><img alt="AstrBot" src="https://img.shields.io/badge/AstrBot-plugin-5865f2?style=for-the-badge" /></a>
 <img alt="Python" src="https://img.shields.io/badge/Python-3.10+-3776ab?style=for-the-badge&logo=python&logoColor=white" />
 <img alt="Platform" src="https://img.shields.io/badge/platform-OneBot%20%2F%20QQ%20Official-f97316?style=for-the-badge" />

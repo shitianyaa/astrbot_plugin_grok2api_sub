@@ -2,6 +2,17 @@
 
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/) 规范。
 
+## v0.2.1 (2026-08-17)
+
+### Added
+
+- **媒体提示词处理失败自愈回退**：新增配置项 `capability_settings.prompt_processing.fallback_to_original_on_error`（默认开启）。在提示词整理或优化模式下，若改写模型发生网络超时、接口异常或格式错误（`prompt_processing_*`），自动按原始提示词与默认参数直发完成生图、改图和生视频任务。
+
+### Changed
+
+- **搜索路径直发生搜结果**：`/g2搜索` 移除调用文本模型二次改写的步骤，直接呈现 Grok 搜索 API 返回的原始正文与引用来源，降低响应延迟并节省大模型调用开销。
+- **架构与冗余清理**：移除内部未使用的搜索改写逻辑与相关正则/Prompt，提示词处理体系更专注服务于媒体生成参数解析与优化。
+
 ## v0.2.0 (2026-08-15)
 
 ### Added
