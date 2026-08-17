@@ -164,21 +164,18 @@ def test_defaults():
     assert c.video_aspect_ratios == ("1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3")
 
 
-def test_prompt_fallback_and_search_rewrite_defaults():
+def test_prompt_fallback_defaults():
     c = _cfg()
     assert c.prompt_fallback_to_original_on_error is True
-    assert c.enable_search_rewrite is True
 
 
-def test_prompt_fallback_and_search_rewrite_configurable():
+def test_prompt_fallback_configurable():
     c = _cfg(
         capability_settings={
             "prompt_processing": {"fallback_to_original_on_error": False},
-            "enable_search_rewrite": False,
         }
     )
     assert c.prompt_fallback_to_original_on_error is False
-    assert c.enable_search_rewrite is False
 
 
 def test_prompt_fallback_rejects_non_bool():
@@ -355,16 +352,14 @@ def test_redacted_summary_never_contains_key():
     assert "g2a_sec" not in repr(summary)
 
 
-def test_redacted_summary_reports_fallback_and_search_rewrite_flags():
+def test_redacted_summary_reports_fallback_flag():
     c = _cfg(
         capability_settings={
             "prompt_processing": {"fallback_to_original_on_error": False},
-            "enable_search_rewrite": False,
         }
     )
     summary = c.redacted_summary()
     assert summary["prompt_fallback_to_original_on_error"] is False
-    assert summary["enable_search_rewrite"] is False
 
 
 def test_redacted_summary_reports_not_configured():

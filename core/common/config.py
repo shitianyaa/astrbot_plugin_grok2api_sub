@@ -337,7 +337,6 @@ class PluginConfig:
     prompt_disable_processing_with_reference_image: bool
     prompt_processing_timeout_seconds: int
     prompt_fallback_to_original_on_error: bool
-    enable_search_rewrite: bool
 
     model_retry_count: int
     video_retry_count: int
@@ -458,7 +457,6 @@ class PluginConfig:
             "video_models": self.video_models,
             "prompt_processing_mode": self.prompt_processing_mode,
             "prompt_fallback_to_original_on_error": self.prompt_fallback_to_original_on_error,
-            "enable_search_rewrite": self.enable_search_rewrite,
             "prompt_disable_processing_with_reference_image": (
                 self.prompt_disable_processing_with_reference_image
             ),
@@ -687,11 +685,6 @@ class PluginConfig:
             prompt_fallback_to_original_on_error=_bool_flag(
                 "capability_settings.prompt_processing.fallback_to_original_on_error",
                 g(prompt_processing, "fallback_to_original_on_error"),
-                True,
-            ),
-            enable_search_rewrite=_bool_flag(
-                "capability_settings.enable_search_rewrite",
-                g(cap, "enable_search_rewrite"),
                 True,
             ),
             model_retry_count=_to_int(

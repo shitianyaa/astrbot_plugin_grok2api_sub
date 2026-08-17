@@ -408,34 +408,6 @@ class GrokService:
             show_sources=self._config.show_search_sources,
         )
 
-    async def rewrite_search_result(
-        self, event: Any, query: str, result: SearchResult
-    ) -> SearchResult:
-        if not self._config.enable_search_rewrite:
-            return result
-        processor = self._prompt_processor
-        if processor is None or not result.text.strip():
-            return result
-        try:
-            answer = await processor.rewrite_search(
-                str(getattr(event, "unified_msg_origin", "")),
-                question=query,
-                search_text=result.text,
-            )
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:  # noqa: BLE001
-            safe_log(
-                logging.DEBUG,
-                "search_rewrite_failed",
-                operation="search",
-                error_code=exc.code if isinstance(exc, PluginError) else "search_rewrite_failed",
-                exception_type=type(exc).__name__,
-                text_chars=len(result.text),
-            )
-            return result
-        return replace(result, text=answer)
-
     # -- image generation with model fallback -----------------------------
     async def _generate_image_with_fallback(
         self,

@@ -20,7 +20,7 @@ from core.errors import (
     SearchNotPerformedError,
 )
 from core.media import MediaWorkspace, NormalizedImage
-from core.models import SearchResult, SearchSource, VideoGenerationRequest
+from core.models import SearchResult, VideoGenerationRequest
 from core.platform import PlatformKind
 from core.sender import DeliveryAdapter
 from core.service import GrokService
@@ -210,78 +210,6 @@ async def test_manual_search_format(tmp_path):
     assert "https://e.com/1" in text
 
 
-class _SearchRewriteProcessor:
-    def __init__(self, answer="简洁回答", error: Exception | None = None):
-        self.answer = answer
-        self.error = error
-        self.calls: list[tuple[str, str, str]] = []
-
-    async def rewrite_search(self, umo: str, *, question: str, search_text: str) -> str:
-        self.calls.append((umo, question, search_text))
-        if self.error is not None:
-            raise self.error
-        return self.answer
-
-
-def _rewrite_result(text="原始搜索正文") -> SearchResult:
-    return SearchResult(
-        response_id="rewrite-response",
-        model="grok-4.5",
-        status="completed",
-        text=text,
-        sources=(SearchSource(url="https://example.com/source", title="可信来源"),),
-        search_performed=True,
-    )
-
-
-async def test_rewrite_search_result_replaces_text_and_preserves_sources(tmp_path):
-    processor = _SearchRewriteProcessor()
-    service, _ = _make_service(MediaWorkspace(tmp_path), prompt_processor=processor)
-    event = FakeEvent()
-    original = _rewrite_result()
-
-    rewritten = await service.rewrite_search_result(event, "用户问题", original)
-
-    assert rewritten.text == "简洁回答"
-    assert rewritten.sources == original.sources
-    assert rewritten.model == original.model
-    assert rewritten.response_id == original.response_id
-    assert processor.calls == [(event.unified_msg_origin, "用户问题", "原始搜索正文")]
-
-
-@pytest.mark.parametrize("text", ["", "   "])
-async def test_rewrite_search_result_skips_empty_text(tmp_path, text):
-    processor = _SearchRewriteProcessor()
-    service, _ = _make_service(MediaWorkspace(tmp_path), prompt_processor=processor)
-    original = _rewrite_result(text)
-
-    rewritten = await service.rewrite_search_result(FakeEvent(), "用户问题", original)
-
-    assert rewritten is original
-    assert processor.calls == []
-
-
-async def test_rewrite_search_result_skips_when_processor_is_unavailable(tmp_path):
-    service, _ = _make_service(MediaWorkspace(tmp_path))
-    original = _rewrite_result()
-
-    rewritten = await service.rewrite_search_result(FakeEvent(), "用户问题", original)
-
-    assert rewritten is original
-
-
-async def test_rewrite_search_result_skips_when_rewrite_disabled(tmp_path):
-    processor = _SearchRewriteProcessor()
-    cfg = _cfg(capability_settings={"enable_search_rewrite": False})
-    service, _ = _make_service(MediaWorkspace(tmp_path), cfg=cfg, prompt_processor=processor)
-    original = _rewrite_result()
-
-    rewritten = await service.rewrite_search_result(FakeEvent(), "用户问题", original)
-
-    assert rewritten is original
-    assert processor.calls == []
-
-
 async def test_deliver_images_passes_skip_prompt_processing_to_resolver(tmp_path):
     from core.models import ImageGenerationRequest
 
@@ -321,51 +249,6 @@ async def test_deliver_images_passes_skip_prompt_processing_to_resolver(tmp_path
     await svc.deliver_generated_images(FakeEvent(), "猫", skip_prompt_processing=True)
 
     assert skip_seen == [True]
-
-
-async def test_rewrite_search_result_falls_back_without_logging_query_or_body(
-    tmp_path, monkeypatch
-):
-    events = []
-    monkeypatch.setattr(
-        "core.service.safe_log", lambda _level, name, **fields: events.append((name, fields))
-    )
-    processor = _SearchRewriteProcessor(
-        error=PluginError("重写失败", code="search_rewrite_invalid")
-    )
-    service, _ = _make_service(MediaWorkspace(tmp_path), prompt_processor=processor)
-    original = _rewrite_result("私密原始搜索正文")
-
-    rewritten = await service.rewrite_search_result(FakeEvent(), "私密用户问题", original)
-
-    assert rewritten is original
-    assert events == [
-        (
-            "search_rewrite_failed",
-            {
-                "operation": "search",
-                "error_code": "search_rewrite_invalid",
-                "exception_type": "PluginError",
-                "text_chars": len(original.text),
-            },
-        )
-    ]
-    assert "私密用户问题" not in str(events)
-    assert "私密原始搜索正文" not in str(events)
-
-
-async def test_search_returns_raw_result_without_invoking_rewrite_processor(tmp_path):
-    ws = MediaWorkspace(tmp_path)
-    s = FakeSession()
-    s.push(FakeResponse(200, body=json.dumps({"data": [{"id": "grok-4.5"}]})))
-    s.push(FakeResponse(200, body=_search_response()))
-    processor = _SearchRewriteProcessor()
-    service, _ = _make_service(ws, session=s, prompt_processor=processor)
-
-    result = await service.search(FakeEvent(), "q")
-
-    assert result.text == "answer"
-    assert processor.calls == []
 
 
 # -- concurrency -----------------------------------------------------------

@@ -136,7 +136,6 @@ python -m pip install -r requirements.txt
 - **`extract_provider_id` / `enhance_provider_id`**：指定用于整理/优化的已配置 AstrBot 文本模型。
 - **`disable_prompt_processing_with_reference_image`**：在有参考图时跳过 LLM 提示词改写，保持原样直传。
 - **`fallback_to_original_on_error`**：提示词处理失败时改用原始提示词直发（默认开启）。
-- **`enable_search_rewrite`**：是否对搜索结果执行 LLM 回答整理（默认开启）；关闭时直接呈现搜索原始结果，改写失败始终静默回退原结果。
 
 ---
 
