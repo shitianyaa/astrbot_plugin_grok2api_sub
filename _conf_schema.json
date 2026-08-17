@@ -158,6 +158,12 @@
             "type": "bool",
             "default": false,
             "hint": "仅在检测到改图消息图片、视频消息图片或视频 --image-url 时生效；关闭时遵循全局模式，开启后原提示词直传且不调用提示词处理模型。"
+          },
+          "fallback_to_original_on_error": {
+            "description": "提示词处理失败时按原始提示词直发。",
+            "type": "bool",
+            "default": true,
+            "hint": "开启后每次处理失败即回退直发；关闭时仍提示错误并中止任务。"
           }
         }
       },
@@ -166,6 +172,12 @@
         "type": "bool",
         "default": true,
         "hint": "覆盖生图、改图和视频；QQ Official 建议开启且每个任务只发一次。"
+      },
+      "enable_search_rewrite": {
+        "description": "是否对搜索结果执行 LLM 回答整理。",
+        "type": "bool",
+        "default": true,
+        "hint": "关闭时直接呈现搜索原始结果；改写失败始终静默回退原始结果。"
       }
     }
   },
