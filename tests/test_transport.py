@@ -36,12 +36,12 @@ async def _noop():
     pass
 
 
-def _policy(*, retries=2, base=0.1, excluded=()) -> RetryPolicy:
+def _policy(*, retries=2, base=0.1, switch_errors=()) -> RetryPolicy:
     return RetryPolicy(
         operation="op",
         retries=retries,
         base_delay=base,
-        excluded_errors=frozenset(excluded),
+        switch_errors=frozenset(switch_errors),
     )
 
 
@@ -226,7 +226,7 @@ async def test_excluded_status_stops_generation_post_retry():
             "/v1/images/generations",
             json_body={},
             timeout_seconds=5,
-            retry_policy=_policy(excluded=("401",)),
+            retry_policy=_policy(switch_errors=("401",)),
             operation="生图",
         )
     assert ei.value.status == 401
@@ -287,7 +287,7 @@ async def test_excluded_error_code_stops_retry():
             "/v1/models",
             json_body=None,
             timeout_seconds=5,
-            retry_policy=_policy(excluded=("not_found",)),
+            retry_policy=_policy(switch_errors=("not_found",)),
             operation="models",
         )
     assert len(s.calls) == 1
@@ -499,3 +499,57 @@ async def test_malformed_error_bodies_use_stable_mapping(body):
     assert caught.value.code == "auth_error"
     assert "LEAK" not in str(caught.value)
     assert secret_marker not in str(caught.value)
+
+
+async def test_deadline_caps_request_timeout():
+    from core.common.deadline import task_deadline_scope
+
+    t, s = _make()
+    s.push(FakeResponse(200, body='{"ok":1}'))
+    with task_deadline_scope(2.0):
+        await t.request_json(
+            "POST",
+            "/v1/responses",
+            json_body={},
+            timeout_seconds=10.0,
+            retry_policy=_policy(retries=0),
+            operation="search",
+        )
+    assert len(s.calls) == 1
+    # The timeout total should have been capped to <= 2.0
+    timeout_used = s.calls[0]["timeout"]
+    assert timeout_used.total <= 2.0
+
+
+async def test_expired_deadline_raises_task_timeout():
+    from core.common.deadline import task_deadline_scope
+
+    t, s = _make()
+    with task_deadline_scope(-1.0):  # Already expired
+        with pytest.raises(PluginError) as exc_info:
+            await t.request_json(
+                "POST",
+                "/v1/responses",
+                json_body={},
+                timeout_seconds=10.0,
+                retry_policy=_policy(retries=1),
+                operation="search",
+            )
+    assert exc_info.value.code == "task_timeout"
+    assert exc_info.value.retryable is False
+    assert len(s.calls) == 0
+
+
+async def test_safe_error_code_extraction_preserves_custom_safe_code():
+    import json
+
+    t, s = _make()
+    err_body = json.dumps(
+        {"error": {"code": "upstream_quota_exhausted", "message": "out of quota"}}
+    )
+    s.push(FakeResponse(status=400, body=err_body))
+    with pytest.raises(APIError) as exc_info:
+        await _post_search(t)
+    assert exc_info.value.code == "upstream_quota_exhausted"
+    assert exc_info.value.retryable is True
+    assert "out of quota" not in str(exc_info.value)

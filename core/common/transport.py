@@ -7,7 +7,7 @@ Design rules (section 4.5 of the plan):
   API Key is never forwarded to another host.
 - Every remote request uses a caller-selected retry policy. The policy groups
   model/image/search work separately from video work, supports configured
-  status/error exclusions, and honors ``Retry-After``.
+  status/error model switches, and honors ``Retry-After``.
 - Downloads write to a ``.part`` file, enforce a byte cap, delete the partial
   file on failure, and atomically rename on success.
 - ``asyncio.CancelledError`` is always re-raised.
@@ -29,6 +29,7 @@ from typing import TypeVar
 
 import aiohttp
 
+from .deadline import check_task_deadline, remaining_task_timeout
 from .errors import APIError, ConfigurationError, PluginError, ProtocolError
 from .observability import record_task_attempt, record_task_retry, safe_log
 
@@ -38,7 +39,6 @@ _MAX_BACKOFF = 30.0
 _MAX_URL_LEN = 2048
 _MAX_ERROR_BODY_BYTES = 64 * 1024
 _SAFE_ERROR_CODE_RE = re.compile(r"^[A-Za-z0-9_.-]{1,64}$")
-_MODEL_FALLBACK_CODES = frozenset({"model_not_found", "model_not_allowed"})
 
 SleepFn = Callable[[float], Coroutine[None, None, None]]
 ResponseValue = TypeVar("ResponseValue")
@@ -49,7 +49,7 @@ class RetryPolicy:
     operation: str
     retries: int = 2  # retries after the initial request
     base_delay: float = 0.5
-    excluded_errors: frozenset[str] = frozenset()
+    switch_errors: frozenset[str] = frozenset()
 
     @property
     def attempts(self) -> int:
@@ -57,9 +57,9 @@ class RetryPolicy:
 
     def allows(self, error: PluginError) -> bool:
         """Return whether a normalized remote error is eligible for retry."""
-        if error.code in self.excluded_errors:
+        if error.code in self.switch_errors:
             return False
-        if isinstance(error, APIError) and str(error.status) in self.excluded_errors:
+        if isinstance(error, APIError) and str(error.status) in self.switch_errors:
             return False
         return error.retryable
 
@@ -90,11 +90,11 @@ def parse_retry_after(value: str | None, now: float) -> float | None:
 
 
 async def _extract_safe_error_code(resp: aiohttp.ClientResponse) -> str:
-    """Bounded read of the upstream error body; only model fallback codes pass.
+    """Bounded read of the upstream error body; only safe normalized codes pass.
 
     Reads at most 64 KiB, refuses non-JSON / wrong shapes / non-string codes,
-    and only returns a value from ``_MODEL_FALLBACK_CODES``. The body and
-    ``error.message`` are never logged or placed into the exception.
+    and returns a sanitized alphanumeric code matching ``_SAFE_ERROR_CODE_RE``.
+    The body and ``error.message`` are never logged or placed into the exception.
     """
     declared = getattr(resp, "content_length", None)
     try:
@@ -126,7 +126,7 @@ async def _extract_safe_error_code(resp: aiohttp.ClientResponse) -> str:
         return ""
     if not _SAFE_ERROR_CODE_RE.match(code):
         return ""
-    return code if code in _MODEL_FALLBACK_CODES else ""
+    return code
 
 
 def _validate_relative_path(path: str) -> str:
@@ -240,6 +240,14 @@ class HTTPTransport:
         for attempt in range(1, retry_policy.attempts + 1):
             if self._closed:
                 raise ConfigurationError("插件已关闭", code="closed")
+            check_task_deadline()
+            effective_timeout = remaining_task_timeout(timeout_seconds)
+            if effective_timeout <= 0:
+                raise PluginError("任务执行超时", code="task_timeout", retryable=False)
+            timeout = aiohttp.ClientTimeout(
+                total=effective_timeout,
+                connect=min(self._connect_timeout, effective_timeout),
+            )
             session = self._session_for()
             started_at = time.monotonic()
             record_task_attempt(operation)
@@ -319,7 +327,7 @@ class HTTPTransport:
                         operation=operation,
                     )
                     if will_retry:
-                        await self._backoff(attempt, retry_policy.base_delay, retry_after)
+                        await self.backoff(attempt, retry_policy.base_delay, retry_after)
                         continue
                     raise error
             except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
@@ -335,22 +343,27 @@ class HTTPTransport:
                     operation=operation,
                 )
                 if will_retry:
-                    await self._backoff(attempt, retry_policy.base_delay, None)
+                    await self.backoff(attempt, retry_policy.base_delay, None)
                     continue
                 raise error from exc
         raise PluginError(f"{operation} 失败", code="unknown")
 
-    async def _backoff(self, attempt: int, base_delay: float, retry_after: float | None) -> None:
+    async def backoff(self, attempt: int, base_delay: float, retry_after: float | None) -> None:
+        check_task_deadline()
         delay = _exponential_delay(attempt, base_delay, retry_after)
+        remaining = remaining_task_timeout(None)
+        if remaining <= 0:
+            raise PluginError("任务执行超时", code="task_timeout", retryable=False)
+        delay = min(delay, remaining)
         try:
             await self._sleep(delay)
         except asyncio.CancelledError:
             raise
+        check_task_deadline()
 
     async def _status_error(
         self, status: int, resp: aiohttp.ClientResponse, operation: str
     ) -> APIError:
-        # model fallback codes are the only bytes we keep from the error body
         upstream_code = await _extract_safe_error_code(resp)
         if upstream_code == "model_not_found":
             return APIError(status, upstream_code, "请求模型不存在", retryable=True)
@@ -358,6 +371,15 @@ class HTTPTransport:
             return APIError(
                 status, upstream_code, "当前 API Key 无权使用该请求模型", retryable=True
             )
+        if upstream_code == "unsupported_model":
+            return APIError(status, upstream_code, "请求模型不受支持", retryable=True)
+        if upstream_code in ("rate_limited", "upstream_rate_limited"):
+            return APIError(status, "rate_limited", "上游限流，请稍后再试", retryable=True)
+        if upstream_code in ("invalid_api_key", "unauthorized", "auth_error"):
+            return APIError(status, "auth_error", "API Key 无效或权限不足", retryable=True)
+        if upstream_code:
+            return APIError(status, upstream_code, f"上游返回错误（{status}）", retryable=True)
+
         if status in (401, 403):
             return APIError(status, "auth_error", "API Key 无效或权限不足", retryable=True)
         if status == 404:
@@ -390,13 +412,17 @@ class HTTPTransport:
         path = _validate_relative_path(path)
         url = self._base_url + path
         part = destination.with_suffix(destination.suffix + ".part")
-        timeout = aiohttp.ClientTimeout(
-            total=timeout_seconds,
-            connect=min(self._connect_timeout, timeout_seconds),
-        )
         for attempt in range(1, retry_policy.attempts + 1):
             if self._closed:
                 raise ConfigurationError("插件已关闭", code="closed")
+            check_task_deadline()
+            effective_timeout = remaining_task_timeout(timeout_seconds)
+            if effective_timeout <= 0:
+                raise PluginError("任务执行超时", code="task_timeout", retryable=False)
+            timeout = aiohttp.ClientTimeout(
+                total=effective_timeout,
+                connect=min(self._connect_timeout, effective_timeout),
+            )
             session = self._session_for()
             written = 0
             started_at = time.monotonic()
@@ -431,7 +457,7 @@ class HTTPTransport:
                             retry_after = parse_retry_after(
                                 resp.headers.get("Retry-After"), time.time()
                             )
-                            await self._backoff(attempt, retry_policy.base_delay, retry_after)
+                            await self.backoff(attempt, retry_policy.base_delay, retry_after)
                             continue
                         raise error
                     declared = resp.content_length or 0
@@ -467,7 +493,7 @@ class HTTPTransport:
                             operation="download",
                         )
                         if will_retry:
-                            await self._backoff(attempt, retry_policy.base_delay, None)
+                            await self.backoff(attempt, retry_policy.base_delay, None)
                             continue
                         raise error
                     part.replace(destination)
@@ -495,7 +521,7 @@ class HTTPTransport:
                     operation="download",
                 )
                 if will_retry:
-                    await self._backoff(attempt, retry_policy.base_delay, None)
+                    await self.backoff(attempt, retry_policy.base_delay, None)
                     continue
                 raise error from exc
             except Exception:

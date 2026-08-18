@@ -2,7 +2,7 @@
 
 <div align="center">
 
-<a href="https://github.com/shitianyaa/astrbot_plugin_grok2api_sub/releases"><img alt="Version" src="https://img.shields.io/badge/version-0.2.0-22c55e?style=for-the-badge" /></a>
+<a href="https://github.com/shitianyaa/astrbot_plugin_grok2api_sub/releases"><img alt="Version" src="https://img.shields.io/badge/version-0.2.1-22c55e?style=for-the-badge" /></a>
 <a href="https://github.com/Soulter/AstrBot"><img alt="AstrBot" src="https://img.shields.io/badge/AstrBot-plugin-5865f2?style=for-the-badge" /></a>
 <img alt="Python" src="https://img.shields.io/badge/Python-3.10+-3776ab?style=for-the-badge&logo=python&logoColor=white" />
 <img alt="Platform" src="https://img.shields.io/badge/platform-OneBot%20%2F%20QQ%20Official-f97316?style=for-the-badge" />
@@ -135,6 +135,7 @@ python -m pip install -r requirements.txt
 - **`mode`**：`off`（原文直传）、`extract`（仅补全结构化参数）、`enhance`（调用大模型重写优化提示词）。
 - **`extract_provider_id` / `enhance_provider_id`**：指定用于整理/优化的已配置 AstrBot 文本模型。
 - **`disable_prompt_processing_with_reference_image`**：在有参考图时跳过 LLM 提示词改写，保持原样直传。
+- **`fallback_to_original_on_error`**：提示词处理失败时改用原始提示词直发（默认开启）。
 
 ---
 

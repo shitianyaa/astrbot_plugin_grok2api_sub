@@ -29,6 +29,8 @@ _ERROR_HINTS: dict[str, str] = {
     "prompt_processing_provider_failed": "智能改写提示词失败，请检查提示词改写模型的配置",
     "prompt_processing_provider_missing": "请先配置提示词改写模型，或关闭智能改写",
     "search_models_exhausted": "所有搜索模型都不可用，请确认搜索模型配置或稍后重试",
+    "media_models_exhausted": "所有媒体模型都不可用，请确认模型配置或稍后重试",
+    "task_timeout": "任务执行超时，请稍后重试或适当增加任务超时时间",
     "image_url_missing": "图片 URL 参数缺少地址",
     "image_url_duplicate": "图片 URL 参数只能提供一次",
     "image_url_invalid": "图片 URL 格式无效",

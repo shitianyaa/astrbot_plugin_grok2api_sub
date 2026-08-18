@@ -58,6 +58,7 @@ Schema 顶层只有 4 个 `object` 分组：`connection_settings`、`capability_
 | 配置键 | 类型 | 默认值 | 校验/说明 |
 |---|---|---:|---|
 | `connect_timeout_seconds` | int | `10` | 1–60 |
+| `task_timeout_seconds` | int | `1800` | 60–7200；用户任务总超时（含所有重试、轮询与模型回退），超时后安全终止 |
 | `search_timeout_seconds` | int | `180` | 10–600 |
 | `image_timeout_seconds` | int | `300` | 30–900 |
 | `video_create_timeout_seconds` | int | `120` | 10–600 |
@@ -82,7 +83,7 @@ Schema 顶层只有 4 个 `object` 分组：`connection_settings`、`capability_
 | `model_retry_count` | int | `2` | 0–5；搜索、生图、改图、模型目录和图片下载的额外重试次数，不含首次请求 |
 | `video_retry_count` | int | `2` | 0–5；视频创建、状态轮询和视频下载的额外重试次数，不含首次请求 |
 | `retry_base_delay_seconds` | float | `0.5` | 0.1–5.0 |
-| `retry_excluded_errors` | string | `""` | 英文逗号分隔的 HTTP 状态码或稳定错误码；留空表示不排除远端错误，例如 `400,401,403,404,422,auth_error,model_not_found,invalid_json,invalid_model_catalog,network_error` |
+| `model_switch_errors` | string | `401,403,404,429,auth_error,not_found,rate_limited,model_not_found,model_not_allowed` | 命中后不重试当前模型，直接切换下一个模型；英文逗号分隔 |
 | `save_media` | bool | `false` | false 发送后删除；true 成功文件移到 `archive/` 保留 |
 | `temp_retention_hours` | int | `24` | 1–168 |
 
@@ -94,10 +95,11 @@ Schema 顶层只有 4 个 `object` 分组：`connection_settings`、`capability_
 - 面板背景每次随机打乱 Wallhaven（动漫、SFW、16:9）、LoliAPI 横屏和 t.alcy 横屏的请求顺序，各站点均随机取图；API 请求与图片下载均显式使用 `client_proxy_url`、`verify_tls`，不读取环境代理。所有来源都执行解码、体积和横向比例校验，但来源不保证排除 AI 图片。单个图源失败后继续剩余图源，全部失败时复用 `panel_background.jpg` 缓存；无缓存时由卡片 CSS 使用默认背景。
 - Cron 与间隔任务可同时启用。固定 UMO 和 `/g2面板订阅` 创建的 UMO 会合并去重；同一 UMO 在同一自然分钟最多有一次发送尝试。
 - 仅开启 X 搜索而候选全为 `grok-chat-*` 时同样明确禁用搜索能力；chat 模型不会收到没有可用工具的请求。
-- 每次尝试只使用该操作自己的单次超时。视频等待不再设置插件侧总时长，而是以 `video_poll_timeout_seconds`、`video_poll_interval_seconds` 和 `video_retry_count` 持续轮询远端终态。
-- 远端 HTTP、网络、JSON 解析和远端响应结构错误默认都可重试，包含生成 POST；这可能重复生成或重复扣费。需要避免某类错误重试时，加入 `retry_excluded_errors`。本地输入校验、媒体大小限制、路径校验和平台消息发送不会被自动重放。
+- 每次尝试使用该操作自己的单次超时，并受当前任务的 `task_timeout_seconds` 截止时间严格裁剪。任务截止时间到达后停止所有重试与候选切换，统一安全退出。
+- 视频轮询若收到 `status=failed`，视为该视频任务终态失败；重试时按照 `video_retry_count` 重新创建新的视频生成任务，不重复轮询旧 `request_id`。
+- 远端 HTTP、网络、JSON 解析和远端响应结构错误默认都可重试，包含生成 POST；这可能重复生成或重复扣费。命中 `model_switch_errors` 时不重试当前模型，直接切换下一候选。本地输入校验、媒体大小限制、路径校验和平台消息发送不会被自动重放。
 - INFO 日志只保留多行任务开始和完成/失败块。搜索、图片和视频任务完整记录原始提示词及实际请求提示词，并记录脱敏后的实际请求参数（搜索开关、推理强度、比例、时长、分辨率、数量、返回格式等）；任务结束记录实际模型、候选回退、任务内实际发出的额外远端请求、结果状态和耗时。模型目录、生成、状态查询和下载的重试都会汇总，正常的多次视频轮询不算重试。内部 HTTP、管理面请求、轮询、模型尝试、命令包装和媒体发送细节写入 DEBUG。`trace_id` 不再使用；参考图 URL、媒体 URL、请求 ID、上游响应正文和凭据不会写入任务日志。
-- 单个候选先完成 `retry_count + 1` 次请求才进入下一候选。媒体仅在 `model_not_found` 或 `model_not_allowed` 时回退；搜索额外在 `search_not_performed` 时回退。排除这些错误码只会缩短当前候选的重试，不会阻止回退。
+- 单个候选先完成 `retry_count + 1` 次请求才进入下一候选。重试耗尽后，所有远端错误（包括 HTTP 错误码、网络错误、认证/限流、模型不存在/无权限与 `search_not_performed`）均允许继续回退到下一候选模型；命中 `model_switch_errors` 时立即跳过当前模型剩余重试并切换下一候选；本地输入校验、取消、插件关闭和 `task_timeout` 则立即终止。全部候选耗尽时抛出对应的 `*_models_exhausted` 错误。
 - 模型目录必须包含数组类型的 `data`。结构异常按 `invalid_model_catalog` 进入模型重试组，耗尽后按目录请求失败回退原配置；成功空目录直接返回无可见候选，不发送搜索 POST。
 
 ## 安全约束

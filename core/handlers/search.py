@@ -20,7 +20,6 @@ class SearchMixin(BaseHandler):
                 service = self._require_service(event)
                 query_text = validate_search_query(str(query))
                 result = await service.search(event, query_text, required=True)
-                result = await service.rewrite_search_result(event, query_text, result)
                 await self._send(event, service.format_search(result))
                 safe_log(logging.DEBUG, "command_completed", operation="search")
             except Exception as exc:  # noqa: BLE001

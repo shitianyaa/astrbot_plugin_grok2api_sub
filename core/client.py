@@ -14,7 +14,8 @@ import time
 from pathlib import Path
 from typing import Any
 
-from .errors import ProtocolError
+from .deadline import check_task_deadline, remaining_task_timeout
+from .errors import PluginError, ProtocolError
 from .models import ImageResult, SearchResult, VideoJob
 from .observability import safe_log
 from .parsers import (
@@ -31,14 +32,14 @@ def _retry(
     operation: str,
     retries: int,
     base_delay: float,
-    excluded_errors: frozenset[str],
+    switch_errors: frozenset[str],
 ) -> RetryPolicy:
     """Build one remote-call policy from a configured retry group."""
     return RetryPolicy(
         operation=operation,
         retries=retries,
         base_delay=base_delay,
-        excluded_errors=excluded_errors,
+        switch_errors=switch_errors,
     )
 
 
@@ -78,7 +79,7 @@ class Grok2APIClient:
         model_retry_count: int = 2,
         video_retry_count: int = 2,
         retry_base_delay: float = 0.5,
-        retry_excluded_errors: frozenset[str] = frozenset(),
+        model_switch_errors: frozenset[str] = frozenset(),
         sleep=None,
         monotonic=None,
     ) -> None:
@@ -92,7 +93,7 @@ class Grok2APIClient:
         self._model_retry_count = model_retry_count
         self._video_retry_count = video_retry_count
         self._retry_base_delay = retry_base_delay
-        self._retry_excluded_errors = retry_excluded_errors
+        self._model_switch_errors = model_switch_errors
         self._sleep = sleep or asyncio.sleep
         self._monotonic = monotonic or time.monotonic
         self._models_cache: tuple[str, ...] = ()
@@ -101,6 +102,10 @@ class Grok2APIClient:
 
     async def close(self) -> None:
         await self._transport.close()
+
+    async def retry_backoff(self, attempt: int) -> None:
+        """Wait before recreating a remote task using the shared retry policy."""
+        await self._transport.backoff(attempt, self._retry_base_delay, None)
 
     # -- models ------------------------------------------------------------
     async def list_models(self, *, force_refresh: bool = False) -> tuple[str, ...]:
@@ -121,7 +126,7 @@ class Grok2APIClient:
                     "models",
                     self._model_retry_count,
                     self._retry_base_delay,
-                    self._retry_excluded_errors,
+                    self._model_switch_errors,
                 ),
                 operation="models",
                 response_parser=_parse_model_catalog,
@@ -159,7 +164,7 @@ class Grok2APIClient:
                 "search",
                 self._model_retry_count,
                 self._retry_base_delay,
-                self._retry_excluded_errors,
+                self._model_switch_errors,
             ),
             operation="search",
             response_parser=parse_search_response,
@@ -199,7 +204,7 @@ class Grok2APIClient:
                 "image",
                 self._model_retry_count,
                 self._retry_base_delay,
-                self._retry_excluded_errors,
+                self._model_switch_errors,
             ),
             operation="image",
             response_parser=lambda data: parse_image_response(
@@ -237,7 +242,7 @@ class Grok2APIClient:
                 "image_edit",
                 self._model_retry_count,
                 self._retry_base_delay,
-                self._retry_excluded_errors,
+                self._model_switch_errors,
             ),
             operation="image_edit",
             response_parser=lambda data: parse_image_response(
@@ -277,7 +282,7 @@ class Grok2APIClient:
                 "video_create",
                 self._video_retry_count,
                 self._retry_base_delay,
-                self._retry_excluded_errors,
+                self._model_switch_errors,
             ),
             operation="video_create",
             response_parser=_parse_created_video_request,
@@ -295,7 +300,7 @@ class Grok2APIClient:
                 "video_poll",
                 self._video_retry_count,
                 self._retry_base_delay,
-                self._retry_excluded_errors,
+                self._model_switch_errors,
             ),
             operation="video_poll",
             response_parser=lambda data: parse_video_response(data, request_id=vid),
@@ -306,6 +311,7 @@ class Grok2APIClient:
         vid = validate_request_id(request_id)
         previous_state: tuple[str, int] | None = None
         while True:
+            check_task_deadline()
             job = await self.get_video(vid)
             state = (job.status, job.progress)
             if state != previous_state:
@@ -320,10 +326,16 @@ class Grok2APIClient:
                 previous_state = state
             if job.status in ("done", "failed"):
                 return job
+            check_task_deadline()
+            remaining = remaining_task_timeout(None)
+            if remaining <= 0:
+                raise PluginError("任务执行超时", code="task_timeout", retryable=False)
+            interval = min(self._video_poll_interval, remaining)
             try:
-                await self._sleep(self._video_poll_interval)
+                await self._sleep(interval)
             except asyncio.CancelledError:
                 raise
+            check_task_deadline()
 
     async def download_video(self, request_id: str, destination: Path, *, max_bytes: int) -> Path:
         vid = validate_request_id(request_id)
@@ -336,7 +348,7 @@ class Grok2APIClient:
                 "video_download",
                 self._video_retry_count,
                 self._retry_base_delay,
-                self._retry_excluded_errors,
+                self._model_switch_errors,
             ),
         )
 
@@ -358,6 +370,6 @@ class Grok2APIClient:
                 "media_download",
                 self._model_retry_count,
                 self._retry_base_delay,
-                self._retry_excluded_errors,
+                self._model_switch_errors,
             ),
         )

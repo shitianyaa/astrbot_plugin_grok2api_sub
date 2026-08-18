@@ -6,6 +6,7 @@ import asyncio
 import base64
 import json
 import logging
+from dataclasses import replace
 from unittest.mock import AsyncMock
 
 import pytest
@@ -20,7 +21,7 @@ from core.errors import (
     SearchNotPerformedError,
 )
 from core.media import MediaWorkspace, NormalizedImage
-from core.models import SearchResult, SearchSource, VideoGenerationRequest
+from core.models import SearchResult, VideoGenerationRequest
 from core.platform import PlatformKind
 from core.sender import DeliveryAdapter
 from core.service import GrokService
@@ -98,7 +99,7 @@ def _make_service(ws, cfg=None, session=None, prompt_processor=None):
         model_retry_count=cfg.model_retry_count,
         video_retry_count=cfg.video_retry_count,
         retry_base_delay=cfg.retry_base_delay_seconds,
-        retry_excluded_errors=cfg.retry_excluded_errors,
+        model_switch_errors=cfg.model_switch_errors,
     )
     sender = DeliveryAdapter(ws)
     return GrokService(cfg, client, ws, sender, prompt_processor=prompt_processor), session
@@ -210,109 +211,45 @@ async def test_manual_search_format(tmp_path):
     assert "https://e.com/1" in text
 
 
-class _SearchRewriteProcessor:
-    def __init__(self, answer="简洁回答", error: Exception | None = None):
-        self.answer = answer
-        self.error = error
-        self.calls: list[tuple[str, str, str]] = []
+async def test_deliver_images_passes_skip_prompt_processing_to_resolver(tmp_path):
+    from core.models import ImageGenerationRequest
 
-    async def rewrite_search(self, umo: str, *, question: str, search_text: str) -> str:
-        self.calls.append((umo, question, search_text))
-        if self.error is not None:
-            raise self.error
-        return self.answer
+    skip_seen: list[bool] = []
 
+    class RecordingProcessor:
+        async def resolve_image(self, prompt, **kwargs):
+            return ImageGenerationRequest(prompt=prompt)
 
-def _rewrite_result(text="原始搜索正文") -> SearchResult:
-    return SearchResult(
-        response_id="rewrite-response",
-        model="grok-4.5",
-        status="completed",
-        text=text,
-        sources=(SearchSource(url="https://example.com/source", title="可信来源"),),
-        search_performed=True,
-    )
-
-
-async def test_rewrite_search_result_replaces_text_and_preserves_sources(tmp_path):
-    processor = _SearchRewriteProcessor()
-    service, _ = _make_service(MediaWorkspace(tmp_path), prompt_processor=processor)
-    event = FakeEvent()
-    original = _rewrite_result()
-
-    rewritten = await service.rewrite_search_result(event, "用户问题", original)
-
-    assert rewritten.text == "简洁回答"
-    assert rewritten.sources == original.sources
-    assert rewritten.model == original.model
-    assert rewritten.response_id == original.response_id
-    assert processor.calls == [(event.unified_msg_origin, "用户问题", "原始搜索正文")]
-
-
-@pytest.mark.parametrize("text", ["", "   "])
-async def test_rewrite_search_result_skips_empty_text(tmp_path, text):
-    processor = _SearchRewriteProcessor()
-    service, _ = _make_service(MediaWorkspace(tmp_path), prompt_processor=processor)
-    original = _rewrite_result(text)
-
-    rewritten = await service.rewrite_search_result(FakeEvent(), "用户问题", original)
-
-    assert rewritten is original
-    assert processor.calls == []
-
-
-async def test_rewrite_search_result_skips_when_processor_is_unavailable(tmp_path):
-    service, _ = _make_service(MediaWorkspace(tmp_path))
-    original = _rewrite_result()
-
-    rewritten = await service.rewrite_search_result(FakeEvent(), "用户问题", original)
-
-    assert rewritten is original
-
-
-async def test_rewrite_search_result_falls_back_without_logging_query_or_body(
-    tmp_path, monkeypatch
-):
-    events = []
-    monkeypatch.setattr(
-        "core.service.safe_log", lambda _level, name, **fields: events.append((name, fields))
-    )
-    processor = _SearchRewriteProcessor(
-        error=PluginError("重写失败", code="search_rewrite_invalid")
-    )
-    service, _ = _make_service(MediaWorkspace(tmp_path), prompt_processor=processor)
-    original = _rewrite_result("私密原始搜索正文")
-
-    rewritten = await service.rewrite_search_result(FakeEvent(), "私密用户问题", original)
-
-    assert rewritten is original
-    assert events == [
-        (
-            "search_rewrite_failed",
-            {
-                "operation": "search",
-                "error_code": "search_rewrite_invalid",
-                "exception_type": "PluginError",
-                "text_chars": len(original.text),
-            },
-        )
-    ]
-    assert "私密用户问题" not in str(events)
-    assert "私密原始搜索正文" not in str(events)
-
-
-async def test_search_returns_raw_result_without_invoking_rewrite_processor(tmp_path):
+    resolver = RecordingProcessor()
     ws = MediaWorkspace(tmp_path)
     s = FakeSession()
-    s.push(FakeResponse(200, body=json.dumps({"data": [{"id": "grok-4.5"}]})))
-    s.push(FakeResponse(200, body=_search_response()))
-    processor = _SearchRewriteProcessor()
-    service, _ = _make_service(ws, session=s, prompt_processor=processor)
+    # 生图成功响应（image b64），供 deliver_* 正常返回；FakeSession 按队列弹栈。
+    s.push(
+        FakeResponse(
+            200,
+            body=json.dumps({"data": [{"b64_json": base64.b64encode(_png_bytes()).decode()}]}),
+        )
+    )
+    cfg = _cfg(capability_settings={"send_media_progress": False})
+    t = HTTPTransport(
+        cfg.api_base_url,
+        cfg.api_key,
+        sleep=_no_retry_sleep,
+        session_factory=lambda: s,
+    )
+    svc = GrokService(cfg, Grok2APIClient(t), ws, DeliveryAdapter(ws), prompt_processor=resolver)
 
-    result = await service.search(FakeEvent(), "q")
+    orig_resolve = svc._resolve_image_request
 
-    assert result.text == "answer"
-    assert processor.calls == []
+    async def _mock_resolve(prompt: str, *, skip: bool = False):
+        skip_seen.append(skip)
+        return await orig_resolve(prompt, skip=skip)
+
+    svc._resolve_image_request = _mock_resolve
+
+    await svc.deliver_generated_images(FakeEvent(), "猫", skip_prompt_processing=True)
+
+    assert skip_seen == [True]
 
 
 # -- concurrency -----------------------------------------------------------
@@ -634,7 +571,10 @@ async def test_image_fallback_exhausts_first_model_retries_before_second(tmp_pat
         FakeResponse(404, body=_model_not_found_body()),
         FakeResponse(200, body=json.dumps({"data": [{"b64_json": image}]})),
     )
-    cfg = _cfg(capability_settings={"image_models": "first\nsecond", "send_media_progress": False})
+    cfg = _cfg(
+        capability_settings={"image_models": "first\nsecond", "send_media_progress": False},
+        advanced_settings={"model_switch_errors": ""},
+    )
     task_events = []
     monkeypatch.setattr(
         "core.service.safe_task_log",
@@ -656,7 +596,7 @@ async def test_image_fallback_exhausts_first_model_retries_before_second(tmp_pat
     assert completed["retry_count"] == 2
 
 
-async def test_image_excluded_model_error_skips_retry_but_keeps_fallback(tmp_path):
+async def test_image_default_switch_error_skips_retry_but_keeps_fallback(tmp_path):
     ws = MediaWorkspace(tmp_path)
     session = FakeSession()
     image = base64.b64encode(_png_bytes()).decode()
@@ -664,10 +604,7 @@ async def test_image_excluded_model_error_skips_retry_but_keeps_fallback(tmp_pat
         FakeResponse(404, body=_model_not_found_body()),
         FakeResponse(200, body=json.dumps({"data": [{"b64_json": image}]})),
     )
-    cfg = _cfg(
-        capability_settings={"image_models": "first\nsecond", "send_media_progress": False},
-        advanced_settings={"retry_excluded_errors": "model_not_found"},
-    )
+    cfg = _cfg(capability_settings={"image_models": "first\nsecond", "send_media_progress": False})
     service, _ = _make_service(ws, cfg=cfg, session=session)
 
     await service.deliver_generated_images(FakeEvent(), "cat")
@@ -685,7 +622,10 @@ async def test_image_model_not_allowed_exhausts_retries_then_falls_back(tmp_path
         FakeResponse(403, body=_model_not_allowed_body()),
         FakeResponse(200, body=json.dumps({"data": [{"b64_json": image}]})),
     )
-    cfg = _cfg(capability_settings={"image_models": "first\nsecond", "send_media_progress": False})
+    cfg = _cfg(
+        capability_settings={"image_models": "first\nsecond", "send_media_progress": False},
+        advanced_settings={"model_switch_errors": ""},
+    )
     service, _ = _make_service(ws, cfg=cfg, session=session)
 
     await service.deliver_generated_images(FakeEvent(), "cat")
@@ -709,7 +649,8 @@ async def test_image_edit_fallback_exhausts_first_model_retries_before_second(tm
         FakeResponse(200, body=json.dumps({"data": [{"b64_json": image}]})),
     )
     cfg = _cfg(
-        capability_settings={"image_edit_models": "first\nsecond", "send_media_progress": False}
+        capability_settings={"image_edit_models": "first\nsecond", "send_media_progress": False},
+        advanced_settings={"model_switch_errors": ""},
     )
     service, _ = _make_service(ws, cfg=cfg, session=session)
     service._find_input_image = AsyncMock(return_value="data:image/png;base64,AAAA")
@@ -735,7 +676,10 @@ async def test_video_fallback_exhausts_first_model_retries_before_second(tmp_pat
         FakeResponse(200, body=json.dumps({"status": "done", "progress": 100})),
     )
     session.responses.append(_StreamResp([b"fake-mp4"]))
-    cfg = _cfg(capability_settings={"video_models": "first\nsecond", "send_media_progress": False})
+    cfg = _cfg(
+        capability_settings={"video_models": "first\nsecond", "send_media_progress": False},
+        advanced_settings={"model_switch_errors": ""},
+    )
     service, _ = _make_service(ws, cfg=cfg, session=session)
 
     await service.deliver_video(FakeEvent(), "make a video")
@@ -1003,16 +947,109 @@ async def test_deliver_video_keeps_file_when_save_media(tmp_path):
 async def test_deliver_video_failed(tmp_path):
     ws = MediaWorkspace(tmp_path)
     s = FakeSession()
-    s.push(FakeResponse(200, body=json.dumps({"request_id": "video_abc"})))
-    s.push(
-        FakeResponse(
-            200, body=json.dumps({"status": "failed", "error": {"code": "quota", "message": "x"}})
-        )
-    )
+    for i in range(3):
+        s.push(FakeResponse(200, body=json.dumps({"request_id": f"video_{i}"})))
+        failed_body = json.dumps({"status": "failed", "error": {"code": "quota", "message": "x"}})
+        s.push(FakeResponse(200, body=failed_body))
     svc, _ = _make_service(ws, session=s)
     with pytest.raises(PluginError) as ei:
         await svc.deliver_video(FakeEvent(), "cat")
-    assert ei.value.code == "video_failed"
+    assert ei.value.code == "media_models_exhausted"
+
+
+async def test_video_recreation_on_failed_status_succeeds_on_second_attempt(tmp_path):
+    ws = MediaWorkspace(tmp_path)
+    s = FakeSession()
+    s.push(FakeResponse(200, body=json.dumps({"request_id": "video_1"})))
+    failed_body = json.dumps(
+        {"status": "failed", "error": {"code": "internal_error", "message": "retry"}}
+    )
+    s.push(FakeResponse(200, body=failed_body))
+    s.push(FakeResponse(200, body=json.dumps({"request_id": "video_2"})))
+    s.push(FakeResponse(200, body=json.dumps({"status": "done", "progress": 100})))
+    s.push(FakeResponse(200, body=b"fake_mp4_content"))
+
+    svc, _ = _make_service(ws, session=s)
+    ev = FakeEvent()
+    await svc.deliver_video(ev, "cat")
+    assert len(ev.sent) == 2
+    post_calls = [call for call in s.calls if call["method"] == "POST"]
+    assert len(post_calls) == 2
+
+
+async def test_video_model_switch_errors_skips_to_next_candidate(tmp_path):
+    ws = MediaWorkspace(tmp_path)
+    s = FakeSession()
+    s.push(FakeResponse(200, body=json.dumps({"request_id": "video_1"})))
+    failed_body = json.dumps(
+        {"status": "failed", "error": {"code": "invalid_prompt", "message": "bad prompt"}}
+    )
+    s.push(FakeResponse(200, body=failed_body))
+    s.push(FakeResponse(200, body=json.dumps({"request_id": "video_2"})))
+    s.push(FakeResponse(200, body=json.dumps({"status": "done", "progress": 100})))
+    s.push(FakeResponse(200, body=b"fake_mp4_content"))
+
+    cfg = _cfg(
+        capability_settings={"video_models": "first\nsecond"},
+        advanced_settings={"model_switch_errors": "invalid_prompt"},
+    )
+    svc, _ = _make_service(ws, cfg=cfg, session=s)
+    ev = FakeEvent()
+    await svc.deliver_video(ev, "cat")
+    assert len(ev.sent) == 2
+    post_calls = [call for call in s.calls if call["method"] == "POST"]
+    assert len(post_calls) == 2
+    assert post_calls[0]["json"]["model"] == "first"
+    assert post_calls[1]["json"]["model"] == "second"
+
+
+async def test_task_timeout_terminates_video_polling(tmp_path):
+    from core.common.deadline import task_deadline_scope
+
+    ws = MediaWorkspace(tmp_path)
+    s = FakeSession()
+    cfg = _cfg(advanced_settings={"task_timeout_seconds": 60})
+    svc, _ = _make_service(ws, cfg=cfg, session=s)
+    with task_deadline_scope(-1.0):
+        with pytest.raises(PluginError) as ei:
+            await svc.deliver_video(FakeEvent(), "cat")
+        assert ei.value.code == "task_timeout"
+
+
+async def test_task_timeout_cancels_running_search(tmp_path):
+    class SlowSearchClient(ScriptedSearchClient):
+        def __init__(self):
+            super().__init__(models=("first", "second"))
+            self.cancelled = False
+
+        async def search(self, query, *, model, **kwargs):
+            del query, kwargs
+            self.search_calls.append(model)
+            try:
+                await asyncio.sleep(10)
+            except asyncio.CancelledError:
+                self.cancelled = True
+                raise
+
+    client = SlowSearchClient()
+    cfg = replace(
+        _cfg(capability_settings={"search_models": "first\nsecond"}),
+        task_timeout_seconds=0.01,
+    )
+    workspace = MediaWorkspace(tmp_path)
+    service = GrokService(
+        cfg,
+        client,
+        workspace,
+        DeliveryAdapter(workspace),
+    )
+
+    with pytest.raises(PluginError) as caught:
+        await service.search(FakeEvent(), "question")
+
+    assert caught.value.code == "task_timeout"
+    assert client.cancelled is True
+    assert client.search_calls == ["first"]
 
 
 # -- close ----------------------------------------------------------------
@@ -1217,6 +1254,11 @@ async def test_empty_successful_catalog_exhausts_without_search_post(tmp_path):
     [
         APIError(404, "model_not_found", "missing"),
         APIError(403, "model_not_allowed", "forbidden"),
+        APIError(401, "auth_error", "bad key"),
+        APIError(429, "rate_limited", "slow down"),
+        APIError(400, "new_upstream_error", "bad request"),
+        APIError(500, "upstream_server_error", "server error"),
+        PluginError("网络失败", code="network_error", retryable=True),
         SearchNotPerformedError(),
     ],
 )
@@ -1241,7 +1283,10 @@ async def test_search_fallback_exhausts_first_model_retries_before_second(tmp_pa
         FakeResponse(404, body=_model_not_found_body()),
         FakeResponse(200, body=_search_response()),
     )
-    cfg = _cfg(capability_settings={"search_models": "first\nsecond"})
+    cfg = _cfg(
+        capability_settings={"search_models": "first\nsecond"},
+        advanced_settings={"model_switch_errors": ""},
+    )
     service, _ = _make_service(ws, cfg=cfg, session=session)
 
     await service.search(FakeEvent(), "question")
@@ -1282,22 +1327,20 @@ async def test_search_not_performed_exhausts_retries_before_next_model(tmp_path)
 @pytest.mark.parametrize(
     "first_error",
     [
-        APIError(401, "auth_error", "bad key"),
-        APIError(429, "rate_limited", "slow down"),
-        APIError(400, "http_error", "bad request"),
-        ProtocolError("协议错误"),
-        PluginError("网络失败", code="network_error"),
-        asyncio.TimeoutError(),
+        PluginError("任务执行超时", code="task_timeout", retryable=False),
+        PluginError("配置错误", code="invalid_config", retryable=False),
+        PluginError("访问拒绝", code="access_denied", retryable=False),
     ],
 )
-async def test_non_model_failures_do_not_advance(tmp_path, first_error):
+async def test_local_failures_do_not_advance(tmp_path, first_error):
     client = ScriptedSearchClient(
         models=("first", "second"),
         search_results=[first_error],
     )
     service = _make_scripted_service(tmp_path, client, ("first", "second"))
-    with pytest.raises(type(first_error)):
+    with pytest.raises(PluginError) as ei:
         await service.search(FakeEvent(), "question")
+    assert ei.value.code == first_error.code
     assert client.search_calls == ["first"]
 
 
