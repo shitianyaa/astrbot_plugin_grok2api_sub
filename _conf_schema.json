@@ -1,6 +1,6 @@
 {
   "connection_settings": {
-    "description": "连接设置：远端 grok2api 地址、API Key、TLS 与代理。",
+    "description": "基础连接：插件开关、远端地址、API Key、TLS 与代理。",
     "type": "object",
     "items": {
       "enabled": {
@@ -38,19 +38,171 @@
         "description": "grok2api 管理面登录用户名。仅用于 /g2面板 只读查询，绝不写入日志。",
         "type": "string",
         "default": "",
+        "invisible": true,
         "hint": "仅 bot 主人接线。泄露即有权读取上游账号与聚合数据。"
       },
       "admin_password": {
         "description": "grok2api 管理面登录密码。仅用于 /g2面板 只读查询，绝不写入日志。",
         "type": "string",
         "default": "",
+        "invisible": true,
         "hint": "泄露即有权读取上游账号与聚合数据；务必只由 bot 主人填写。"
+      },
+      "config_layout_version": {
+        "description": "配置布局版本",
+        "type": "int",
+        "default": 0,
+        "invisible": true
+      }
+    }
+  },
+  "media_settings": {
+    "description": "图片与视频：模型候选、响应格式与生成进度。",
+    "type": "object",
+    "items": {
+      "image_models": {
+        "description": "文生图模型",
+        "type": "text",
+        "default": "grok-imagine-image-lite\ngrok-imagine-image\ngrok-imagine-image-quality",
+        "hint": "每行一个模型名，按上方优先；通常保持默认即可。"
+      },
+      "image_edit_models": {
+        "description": "改图模型",
+        "type": "text",
+        "default": "grok-imagine-image\ngrok-imagine-image-quality",
+        "hint": "每行一个支持图片编辑的模型名，按上方优先。"
+      },
+      "video_models": {
+        "description": "生视频模型",
+        "type": "text",
+        "default": "grok-imagine-video",
+        "hint": "每行一个模型名，按上方优先。"
+      },
+      "image_response_format": {
+        "description": "图片接口响应格式",
+        "type": "string",
+        "default": "b64_json",
+        "options": ["b64_json", "url"],
+        "hint": "两种格式都会先下载或落盘后再发送。"
+      },
+      "send_media_progress": {
+        "description": "生成前发送进度提示",
+        "type": "bool",
+        "default": true,
+        "hint": "覆盖生图、改图和视频；建议保持开启。"
+      }
+    }
+  },
+  "prompt_settings": {
+    "description": "提示词处理：整理、无损优化与角色资料补充。",
+    "type": "object",
+    "items": {
+      "mode": {
+        "description": "提示词处理模式",
+        "type": "string",
+        "default": "off",
+        "options": ["off", "extract", "enhance"],
+        "hint": "关闭=原文直传；整理=只提取参数；优化=无损改写并补全参数。"
+      },
+      "extract_provider_id": {
+        "description": "提示词整理模型",
+        "type": "string",
+        "default": "",
+        "_special": "select_provider",
+        "hint": "仅在“整理”模式使用。"
+      },
+      "enhance_provider_id": {
+        "description": "提示词优化模型",
+        "type": "string",
+        "default": "",
+        "_special": "select_provider",
+        "hint": "仅在“优化”模式使用。"
+      },
+      "character_research_mode": {
+        "description": "角色资料补充",
+        "type": "string",
+        "default": "off",
+        "options": ["off", "auto", "always"],
+        "hint": "关闭=不搜索；自动=识别具名角色后搜索；始终=每次生图/视频都尝试搜索。搜索失败会继续普通优化。"
+      },
+      "disable_prompt_processing_with_reference_image": {
+        "description": "有参考图时跳过提示词处理",
+        "type": "bool",
+        "default": false,
+        "hint": "开启后，改图或带参考图视频直接使用原提示词，不调用提示词模型。"
+      },
+      "fallback_to_original_on_error": {
+        "description": "提示词处理失败时使用原文",
+        "type": "bool",
+        "default": true,
+        "hint": "开启后处理失败不会阻断媒体生成。"
+      }
+    }
+  },
+  "search_settings": {
+    "description": "联网搜索：搜索模型、搜索来源与会话级搜索 Tool。",
+    "type": "object",
+    "items": {
+      "search_models": {
+        "description": "搜索模型",
+        "type": "text",
+        "default": "grok-chat-fast\ngrok-build-0.1\ngrok-4.3\ngrok-4.5\ngrok-4.6\ngrok-composer-2.5-fast\ngrok-4.20-0309-non-reasoning\ngrok-4.20-0309-reasoning\ngrok-4.20-multi-agent-0309",
+        "hint": "每行一个模型名，按上方优先；通常保持默认即可。"
+      },
+      "enable_web_search": {
+        "description": "启用 Web 搜索",
+        "type": "bool",
+        "default": true,
+        "hint": "关闭后不会使用网页搜索。"
+      },
+      "enable_x_search": {
+        "description": "启用 X 搜索",
+        "type": "bool",
+        "default": true,
+        "hint": "关闭后不会使用 X/Twitter 搜索；部分模型本身不支持 X，会自动降级。"
+      },
+      "search_reasoning_effort": {
+        "description": "搜索思考强度",
+        "type": "string",
+        "default": "auto",
+        "options": ["auto", "none", "low", "medium", "high", "xhigh"],
+        "collapsed": true,
+        "hint": "默认 auto；只有需要精细控制搜索耗时或深度时才修改。"
+      },
+      "enable_llm_search_tool": {
+        "description": "注册会话级搜索 Tool",
+        "type": "bool",
+        "default": true,
+        "hint": "开启后由 AstrBot 主模型自行决定是否调用联网搜索。"
+      },
+      "show_search_sources": {
+        "description": "显示搜索来源",
+        "type": "bool",
+        "default": true,
+        "hint": "控制手动搜索和会话级搜索 Tool 的来源展示。"
+      },
+      "max_search_sources": {
+        "description": "最多显示来源数",
+        "type": "int",
+        "default": 5,
+        "slider": { "min": 0, "max": 10, "step": 1 },
+        "collapsed": true,
+        "hint": "设为 0 时不显示来源。"
+      },
+      "max_search_output_chars": {
+        "description": "搜索结果最大长度",
+        "type": "int",
+        "default": 6000,
+        "slider": { "min": 500, "max": 20000, "step": 100 },
+        "collapsed": true,
+        "hint": "超出后会截断正文。"
       }
     }
   },
   "capability_settings": {
     "description": "能力设置：搜索模型候选、图片/视频模型与发送行为。",
     "type": "object",
+    "condition": { "__legacy_config_visible": true },
     "items": {
       "search_models": {
         "description": "联网搜索模型候选，每行一个，上方优先，最多 12 个。留空则搜索能力不可用。",
@@ -153,6 +305,13 @@
             "_special": "select_provider",
             "hint": "仅在优化模式使用；可与整理模型选择不同供应商。"
           },
+          "character_research_mode": {
+            "description": "具名角色资料联网补充模式。",
+            "type": "string",
+            "default": "off",
+            "options": ["off", "auto", "always"],
+            "hint": "off=禁用；auto=自动识别具名角色检索；always=生图/视频均检索；失败软回退普通增强。"
+          },
           "disable_prompt_processing_with_reference_image": {
             "description": "检测到参考图时禁用提示词处理。",
             "type": "bool",
@@ -201,9 +360,260 @@
       }
     }
   },
+  "performance_settings": {
+    "description": "性能与可靠性：任务总时限、阶段超时、并发与重试。",
+    "type": "object",
+    "items": {
+      "timeouts": {
+        "description": "超时设置（通常只需调整任务总超时）",
+        "type": "object",
+        "items": {
+          "task_timeout_seconds": {
+            "description": "单次任务总超时（秒）",
+            "type": "int",
+            "default": 1800,
+            "slider": { "min": 60, "max": 7200, "step": 60 },
+            "hint": "一次请求从排队到发送完成的总时间上限，包含提示词处理、重试、轮询、候选回退和媒体下载。"
+          },
+          "connect_timeout_seconds": {
+            "description": "连接建立超时（秒）",
+            "type": "int",
+            "default": 10,
+            "slider": { "min": 1, "max": 60, "step": 1 },
+            "collapsed": true,
+            "hint": "只限制建立网络连接，不等同于整个请求超时。"
+          },
+          "search_timeout_seconds": {
+            "description": "普通搜索请求超时（秒）",
+            "type": "int",
+            "default": 180,
+            "slider": { "min": 10, "max": 600, "step": 10 },
+            "collapsed": true,
+            "hint": "用于 /g2搜索 和会话级搜索 Tool；角色资料搜索还会受自己的阶段预算限制。"
+          },
+          "image_timeout_seconds": {
+            "description": "生图/改图请求超时（秒）",
+            "type": "int",
+            "default": 300,
+            "slider": { "min": 30, "max": 900, "step": 30 },
+            "collapsed": true
+          },
+          "video_create_timeout_seconds": {
+            "description": "视频创建请求超时（秒）",
+            "type": "int",
+            "default": 120,
+            "slider": { "min": 10, "max": 600, "step": 10 },
+            "collapsed": true
+          },
+          "video_poll_timeout_seconds": {
+            "description": "视频状态查询超时（秒）",
+            "type": "int",
+            "default": 30,
+            "slider": { "min": 1, "max": 600, "step": 1 },
+            "collapsed": true,
+            "hint": "单次状态查询的上限，不是整个视频任务的上限。"
+          },
+          "video_poll_interval_seconds": {
+            "description": "视频状态轮询间隔（秒）",
+            "type": "int",
+            "default": 3,
+            "slider": { "min": 1, "max": 30, "step": 1 },
+            "collapsed": true
+          },
+          "download_timeout_seconds": {
+            "description": "媒体下载超时（秒）",
+            "type": "int",
+            "default": 300,
+            "slider": { "min": 30, "max": 1800, "step": 30 },
+            "collapsed": true
+          },
+          "prompt_processing_timeout_seconds": {
+            "description": "提示词处理超时（秒）",
+            "type": "int",
+            "default": 15,
+            "slider": { "min": 1, "max": 60, "step": 1 },
+            "collapsed": true,
+            "hint": "提示词整理/优化或搜索结果整理模型的上限。"
+          },
+          "character_research_timeout_seconds": {
+            "description": "角色资料补充超时（秒）",
+            "type": "int",
+            "default": 20,
+            "slider": { "min": 5, "max": 60, "step": 1 },
+            "collapsed": true,
+            "hint": "角色资料搜索的独立上限；超时后自动继续普通提示词优化。"
+          }
+        }
+      },
+      "reliability": {
+        "description": "并发与重试",
+        "type": "object",
+        "collapsed": true,
+        "items": {
+          "max_concurrent_searches": {
+            "description": "同时进行的搜索数",
+            "type": "int",
+            "default": 4,
+            "slider": { "min": 1, "max": 16, "step": 1 }
+          },
+          "max_concurrent_media_jobs": {
+            "description": "同时进行的媒体任务数",
+            "type": "int",
+            "default": 2,
+            "slider": { "min": 1, "max": 8, "step": 1 }
+          },
+          "model_retry_count": {
+            "description": "普通请求额外重试次数",
+            "type": "int",
+            "default": 2,
+            "slider": { "min": 0, "max": 5, "step": 1 },
+            "hint": "用于搜索、生图、改图、模型目录和图片下载，不含首次请求。"
+          },
+          "video_retry_count": {
+            "description": "视频任务额外重试次数",
+            "type": "int",
+            "default": 2,
+            "slider": { "min": 0, "max": 5, "step": 1 },
+            "hint": "用于视频创建、状态轮询和视频下载，不含首次请求。"
+          },
+          "retry_base_delay_seconds": {
+            "description": "重试基础等待（秒）",
+            "type": "float",
+            "default": 0.5,
+            "slider": { "min": 0.1, "max": 5.0, "step": 0.1 }
+          },
+          "model_switch_errors": {
+            "description": "立即切换模型的错误",
+            "type": "string",
+            "default": "401,403,404,429,auth_error,not_found,rate_limited,model_not_found,model_not_allowed",
+            "hint": "英文逗号分隔；命中后跳过当前模型剩余重试。通常保持默认。"
+          }
+        }
+      }
+    }
+  },
+  "storage_settings": {
+    "description": "文件与缓存：媒体大小限制、保存策略和临时文件清理。",
+    "type": "object",
+    "items": {
+      "max_input_image_mb": {
+        "description": "输入图片大小上限（MiB）",
+        "type": "int",
+        "default": 12,
+        "slider": { "min": 1, "max": 24, "step": 1 }
+      },
+      "max_image_download_mb": {
+        "description": "图片下载大小上限（MiB）",
+        "type": "int",
+        "default": 25,
+        "slider": { "min": 1, "max": 100, "step": 1 }
+      },
+      "max_video_download_mb": {
+        "description": "视频下载大小上限（MiB）",
+        "type": "int",
+        "default": 190,
+        "slider": { "min": 1, "max": 200, "step": 1 },
+        "hint": "低于 QQ Official 的 200 MiB 硬上限。"
+      },
+      "save_media": {
+        "description": "发送后保留生成媒体",
+        "type": "bool",
+        "default": false,
+        "hint": "关闭时发送后删除；开启后移动到 archive/ 保存。"
+      },
+      "temp_retention_hours": {
+        "description": "临时媒体保留时间（小时）",
+        "type": "int",
+        "default": 24,
+        "slider": { "min": 1, "max": 168, "step": 1 }
+      }
+    }
+  },
+  "panel_settings": {
+    "description": "管理面板：账号、统计内容与定时推送。",
+    "type": "object",
+    "items": {
+      "admin_username": {
+        "description": "管理面用户名",
+        "type": "string",
+        "default": "",
+        "hint": "仅 /g2面板 使用；不填则面板管理接口不可用。"
+      },
+      "admin_password": {
+        "description": "管理面密码",
+        "type": "string",
+        "default": "",
+        "hint": "仅 /g2面板 使用；不会写入日志。"
+      },
+      "panel_period": {
+        "description": "统计周期",
+        "type": "string",
+        "default": "7d",
+        "options": ["24h", "7d", "30d", "90d"],
+        "hint": "同时用于请求审计汇总和按模型统计。"
+      },
+      "panel_sections": {
+        "description": "面板显示内容",
+        "type": "list",
+        "default": ["账号池", "图片库", "视频库", "请求审计汇总", "按模型统计"],
+        "options": ["账号池", "图片库", "视频库", "请求审计汇总", "按模型统计"],
+        "hint": "取消勾选的内容不会被拉取。"
+      },
+      "panel_t2i_enabled": {
+        "description": "面板使用图片渲染",
+        "type": "bool",
+        "default": true,
+        "hint": "关闭后发送纯文本面板。"
+      },
+      "panel_resolution": {
+        "description": "面板图片分辨率",
+        "type": "string",
+        "default": "1080p",
+        "options": ["720p", "1080p", "1440p"]
+      },
+      "panel_push_targets": {
+        "description": "固定推送目标",
+        "type": "template_list",
+        "templates": {
+          "umo_target": {
+            "name": "固定 UMO 目标",
+            "items": {
+              "umo": { "description": "目标 UMO", "type": "string", "default": "" },
+              "enabled": { "description": "启用", "type": "bool", "default": true }
+            }
+          }
+        },
+        "default": [],
+        "hint": "格式为 platform:message_type:session_id。"
+      },
+      "panel_cron_enabled": {
+        "description": "启用 Cron 定时推送",
+        "type": "bool",
+        "default": false
+      },
+      "panel_cron_expression": {
+        "description": "Cron 表达式",
+        "type": "string",
+        "default": "0 9 * * *",
+        "hint": "五段格式：分 时 日 月 周。"
+      },
+      "panel_interval_enabled": {
+        "description": "启用间隔推送",
+        "type": "bool",
+        "default": false
+      },
+      "panel_interval_minutes": {
+        "description": "间隔推送分钟数",
+        "type": "int",
+        "default": 30,
+        "slider": { "min": 1, "max": 1440, "step": 1 }
+      }
+    }
+  },
   "advanced_settings": {
     "description": "高级设置：超时、并发、媒体大小与日志。",
     "type": "object",
+    "condition": { "__legacy_config_visible": true },
     "items": {
       "connect_timeout_seconds": {
         "description": "TCP 连接超时（秒）。",
@@ -260,6 +670,13 @@
         "default": 15,
         "slider": { "min": 1, "max": 60, "step": 1 },
         "hint": "整理或优化失败时媒体生成终止；/g2搜索 整理失败时发送原始搜索结果。"
+      },
+      "character_research_timeout_seconds": {
+        "description": "角色资料搜索超时（秒）。",
+        "type": "int",
+        "default": 20,
+        "slider": { "min": 5, "max": 60, "step": 1 },
+        "hint": "单次角色事实检索上限；超时后自动继续普通提示词增强。"
       },
       "max_input_image_mb": {
         "description": "改图输入图片最大体积（MiB）。",

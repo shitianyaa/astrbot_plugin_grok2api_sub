@@ -64,7 +64,7 @@
 
 ## `/g2面板`（别名 `/grok2面板`，需 AstrBot ADMIN）
 
-- 按 `advanced_settings.panel_sections` 所选块，以 `panel_period` 为区间发送账号池、图片库、视频库、请求审计汇总、按模型统计的聚合。仅 AstrBot 管理员可用。
+- 按 `panel_settings.panel_sections` 所选块，以 `panel_settings.panel_period` 为区间发送账号池、图片库、视频库、请求审计汇总、按模型统计的聚合。仅 AstrBot 管理员可用。
 - 不需要 API Key：只要配置了 `admin_username`/`admin_password` 与 `api_base_url` 即可使用（管理面凭据与搜索 API Key 相互独立）。
 - `panel_sections` 留空时发送一条"未启用任何面板数据块"的说明，不发起任何管理请求。
 - 只读管理端点；数据取自脱敏聚合，不输出账号邮箱、API Key 名、请求 ID 或原始审计记录。
@@ -81,7 +81,7 @@
 
 ## 面板定时推送
 
-- 在 `advanced_settings` 同时提供全局五段 Cron 和从每日 00:00 对齐的间隔分钟数，二者可以同时启用。
+- 在 `panel_settings` 同时提供全局五段 Cron 和从每日 00:00 对齐的间隔分钟数，二者可以同时启用。
 - 固定配置目标与命令订阅目标合并去重；相同 UMO 在同一自然分钟只尝试发送一次。
 - 定时任务直接调用面板取数、T2I 和 `Context.send_message`，不请求 AstrBot 主 LLM。平台无法恢复已订阅会话时发送会失败且不自动重试；QQ Official 在重启后通常需要目标会话先有一条入站消息供 AstrBot 恢复场景。
 

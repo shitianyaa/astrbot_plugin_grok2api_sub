@@ -44,6 +44,11 @@ from .observability import (
     task_retry_count,
 )
 from .platform import PlatformKind, resolve_platform
+from .prompt_fidelity import (
+    clean_and_truncate_reference,
+    fidelity_check,
+    should_research_character,
+)
 from .prompt_processor import PromptProcessor
 from .sender import DeliveryAdapter, DeliveryError
 from .transport import HTTPTransport, RetryPolicy, SleepFn
@@ -74,6 +79,8 @@ __all__ = [
     "_sanitize_user_message",
     "check_access",
     "check_task_deadline",
+    "clean_and_truncate_reference",
+    "fidelity_check",
     "get_task_deadline",
     "operation_scope",
     "record_task_attempt",
@@ -88,6 +95,7 @@ __all__ = [
     "sanitize_diagnostic",
     "sanitize_prompt_json",
     "set_task_deadline",
+    "should_research_character",
     "task_attempts",
     "task_candidate_attempts",
     "task_deadline_scope",

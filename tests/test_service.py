@@ -7,6 +7,7 @@ import base64
 import json
 import logging
 from dataclasses import replace
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
@@ -459,12 +460,19 @@ async def test_service_forwards_resolved_image_and_video_parameters(tmp_path):
     from core.models import ImageGenerationRequest, VideoGenerationRequest
 
     class Processor:
-        async def resolve_image(self, _prompt):
+        async def resolve_image(self, _prompt, *, character_reference=""):
             return ImageGenerationRequest(
                 prompt="enhanced image", aspect_ratio="9:16", resolution="2k"
             )
 
-        async def resolve_video(self, _prompt, *, has_reference_image, reference_aspect_ratio):
+        async def resolve_video(
+            self,
+            _prompt,
+            *,
+            has_reference_image,
+            reference_aspect_ratio,
+            character_reference="",
+        ):
             assert has_reference_image is False
             assert reference_aspect_ratio == ""
             return VideoGenerationRequest(
@@ -509,7 +517,7 @@ async def test_service_forwards_resolved_image_and_video_parameters(tmp_path):
 
 async def test_prompt_processing_error_stops_before_image_request(tmp_path):
     class Processor:
-        async def resolve_image(self, _prompt):
+        async def resolve_image(self, _prompt, *, character_reference=""):
             raise PluginError("invalid prompt parameters", code="prompt_processing_invalid")
 
     ws = MediaWorkspace(tmp_path)
@@ -850,7 +858,14 @@ async def test_deliver_video_prefers_explicit_url_and_hides_it_from_logs(tmp_pat
         def __init__(self):
             self.calls = []
 
-        async def resolve_video(self, prompt, *, has_reference_image, reference_aspect_ratio):
+        async def resolve_video(
+            self,
+            prompt,
+            *,
+            has_reference_image,
+            reference_aspect_ratio,
+            character_reference="",
+        ):
             self.calls.append((prompt, has_reference_image, reference_aspect_ratio))
             return VideoGenerationRequest(prompt="enhanced dance", duration=6)
 
@@ -889,7 +904,14 @@ async def test_deliver_video_without_reference_uses_global_path_and_omits_image(
         def __init__(self):
             self.calls = []
 
-        async def resolve_video(self, prompt, *, has_reference_image, reference_aspect_ratio):
+        async def resolve_video(
+            self,
+            prompt,
+            *,
+            has_reference_image,
+            reference_aspect_ratio,
+            character_reference="",
+        ):
             self.calls.append((prompt, has_reference_image, reference_aspect_ratio))
             return VideoGenerationRequest(prompt=prompt, duration=6)
 
@@ -1591,3 +1613,429 @@ async def test_panel_block_failure_does_not_block_other_blocks(tmp_path):
     calls_a = len(s.calls)
     await svc.build_panel(FakeEvent())
     assert len(s.calls) > calls_a
+
+
+# -- Character research orchestration and soft fallback tests --------------
+class RecordingPromptProcessor:
+    def __init__(self):
+        self.image_calls: list[dict[str, object]] = []
+        self.video_calls: list[dict[str, object]] = []
+        self.edit_calls: list[dict[str, object]] = []
+
+    async def resolve_image(self, prompt: str, *, character_reference: str = ""):
+        self.image_calls.append({"prompt": prompt, "character_reference": character_reference})
+        from core.models import ImageGenerationRequest
+
+        return ImageGenerationRequest(prompt=prompt)
+
+    async def resolve_video(
+        self,
+        prompt: str,
+        *,
+        has_reference_image: bool = False,
+        reference_aspect_ratio: str = "",
+        character_reference: str = "",
+    ):
+        self.video_calls.append(
+            {
+                "prompt": prompt,
+                "has_reference_image": has_reference_image,
+                "reference_aspect_ratio": reference_aspect_ratio,
+                "character_reference": character_reference,
+            }
+        )
+        from core.models import VideoGenerationRequest
+
+        return VideoGenerationRequest(prompt=prompt, aspect_ratio=reference_aspect_ratio)
+
+    async def resolve_image_edit(self, prompt: str, *, has_reference_image: bool = True):
+        self.edit_calls.append({"prompt": prompt, "has_reference_image": has_reference_image})
+        return prompt
+
+
+def _character_search_response(
+    text: str = "Character: Furina\nHair: White\nClothing: Blue suit",
+) -> str:
+    return json.dumps(
+        {
+            "id": "resp-char",
+            "model": "grok-4.5",
+            "status": "completed",
+            "output": [
+                {
+                    "type": "web_search_call",
+                    "status": "completed",
+                    "action": {"sources": [{"url": "https://example.com/furina"}]},
+                },
+                {"type": "message", "content": [{"type": "output_text", "text": text}]},
+            ],
+        }
+    )
+
+
+async def test_character_research_propagates_hard_task_timeout(tmp_path):
+    svc, _ = _make_service(MediaWorkspace(tmp_path))
+    svc._search_with_fallback = AsyncMock(
+        side_effect=PluginError("任务执行超时", code="task_timeout", retryable=False)
+    )
+
+    with pytest.raises(PluginError) as caught:
+        await svc._research_character_visuals("画芙宁娜")
+
+    assert caught.value.code == "task_timeout"
+
+
+async def test_character_research_uses_search_concurrency_limit(tmp_path):
+    cfg = _cfg(advanced_settings={"max_concurrent_searches": 1})
+    svc, _ = _make_service(MediaWorkspace(tmp_path), cfg=cfg)
+    active = 0
+    peak = 0
+
+    async def fake_search(*args, **kwargs):
+        nonlocal active, peak
+        active += 1
+        peak = max(peak, active)
+        await asyncio.sleep(0.01)
+        active -= 1
+        return SimpleNamespace(
+            value=SearchResult(
+                response_id="r",
+                model="m",
+                status="completed",
+                text="Furina visual facts",
+                sources=(),
+                search_performed=True,
+            )
+        )
+
+    svc._search_with_fallback = fake_search
+    await asyncio.gather(
+        svc._research_character_visuals("画芙宁娜"),
+        svc._research_character_visuals("画雷电将军"),
+    )
+
+    assert peak == 1
+
+
+async def test_character_research_discards_incomplete_results(tmp_path):
+    svc, _ = _make_service(MediaWorkspace(tmp_path))
+    svc._search_with_fallback = AsyncMock(
+        return_value=SimpleNamespace(
+            value=SearchResult(
+                response_id="r",
+                model="m",
+                status="incomplete",
+                text="partial facts",
+                sources=(),
+                search_performed=True,
+                incomplete=True,
+            )
+        )
+    )
+
+    assert await svc._research_character_visuals("画芙宁娜") == ""
+
+
+async def test_character_research_triggered_on_named_character_in_auto_mode(tmp_path):
+    ws = MediaWorkspace(tmp_path)
+    s = FakeSession()
+    s.push(FakeResponse(200, body=json.dumps({"data": [{"id": "grok-4.5"}]})))
+    s.push(FakeResponse(200, body=_character_search_response("Character: Furina\nHair: White")))
+    image_b64 = base64.b64encode(_png_bytes()).decode()
+    s.push(FakeResponse(200, body=json.dumps({"data": [{"b64_json": image_b64}]})))
+
+    cfg = _cfg(
+        capability_settings={
+            "send_media_progress": False,
+            "prompt_processing": {
+                "mode": "enhance",
+                "character_research_mode": "auto",
+            },
+        }
+    )
+    processor = RecordingPromptProcessor()
+    svc, _ = _make_service(ws, cfg, session=s, prompt_processor=processor)
+
+    await svc.deliver_generated_images(FakeEvent(), "画《原神》里的芙宁娜")
+
+    assert len(processor.image_calls) == 1
+    assert processor.image_calls[0]["prompt"] == "画《原神》里的芙宁娜"
+    assert "Furina" in processor.image_calls[0]["character_reference"]
+    assert "White" in processor.image_calls[0]["character_reference"]
+    # Check that search call was made with the user prompt
+    search_call = next(c for c in s.calls if c["url"].endswith("/v1/responses"))
+    assert "<USER_PROMPT>" in search_call["json"]["input"]
+    assert "芙宁娜" in search_call["json"]["input"]
+
+
+async def test_character_research_triggered_in_always_mode(tmp_path):
+    ws = MediaWorkspace(tmp_path)
+    s = FakeSession()
+    s.push(FakeResponse(200, body=json.dumps({"data": [{"id": "grok-4.5"}]})))
+    s.push(FakeResponse(200, body=_character_search_response("Visuals: Red Apple")))
+    image_b64 = base64.b64encode(_png_bytes()).decode()
+    s.push(FakeResponse(200, body=json.dumps({"data": [{"b64_json": image_b64}]})))
+
+    cfg = _cfg(
+        capability_settings={
+            "send_media_progress": False,
+            "prompt_processing": {
+                "mode": "enhance",
+                "character_research_mode": "always",
+            },
+        }
+    )
+    processor = RecordingPromptProcessor()
+    svc, _ = _make_service(ws, cfg, session=s, prompt_processor=processor)
+
+    await svc.deliver_generated_images(FakeEvent(), "一个红苹果")
+
+    assert len(processor.image_calls) == 1
+    assert processor.image_calls[0]["character_reference"] == "Visuals: Red Apple"
+
+
+async def test_character_research_skipped_in_off_mode(tmp_path):
+    ws = MediaWorkspace(tmp_path)
+    s = FakeSession()
+    image_b64 = base64.b64encode(_png_bytes()).decode()
+    s.push(FakeResponse(200, body=json.dumps({"data": [{"b64_json": image_b64}]})))
+
+    cfg = _cfg(
+        capability_settings={
+            "send_media_progress": False,
+            "prompt_processing": {
+                "mode": "enhance",
+                "character_research_mode": "off",
+            },
+        }
+    )
+    processor = RecordingPromptProcessor()
+    svc, _ = _make_service(ws, cfg, session=s, prompt_processor=processor)
+
+    await svc.deliver_generated_images(FakeEvent(), "画《原神》里的芙宁娜")
+
+    assert len(processor.image_calls) == 1
+    assert processor.image_calls[0]["character_reference"] == ""
+    assert not any(c["url"].endswith("/v1/responses") for c in s.calls)
+
+
+async def test_character_research_skipped_for_generic_prompt_in_auto_mode(tmp_path):
+    ws = MediaWorkspace(tmp_path)
+    s = FakeSession()
+    image_b64 = base64.b64encode(_png_bytes()).decode()
+    s.push(FakeResponse(200, body=json.dumps({"data": [{"b64_json": image_b64}]})))
+
+    cfg = _cfg(
+        capability_settings={
+            "send_media_progress": False,
+            "prompt_processing": {
+                "mode": "enhance",
+                "character_research_mode": "auto",
+            },
+        }
+    )
+    processor = RecordingPromptProcessor()
+    svc, _ = _make_service(ws, cfg, session=s, prompt_processor=processor)
+
+    await svc.deliver_generated_images(FakeEvent(), "一个女孩在雨中散步")
+
+    assert len(processor.image_calls) == 1
+    assert processor.image_calls[0]["character_reference"] == ""
+    assert not any(c["url"].endswith("/v1/responses") for c in s.calls)
+
+
+async def test_character_research_skipped_in_extract_mode(tmp_path):
+    ws = MediaWorkspace(tmp_path)
+    s = FakeSession()
+    image_b64 = base64.b64encode(_png_bytes()).decode()
+    s.push(FakeResponse(200, body=json.dumps({"data": [{"b64_json": image_b64}]})))
+
+    cfg = _cfg(
+        capability_settings={
+            "send_media_progress": False,
+            "prompt_processing": {
+                "mode": "extract",
+                "character_research_mode": "always",
+            },
+        }
+    )
+    processor = RecordingPromptProcessor()
+    svc, _ = _make_service(ws, cfg, session=s, prompt_processor=processor)
+
+    await svc.deliver_generated_images(FakeEvent(), "画《原神》里的芙宁娜 16:9")
+
+    assert len(processor.image_calls) == 1
+    assert processor.image_calls[0]["character_reference"] == ""
+    assert not any(c["url"].endswith("/v1/responses") for c in s.calls)
+
+
+async def test_character_research_skipped_when_reference_image_present_in_video(tmp_path):
+    ws = MediaWorkspace(tmp_path)
+    s = FakeSession()
+    s.push(FakeResponse(200, body=json.dumps({"request_id": "video_abc"})))
+    s.push(FakeResponse(200, body=json.dumps({"status": "done", "progress": 100})))
+    s.responses.append(_StreamResp([b"fake-mp4"]))
+
+    cfg = _cfg(
+        capability_settings={
+            "send_media_progress": False,
+            "prompt_processing": {
+                "mode": "enhance",
+                "character_research_mode": "always",
+            },
+        }
+    )
+    processor = RecordingPromptProcessor()
+    svc, _ = _make_service(ws, cfg, session=s, prompt_processor=processor)
+
+    await svc.deliver_video(
+        FakeEvent(),
+        "画《原神》里的芙宁娜跳舞",
+        reference_image_url="https://example.com/ref.jpg",
+    )
+
+    assert len(processor.video_calls) == 1
+    assert processor.video_calls[0]["has_reference_image"] is True
+    assert processor.video_calls[0]["character_reference"] == ""
+    assert not any(c["url"].endswith("/v1/responses") for c in s.calls)
+
+
+async def test_character_research_triggered_in_video_without_reference_image(tmp_path):
+    ws = MediaWorkspace(tmp_path)
+    s = FakeSession()
+    s.push(FakeResponse(200, body=json.dumps({"data": [{"id": "grok-4.5"}]})))
+    s.push(FakeResponse(200, body=_character_search_response("Character: Furina Visuals")))
+    s.push(FakeResponse(200, body=json.dumps({"request_id": "video_abc"})))
+    s.push(FakeResponse(200, body=json.dumps({"status": "done", "progress": 100})))
+    s.responses.append(_StreamResp([b"fake-mp4"]))
+
+    cfg = _cfg(
+        capability_settings={
+            "send_media_progress": False,
+            "prompt_processing": {
+                "mode": "enhance",
+                "character_research_mode": "auto",
+            },
+        }
+    )
+    processor = RecordingPromptProcessor()
+    svc, _ = _make_service(ws, cfg, session=s, prompt_processor=processor)
+
+    await svc.deliver_video(FakeEvent(), "画《原神》里的芙宁娜跳舞")
+
+    assert len(processor.video_calls) == 1
+    assert processor.video_calls[0]["has_reference_image"] is False
+    assert "Furina Visuals" in processor.video_calls[0]["character_reference"]
+
+
+async def test_character_research_skipped_in_image_edit(tmp_path):
+    ws = MediaWorkspace(tmp_path)
+    s = FakeSession()
+    image_b64 = base64.b64encode(_png_bytes()).decode()
+    s.push(FakeResponse(200, body=json.dumps({"data": [{"b64_json": image_b64}]})))
+
+    cfg = _cfg(
+        capability_settings={
+            "send_media_progress": False,
+            "prompt_processing": {
+                "mode": "enhance",
+                "character_research_mode": "always",
+            },
+        }
+    )
+    processor = RecordingPromptProcessor()
+    svc, _ = _make_service(ws, cfg, session=s, prompt_processor=processor)
+    svc._find_input_image = AsyncMock(return_value="data:image/png;base64,AAAA")
+
+    await svc.deliver_edited_image(FakeEvent(), "把《原神》里的芙宁娜衣服变成红色")
+
+    assert len(processor.edit_calls) == 1
+    assert not any(c["url"].endswith("/v1/responses") for c in s.calls)
+
+
+async def test_character_research_error_soft_fallback(tmp_path):
+    ws = MediaWorkspace(tmp_path)
+    s = FakeSession()
+    s.push(FakeResponse(200, body=json.dumps({"data": [{"id": "grok-4.5"}]})))
+    # Search returns 500 error (3 attempts: initial + 2 retries)
+    err_body = json.dumps({"error": {"code": "internal_error", "message": "fail"}})
+    s.push(FakeResponse(500, body=err_body))
+    s.push(FakeResponse(500, body=err_body))
+    s.push(FakeResponse(500, body=err_body))
+    image_b64 = base64.b64encode(_png_bytes()).decode()
+    s.push(FakeResponse(200, body=json.dumps({"data": [{"b64_json": image_b64}]})))
+
+    cfg = _cfg(
+        capability_settings={
+            "send_media_progress": False,
+            "prompt_processing": {
+                "mode": "enhance",
+                "character_research_mode": "auto",
+            },
+        }
+    )
+    processor = RecordingPromptProcessor()
+    svc, _ = _make_service(ws, cfg, session=s, prompt_processor=processor)
+
+    # Must NOT raise exception; should complete image delivery with empty reference
+    await svc.deliver_generated_images(FakeEvent(), "画《原神》里的芙宁娜")
+
+    assert len(processor.image_calls) == 1
+    assert processor.image_calls[0]["character_reference"] == ""
+
+
+async def test_character_research_no_named_character_drops_reference(tmp_path):
+    ws = MediaWorkspace(tmp_path)
+    s = FakeSession()
+    s.push(FakeResponse(200, body=json.dumps({"data": [{"id": "grok-4.5"}]})))
+    s.push(FakeResponse(200, body=_character_search_response("NO_NAMED_CHARACTER")))
+    image_b64 = base64.b64encode(_png_bytes()).decode()
+    s.push(FakeResponse(200, body=json.dumps({"data": [{"b64_json": image_b64}]})))
+
+    cfg = _cfg(
+        capability_settings={
+            "send_media_progress": False,
+            "prompt_processing": {
+                "mode": "enhance",
+                "character_research_mode": "auto",
+            },
+        }
+    )
+    processor = RecordingPromptProcessor()
+    svc, _ = _make_service(ws, cfg, session=s, prompt_processor=processor)
+
+    await svc.deliver_generated_images(FakeEvent(), "画《某个未知名角色》")
+
+    assert len(processor.image_calls) == 1
+    assert processor.image_calls[0]["character_reference"] == ""
+
+
+async def test_character_research_low_budget_skips_immediately(tmp_path, monkeypatch):
+    ws = MediaWorkspace(tmp_path)
+    s = FakeSession()
+    image_b64 = base64.b64encode(_png_bytes()).decode()
+    s.push(FakeResponse(200, body=json.dumps({"data": [{"b64_json": image_b64}]})))
+
+    cfg = _cfg(
+        capability_settings={
+            "send_media_progress": False,
+            "prompt_processing": {
+                "mode": "enhance",
+                "character_research_mode": "auto",
+            },
+        },
+        advanced_settings={
+            "character_research_timeout_seconds": 5,
+        },
+    )
+    processor = RecordingPromptProcessor()
+    svc, _ = _make_service(ws, cfg, session=s, prompt_processor=processor)
+
+    # Mock remaining_task_timeout to return 0.2s (< 0.5s)
+    monkeypatch.setattr("core.service.remaining_task_timeout", lambda _d: 0.2)
+
+    await svc.deliver_generated_images(FakeEvent(), "画《原神》里的芙宁娜")
+
+    assert len(processor.image_calls) == 1
+    assert processor.image_calls[0]["character_reference"] == ""
+    assert not any(c["url"].endswith("/v1/responses") for c in s.calls)

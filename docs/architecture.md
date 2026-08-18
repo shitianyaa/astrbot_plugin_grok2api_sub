@@ -26,7 +26,7 @@ assets/ (静态资源)
 
 - 三套固定 system prompt 分别用于图片参数、视频参数和通用媒体优化；用户内容以 JSON 数据体传给 `Context.llm_generate()`，而不是插入 system prompt。带参考图的改图/视频仅额外传入 `reference_image_present` 布尔值，绝不传入图片、data URL、外链 URL 或签名 query。
 - 返回内容必须是无多余字段的 JSON。比例、图片 `1k/2k`、视频 `6/10/15` 秒和 `480p/720p/1080p` 逐项白名单校验；模型异常、工具调用响应、超时或格式错误都会在 grok2api 生成请求前终止本次命令。
-- `prompt_processing.disable_prompt_processing_with_reference_image=true` 时，检测到改图消息图片或视频消息图片/显式 URL 参考图会强制使用 `off`；因此不会调用文本模型，关闭时则完全遵循全局模式。
+- `prompt_settings.disable_prompt_processing_with_reference_image=true` 时，检测到改图消息图片或视频消息图片/显式 URL 参考图会强制使用 `off`；因此不会调用文本模型，关闭时则完全遵循全局模式。
 - 消息或回复中的视频参考图在 Pillow 校验和归一化时保留宽高；若处理器没有返回比例，服务层以固定白名单选择最近比例。显式 URL 保持不透明转发，不下载、不读取尺寸。
 - `prompt_processor.py` 的内部处理过程均在 DEBUG 记录。用户启用 `extract` 或 `enhance` 且输出通过严格校验后，会额外写入一条本地 `prompt_processing_resolved`，包含实际发送的 `prompt` 与媒体参数 JSON，便于核对质量；自动填入的本地参考图比例会在该日志前合并。直传模式、原始输入、失败输出和 provider 标识不记录。该 JSON 会继续脱敏 API Key、Bearer/JWT、密码/secret 赋值、代理 userinfo 与 Base64。
 
@@ -36,7 +36,7 @@ assets/ (静态资源)
 
 ```text
 AstrBot WebUI 配置
-  -> PluginConfig（admin_username / admin_password / panel_period / panel_sections）
+  -> PluginConfig（panel_settings.admin_username / panel_settings.admin_password / panel_settings.panel_period / panel_settings.panel_sections）
   -> AdminClient（login -> 缓存 Bearer GET -> 401 refresh -> 单次重放）
   -> GrokService.build_panel()
   -> PanelReport（汇总字段 + 脱敏审计行为聚合）
@@ -86,7 +86,7 @@ Provider；无论选哪个 Provider，插件都以完成态 `web_search_call` �
 
 ## 多模型搜索与媒体回退矩阵
 
-`capability_settings.search_models`、`image_models`、`image_edit_models`、`video_models` 按多行、上方优先配置有序候选。每次任务
+`search_settings.search_models`、`media_settings.image_models`、`media_settings.image_edit_models`、`media_settings.video_models` 按多行、上方优先配置有序候选。每次任务
 都从配置第一项开始，**不**根据历史成功率/延迟/费用动态排序，**不**把成功模型
 写回配置。
 

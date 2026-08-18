@@ -29,13 +29,13 @@ AstrBot 管理员命令
 |---|---|---|
 | `connection_settings` | `enabled` | `true` |
 | `connection_settings` | `api_base_url` | grok2api 根地址，不带 `/v1` |
-| `connection_settings` | `admin_username` / `admin_password` | 管理面登录凭据；不填入 API Key、JWT 或 SSO/OAuth |
+| `panel_settings` | `admin_username` / `admin_password` | 管理面登录凭据；不填入 API Key、JWT 或 SSO/OAuth |
 | `connection_settings` | `verify_tls` | 正式证书使用 `true` |
 | `connection_settings` | `client_proxy_url` | 需要代理时填写；管理面和背景请求共用 |
-| `advanced_settings` | `panel_period` | 选 `24h`、`7d`、`30d` 或 `90d`；默认 `7d` |
-| `advanced_settings` | `panel_sections` | 首次全选：账号池、图片库、视频库、请求审计汇总、按模型统计 |
-| `advanced_settings` | `panel_t2i_enabled` | `true`，用于图片路径；后续关闭以验证文本回退 |
-| `advanced_settings` | `panel_resolution` | 默认 `1080p`；也可选 `720p` 或 `1440p` |
+| `panel_settings` | `panel_period` | 选 `24h`、`7d`、`30d` 或 `90d`；默认 `7d` |
+| `panel_settings` | `panel_sections` | 首次全选：账号池、图片库、视频库、请求审计汇总、按模型统计 |
+| `panel_settings` | `panel_t2i_enabled` | `true`，用于图片路径；后续关闭以验证文本回退 |
+| `panel_settings` | `panel_resolution` | 默认 `1080p`；也可选 `720p` 或 `1440p` |
 首次验证不要填写 `panel_push_targets`，也不要启用 Cron 或间隔推送，避免向非测试会话发送。
 
 ## 3. 命令全链路验收
@@ -103,7 +103,7 @@ AstrBot 管理员命令
 
 ### 固定目标与 Cron
 
-在 `advanced_settings.panel_push_targets` 中仅添加测试 UMO，并启用：
+在 `panel_settings.panel_push_targets` 中仅添加测试 UMO，并启用：
 
 | 字段 | 建议测试值 |
 |---|---|

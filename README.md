@@ -54,7 +54,7 @@
 | 场景 | 能力与行为 |
 |---|---|
 | 实时搜索 | 手动指令 `/g2搜索` 强制联网检索；大模型 Tool（`grok2api_web_search`）会话级自动调用；默认 Web/X 双引擎检索，由会话模型整理正文并追加引用来源 |
-| 生图与改图 | 单/多张文生图；基于附图或回复链消息的局部改图；支持原文直传、参数提取与 LLM 提示词优化 |
+| 生图与改图 | 单/多张文生图；基于附图或回复链消息的局部改图；支持原文直传、参数提取与大模型无损提示词优化及角色视觉资料联网补充 |
 | 视频生成 | 文生短视频与参考图引导生视频；自动将输入图片尺寸对齐到最近的合法比例（`16:9`、`9:16`、`4:3` 等） |
 | 监控看板 | `/g2面板` 聚合账号池、媒体库与审计趋势；经 AstrBot T2I 渲染输出 1080p 磨砂玻璃卡片；支持会话定时订阅与 Cron 推送 |
 | 平台适配 | 原生适配 **OneBot / aiocqhttp / NapCat** 与 **QQ Official** 双平台 |
@@ -104,7 +104,7 @@ python -m pip install -r requirements.txt
 
 ## 配置说明
 
-在 AstrBot 管理面板的插件配置页中，按如下模块灵活调整：
+在 AstrBot 管理面板的插件配置页中，配置按职责拆分为基础连接、图片与视频、提示词处理、联网搜索、访问控制、性能与可靠性、文件与缓存、管理面板八个分组。旧版 `capability_settings` 与 `advanced_settings` 会隐藏保留，仅用于自动迁移，不需要继续填写。
 
 ### 1. 连接设置（`connection_settings`）
 
@@ -113,11 +113,30 @@ python -m pip install -r requirements.txt
 | `enabled` | `true` | 插件全局总开关 |
 | `api_base_url` | `""` | 远端 grok2api 根地址（如 `https://grok.example.com`，不要带 `/v1`） |
 | `api_key` | `""` | 接入凭据 API Key |
-| `admin_username` / `admin_password` | `""` | 管理面只读查询凭据（仅 `/g2面板` 需要，与 API Key 互相独立） |
 | `verify_tls` | `true` | 是否校验 TLS 证书（生产环境建议开启） |
 | `client_proxy_url` | `""` | 出站代理地址（如 `http://127.0.0.1:7890`，留空为直连） |
 
-### 2. 能力与模型设置（`capability_settings`）
+管理面凭据请填写在 `panel_settings.admin_username` 与 `panel_settings.admin_password`，与 API Key 相互独立。
+
+### 2. 图片与视频（`media_settings`）
+
+| 配置项 | 默认值 | 说明 |
+|---|:---:|---|
+| `image_models` | 多行列表 | 文生图候选模型（首选 `grok-imagine-image-lite`） |
+| `image_edit_models` | 多行列表 | 改图候选模型（首选 `grok-imagine-image`） |
+| `video_models` | 多行列表 | 生视频候选模型（首选 `grok-imagine-video`） |
+| `image_response_format` | `b64_json` | 图片接口响应格式；两种格式都会落盘后发送 |
+| `send_media_progress` | `true` | 是否在媒体任务开始时发送一次进度提示 |
+
+### 3. 提示词处理（`prompt_settings`）
+
+- **`mode`**：`off`（原文直传）、`extract`（仅补全结构化参数）、`enhance`（严格无损优化并补全参数）。
+- **`character_research_mode`**：`off`（关闭）、`auto`（识别具名角色后搜索）、`always`（每次生图/生视频均尝试搜索）；失败会软回退普通增强。
+- **`extract_provider_id` / `enhance_provider_id`**：指定已配置的 AstrBot 文本模型。
+- **`disable_prompt_processing_with_reference_image`**：有参考图时跳过提示词处理，原文直传。
+- **`fallback_to_original_on_error`**：处理失败时使用原始提示词继续媒体任务（默认开启）。
+
+### 4. 联网搜索（`search_settings`）
 
 | 配置项 | 默认值 | 说明 |
 |---|:---:|---|
@@ -125,17 +144,16 @@ python -m pip install -r requirements.txt
 | `enable_web_search` | `true` | 是否启用 Web 联网搜索 |
 | `enable_x_search` | `true` | 是否启用 X/Twitter 平台搜索（chat 模型会自动降级为纯 Web） |
 | `search_reasoning_effort` | `auto` | 搜索推理强度（`auto`/`none`/`low`/`medium`/`high`/`xhigh`） |
-| `image_models` | 多行列表 | 文生图候选模型（首选 `grok-imagine-image-lite`） |
-| `image_edit_models` | 多行列表 | 改图候选模型（首选 `grok-imagine-image`） |
-| `video_models` | 多行列表 | 生视频候选模型（首选 `grok-imagine-video`） |
 | `enable_llm_search_tool` | `true` | 是否将会话级联网 Tool（`grok2api_web_search`）注册给主模型 |
+| `show_search_sources` | `true` | 是否返回结构化来源 |
+| `max_search_sources` | `5` | 最多显示来源数，`0` 表示不显示 |
+| `max_search_output_chars` | `6000` | 搜索正文最大长度 |
 
-### 3. 提示词处理（`prompt_processing`）
+### 5. 性能、文件与访问控制
 
-- **`mode`**：`off`（原文直传）、`extract`（仅补全结构化参数）、`enhance`（调用大模型重写优化提示词）。
-- **`extract_provider_id` / `enhance_provider_id`**：指定用于整理/优化的已配置 AstrBot 文本模型。
-- **`disable_prompt_processing_with_reference_image`**：在有参考图时跳过 LLM 提示词改写，保持原样直传。
-- **`fallback_to_original_on_error`**：提示词处理失败时改用原始提示词直发（默认开启）。
+通常只需要调整 `performance_settings.timeouts.task_timeout_seconds`，它是单次任务从排队到发送完成的总预算。搜索、生图、视频创建、视频轮询、下载、提示词处理和角色资料搜索仍有独立阶段超时，位于 `performance_settings.timeouts` 的折叠专家项中；并发与重试位于 `performance_settings.reliability`。
+
+`storage_settings` 管理输入/下载媒体大小、发送后是否保留和临时文件清理；`access_settings` 管理用户与群聊黑白名单。
 
 ---
 
@@ -162,7 +180,7 @@ python -m pip install -r requirements.txt
 
 ## 排错与常见问题
 
-- **面板显示“未获取”**：检查 `admin_username` 与 `admin_password` 是否正确配置，且 `api_base_url` 是否支持管理面 API。
+- **面板显示“未获取”**：检查 `panel_settings.admin_username` 与 `panel_settings.admin_password` 是否正确配置，且 `api_base_url` 是否支持管理面 API。
 - **401 / 403 鉴权错误**：确认配置项中的 `api_key` 是否有效且具有对应模型调用权限。
 - **改图返回 404**：请确认改图模型列表中未包含不支持图生图的 `lite` 轻量模型（默认使用 `grok-imagine-image`）。
 - **搜索无结果**：检查上游是否触发了 `search_not_performed`，插件会自动按配置重试或回退。

@@ -94,6 +94,67 @@ def _raises(**over) -> None:
         PluginConfig.from_astrbot(_raw(**over))
 
 
+def test_legacy_layout_migrates_custom_values_into_new_groups():
+    raw = _raw(
+        connection_settings={
+            "admin_username": " legacy-admin ",
+            "admin_password": " legacy-pass ",
+        },
+        capability_settings={
+            "search_models": "legacy-search",
+            "prompt_processing": {"mode": "enhance"},
+        },
+        advanced_settings={
+            "task_timeout_seconds": 900,
+            "panel_period": "30d",
+        },
+    )
+
+    cfg = PluginConfig.from_astrbot(raw)
+
+    assert cfg.search_models == ("legacy-search",)
+    assert cfg.prompt_processing_mode == "enhance"
+    assert cfg.task_timeout_seconds == 900
+    assert cfg.panel_period == "30d"
+    assert cfg.admin_username == "legacy-admin"
+    assert cfg.admin_password == "legacy-pass"
+    assert raw["connection_settings"]["config_layout_version"] == 1
+    assert raw["search_settings"]["search_models"] == "legacy-search"
+    assert raw["performance_settings"]["timeouts"]["task_timeout_seconds"] == 900
+    assert raw["panel_settings"]["admin_username"] == " legacy-admin "
+
+
+def test_migration_save_config_runs_once_and_new_values_win_afterward():
+    class ConfigMapping(dict):
+        save_calls = 0
+
+        def save_config(self):
+            self.save_calls += 1
+
+    raw = ConfigMapping(_raw(capability_settings={"search_models": "legacy-search"}))
+    first = PluginConfig.from_astrbot(raw)
+    assert first.search_models == ("legacy-search",)
+    assert raw.save_calls == 1
+
+    raw["capability_settings"]["search_models"] = "stale-legacy-value"
+    raw["search_settings"]["search_models"] = "new-search"
+    second = PluginConfig.from_astrbot(raw)
+    assert second.search_models == ("new-search",)
+    assert raw.save_calls == 1
+
+    raw["search_settings"]["search_models"] = "\n".join(DEFAULT_SEARCH_MODELS)
+    third = PluginConfig.from_astrbot(raw)
+    assert third.search_models == DEFAULT_SEARCH_MODELS
+
+
+def test_immutable_legacy_mapping_still_uses_compatibility_fallback():
+    from types import MappingProxyType
+
+    raw = MappingProxyType(_raw(advanced_settings={"task_timeout_seconds": 600}))
+    cfg = PluginConfig.from_astrbot(raw)
+    assert cfg.task_timeout_seconds == 600
+
+
 # -- search_models parsing -------------------------------------------------
 def test_search_models_are_trimmed_deduplicated_and_ordered():
     cfg = _cfg(capability_settings={"search_models": " grok-4.5\n grok-chat-fast\n\ngrok-4.5 "})
@@ -170,6 +231,8 @@ def test_defaults():
     assert c.video_poll_timeout_seconds == 30
     assert c.image_response_format == "b64_json"
     assert c.prompt_processing_mode == "off"
+    assert c.prompt_character_research_mode == "off"
+    assert c.prompt_character_research_timeout_seconds == 20
     assert c.prompt_disable_processing_with_reference_image is False
     assert c.prompt_processing_timeout_seconds == 15
     assert c.save_media is False
@@ -527,3 +590,42 @@ def test_task_timeout_seconds_accepts_valid_range(value):
 @pytest.mark.parametrize("value", [0, 59, 7201, "fast", None])
 def test_task_timeout_seconds_rejects_invalid_values(value):
     _raises(advanced_settings={"task_timeout_seconds": value})
+
+
+def test_character_research_config_defaults_and_overrides():
+    c = _cfg()
+    assert c.prompt_character_research_mode == "off"
+    assert c.prompt_character_research_timeout_seconds == 20
+
+    c_custom = _cfg(
+        capability_settings={"prompt_processing": {"character_research_mode": "auto"}},
+        advanced_settings={"character_research_timeout_seconds": 30},
+    )
+    assert c_custom.prompt_character_research_mode == "auto"
+    assert c_custom.prompt_character_research_timeout_seconds == 30
+
+    c_always = _cfg(
+        capability_settings={"prompt_processing": {"character_research_mode": "always"}},
+    )
+    assert c_always.prompt_character_research_mode == "always"
+
+
+def test_character_research_mode_rejects_invalid():
+    _raises(capability_settings={"prompt_processing": {"character_research_mode": "invalid"}})
+    _raises(capability_settings={"prompt_processing": {"character_research_mode": 123}})
+    _raises(capability_settings={"prompt_processing": {"character_research_mode": True}})
+
+
+@pytest.mark.parametrize("timeout", [4, 61, "20", True, None])
+def test_character_research_timeout_rejects_out_of_range(timeout):
+    _raises(advanced_settings={"character_research_timeout_seconds": timeout})
+
+
+def test_character_research_redacted_summary():
+    c = _cfg(
+        capability_settings={"prompt_processing": {"character_research_mode": "auto"}},
+        advanced_settings={"character_research_timeout_seconds": 25},
+    )
+    summary = c.redacted_summary()
+    assert summary["prompt_character_research_mode"] == "auto"
+    assert summary["prompt_character_research_timeout_seconds"] == 25

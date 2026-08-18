@@ -10,8 +10,17 @@ from types import SimpleNamespace
 import pytest
 
 from core.config import PluginConfig
+from core.deadline import task_deadline_scope
 from core.errors import PluginError
-from core.prompt_processor import PromptProcessor
+from core.prompt_processor import (
+    IMAGE_EDIT_ENHANCEMENT_SYSTEM_PROMPT,
+    IMAGE_ENHANCEMENT_SYSTEM_PROMPT,
+    IMAGE_PARAMETER_SYSTEM_PROMPT,
+    SHARED_LOSSLESS_RULES,
+    VIDEO_ENHANCEMENT_SYSTEM_PROMPT,
+    VIDEO_PARAMETER_SYSTEM_PROMPT,
+    PromptProcessor,
+)
 
 
 def _config(
@@ -147,7 +156,7 @@ async def test_reference_image_disable_keeps_global_mode_without_a_reference_ima
     context = Context(
         _assistant(
             {
-                "prompt": "cinematic dancer moving with clear full-body motion",
+                "prompt": "cinematic dancer dancing with clear full-body motion",
                 "duration": 6,
                 "aspect_ratio": "9:16",
                 "resolution": "720p",
@@ -158,7 +167,7 @@ async def test_reference_image_disable_keeps_global_mode_without_a_reference_ima
 
     result = await processor.resolve_video("让他跳舞", has_reference_image=False)
 
-    assert result.prompt == "cinematic dancer moving with clear full-body motion"
+    assert result.prompt == "cinematic dancer dancing with clear full-body motion"
     assert context.calls[0]["chat_provider_id"] == "enhance"
 
 
@@ -172,7 +181,7 @@ async def test_reference_image_without_override_uses_global_extract_mode():
     assert result.duration == 10
     assert context.calls[0]["chat_provider_id"] == "extract"
     assert json.loads(context.calls[0]["prompt"])["reference_image_present"] is True
-    assert "cannot see it" in context.calls[0]["system_prompt"]
+    assert "reference image content" in context.calls[0]["system_prompt"]
 
 
 async def test_image_edit_uses_dedicated_enhancement_schema_and_audit_operation(monkeypatch):
@@ -359,3 +368,248 @@ async def test_extract_rejects_unsupported_video_duration():
         await processor.resolve_video("8 seconds, wide shot")
 
     assert caught.value.code == "prompt_processing_invalid"
+
+
+async def test_prompts_configured_for_all_modes_and_media_types():
+    assert "lossless media prompt compiler" in SHARED_LOSSLESS_RULES
+    assert SHARED_LOSSLESS_RULES in IMAGE_ENHANCEMENT_SYSTEM_PROMPT
+    assert SHARED_LOSSLESS_RULES in VIDEO_ENHANCEMENT_SYSTEM_PROMPT
+    assert SHARED_LOSSLESS_RULES in IMAGE_EDIT_ENHANCEMENT_SYSTEM_PROMPT
+
+    # Enhance mode tests
+    context = Context(
+        _assistant({"prompt": "clean prompt", "aspect_ratio": "1:1", "resolution": "1k"})
+    )
+    processor = PromptProcessor(context, _config(mode="enhance"))
+    await processor.resolve_image("clean prompt")
+    assert context.calls[-1]["system_prompt"] == IMAGE_ENHANCEMENT_SYSTEM_PROMPT
+    assert context.calls[-1]["max_tokens"] == 1024
+
+    context = Context(
+        _assistant(
+            {
+                "prompt": "clean video",
+                "duration": 6,
+                "aspect_ratio": "16:9",
+                "resolution": "720p",
+            }
+        )
+    )
+    processor = PromptProcessor(context, _config(mode="enhance"))
+    await processor.resolve_video("clean video")
+    assert context.calls[-1]["system_prompt"] == VIDEO_ENHANCEMENT_SYSTEM_PROMPT
+    assert context.calls[-1]["max_tokens"] == 1024
+
+    context = Context(_assistant({"prompt": "clean edit"}))
+    processor = PromptProcessor(context, _config(mode="enhance"))
+    await processor.resolve_image_edit("clean edit")
+    assert context.calls[-1]["system_prompt"] == IMAGE_EDIT_ENHANCEMENT_SYSTEM_PROMPT
+    assert context.calls[-1]["max_tokens"] == 1024
+
+    # Extract mode tests
+    context = Context(_assistant({"aspect_ratio": "1:1", "resolution": "1k"}))
+    processor = PromptProcessor(context, _config(mode="extract"))
+    await processor.resolve_image("clean prompt")
+    assert context.calls[-1]["system_prompt"] == IMAGE_PARAMETER_SYSTEM_PROMPT
+    assert context.calls[-1]["max_tokens"] == 256
+
+    context = Context(_assistant({"duration": 6, "aspect_ratio": "16:9", "resolution": "720p"}))
+    processor = PromptProcessor(context, _config(mode="extract"))
+    await processor.resolve_video("clean video")
+    assert context.calls[-1]["system_prompt"] == VIDEO_PARAMETER_SYSTEM_PROMPT
+    assert context.calls[-1]["max_tokens"] == 256
+
+
+def test_enhancement_prompt_examples_are_valid_json():
+    for prompt in (
+        IMAGE_ENHANCEMENT_SYSTEM_PROMPT,
+        VIDEO_ENHANCEMENT_SYSTEM_PROMPT,
+        IMAGE_EDIT_ENHANCEMENT_SYSTEM_PROMPT,
+    ):
+        example = prompt.split("VALID OUTPUT:\n", 1)[1].split("\n\nINVALID OUTPUT:", 1)[0]
+        assert isinstance(json.loads(example), dict)
+
+
+async def test_character_reference_injection_in_image_and_video():
+    context = Context(
+        _assistant(
+            {
+                "prompt": "A detailed girl with teal twin tails",
+                "aspect_ratio": "1:1",
+                "resolution": "1k",
+            }
+        )
+    )
+    processor = PromptProcessor(context, _config(mode="enhance"))
+
+    # Image with character_reference
+    await processor.resolve_image(
+        "画初音未来", character_reference="Character: Hatsune Miku\nHair: Teal twin tails"
+    )
+    payload = json.loads(context.calls[-1]["prompt"])
+    assert payload["character_reference"] == "Character: Hatsune Miku\nHair: Teal twin tails"
+    assert payload["source_prompt"] == "画初音未来"
+
+    # Image without character_reference
+    await processor.resolve_image("画初音未来")
+    payload = json.loads(context.calls[-1]["prompt"])
+    assert "character_reference" not in payload
+
+    # Video with character_reference
+    context = Context(
+        _assistant(
+            {
+                "prompt": "2B running forward in city ruins",
+                "duration": 6,
+                "aspect_ratio": "16:9",
+                "resolution": "720p",
+            }
+        )
+    )
+    processor = PromptProcessor(context, _config(mode="enhance"))
+    await processor.resolve_video(
+        "2B在废墟奔跑", character_reference="Character: 2B\nOutfit: Black dress"
+    )
+    payload = json.loads(context.calls[-1]["prompt"])
+    assert payload["character_reference"] == "Character: 2B\nOutfit: Black dress"
+
+    # Video without character_reference
+    await processor.resolve_video("2B在废墟奔跑")
+    payload = json.loads(context.calls[-1]["prompt"])
+    assert "character_reference" not in payload
+
+
+async def test_fidelity_failure_rejects_and_raises_retryable_error():
+    # Quotes missing
+    context = Context(
+        _assistant(
+            {
+                "prompt": "A girl in a jacket outdoors",
+                "aspect_ratio": "1:1",
+                "resolution": "1k",
+            }
+        )
+    )
+    processor = PromptProcessor(context, _config(mode="enhance"))
+    with pytest.raises(PluginError) as exc_info:
+        await processor.resolve_image("女孩衣服上写着 'KEEPOUT'")
+    assert exc_info.value.code == "prompt_processing_fidelity_failed"
+    assert exc_info.value.retryable is True
+
+    # Negation missing in image
+    context = Context(
+        _assistant(
+            {
+                "prompt": "A girl in a jacket with dogs",
+                "aspect_ratio": "1:1",
+                "resolution": "1k",
+            }
+        )
+    )
+    processor = PromptProcessor(context, _config(mode="enhance"))
+    with pytest.raises(PluginError) as exc_info:
+        await processor.resolve_image("女孩穿着夹克，不要出现狗")
+    assert exc_info.value.code == "prompt_processing_fidelity_failed"
+    assert exc_info.value.retryable is True
+
+    # Negation missing in video
+    context = Context(
+        _assistant(
+            {
+                "prompt": "A robot walking",
+                "duration": 6,
+                "aspect_ratio": "16:9",
+                "resolution": "720p",
+            }
+        )
+    )
+    processor = PromptProcessor(context, _config(mode="enhance"))
+    with pytest.raises(PluginError) as exc_info:
+        await processor.resolve_video("机器人前进，不要爆炸")
+    assert exc_info.value.code == "prompt_processing_fidelity_failed"
+    assert exc_info.value.retryable is True
+
+    # Image edit missing quote
+    context = Context(_assistant({"prompt": "Change the background color to white"}))
+    processor = PromptProcessor(context, _config(mode="enhance"))
+    with pytest.raises(PluginError) as exc_info:
+        await processor.resolve_image_edit("将背景改成白色，上面写着 'SAMPLE'")
+    assert exc_info.value.code == "prompt_processing_fidelity_failed"
+    assert exc_info.value.retryable is True
+
+
+async def test_fidelity_success_allows_valid_enhancement():
+    # Quotes & negations preserved
+    context = Context(
+        _assistant(
+            {
+                "prompt": "A girl wearing a jacket with 'KEEPOUT' text. No dogs in the scene.",
+                "aspect_ratio": "1:1",
+                "resolution": "1k",
+            }
+        )
+    )
+    processor = PromptProcessor(context, _config(mode="enhance"))
+    req = await processor.resolve_image("女孩衣服上写着 'KEEPOUT'，不要出现狗")
+    assert "KEEPOUT" in req.prompt
+    assert "No dogs" in req.prompt
+
+
+async def test_fidelity_failure_runs_one_strict_repair_attempt():
+    class SequenceContext(Context):
+        def __init__(self, responses):
+            super().__init__()
+            self.responses = list(responses)
+
+        async def llm_generate(self, **kwargs):
+            self.calls.append(kwargs)
+            return self.responses.pop(0)
+
+    failed = _assistant(
+        {
+            "prompt": "A girl in a studio.",
+            "aspect_ratio": None,
+            "resolution": "1k",
+        }
+    )
+    repaired = _assistant(
+        {
+            "prompt": "A red-haired girl holds a black umbrella in her left hand.",
+            "aspect_ratio": None,
+            "resolution": "1k",
+        }
+    )
+    context = SequenceContext([failed, repaired])
+    processor = PromptProcessor(context, _config(mode="enhance"))
+
+    result = await processor.resolve_image(
+        "A red-haired girl holds a black umbrella in her left hand."
+    )
+
+    assert result.prompt == "A red-haired girl holds a black umbrella in her left hand."
+    assert len(context.calls) == 2
+    repair_payload = json.loads(context.calls[1]["prompt"])
+    assert repair_payload["repair_candidate"] == "A girl in a studio."
+    assert "failed deterministic fidelity checks" in context.calls[1]["system_prompt"]
+
+
+async def test_deadline_bounds_wait_for_timeout():
+    # Test that deadline clipping applies to llm_generate
+    context = Context(_assistant({"aspect_ratio": "1:1", "resolution": "1k"}))
+    processor = PromptProcessor(context, _config(mode="extract"))
+
+    with task_deadline_scope(5.0):
+        req = await processor.resolve_image("cat")
+        assert req.prompt == "cat"
+
+
+async def test_expired_deadline_is_reported_as_task_timeout_before_provider_call():
+    context = Context(_assistant({"aspect_ratio": "1:1", "resolution": "1k"}))
+    processor = PromptProcessor(context, _config(mode="extract"))
+
+    with task_deadline_scope(-1.0):
+        with pytest.raises(PluginError) as caught:
+            await processor.resolve_image("cat")
+
+    assert caught.value.code == "task_timeout"
+    assert context.calls == []
