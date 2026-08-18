@@ -44,6 +44,7 @@ def _default_raw() -> dict:
         },
         "advanced_settings": {
             "connect_timeout_seconds": 10,
+            "task_timeout_seconds": 1800,
             "search_timeout_seconds": 180,
             "image_timeout_seconds": 300,
             "video_create_timeout_seconds": 120,
@@ -58,7 +59,10 @@ def _default_raw() -> dict:
             "model_retry_count": 2,
             "video_retry_count": 2,
             "retry_base_delay_seconds": 0.5,
-            "retry_excluded_errors": "",
+            "model_switch_errors": (
+                "401,403,404,429,auth_error,not_found,rate_limited,"
+                "model_not_found,model_not_allowed"
+            ),
             "save_media": False,
             "temp_retention_hours": 24,
             "prompt_processing_timeout_seconds": 15,
@@ -150,7 +154,19 @@ def test_defaults():
     assert c.model_retry_count == 2
     assert c.video_retry_count == 2
     assert c.retry_base_delay_seconds == 0.5
-    assert c.retry_excluded_errors == frozenset()
+    assert c.model_switch_errors == frozenset(
+        {
+            "401",
+            "403",
+            "404",
+            "429",
+            "auth_error",
+            "not_found",
+            "rate_limited",
+            "model_not_found",
+            "model_not_allowed",
+        }
+    )
     assert c.video_poll_timeout_seconds == 30
     assert c.image_response_format == "b64_json"
     assert c.prompt_processing_mode == "off"
@@ -300,14 +316,12 @@ def test_reject_invalid_options():
     _raises(capability_settings={"prompt_processing": {"mode": "rewrite"}})
 
 
-def test_retry_excluded_errors_are_normalized_and_validated():
-    c = _cfg(
-        advanced_settings={"retry_excluded_errors": "400, 401, auth_error, NETWORK_ERROR, 400"}
-    )
-    assert c.retry_excluded_errors == frozenset({"400", "401", "auth_error", "network_error"})
-    _raises(advanced_settings={"retry_excluded_errors": "400，401"})
-    _raises(advanced_settings={"retry_excluded_errors": "99"})
-    _raises(advanced_settings={"retry_excluded_errors": "Bad Error"})
+def test_model_switch_errors_are_normalized_and_validated():
+    c = _cfg(advanced_settings={"model_switch_errors": "400, 401, auth_error, NETWORK_ERROR, 400"})
+    assert c.model_switch_errors == frozenset({"400", "401", "auth_error", "network_error"})
+    _raises(advanced_settings={"model_switch_errors": "400，401"})
+    _raises(advanced_settings={"model_switch_errors": "99"})
+    _raises(advanced_settings={"model_switch_errors": "Bad Error"})
 
 
 def test_search_requires_at_least_one_enabled_search_tool():
@@ -497,3 +511,19 @@ def test_panel_cron_accepts_standard_sunday_seven():
 @pytest.mark.parametrize("minutes", [0, 1441, True])
 def test_panel_interval_rejects_invalid_minutes(minutes):
     _raises(advanced_settings={"panel_interval_minutes": minutes})
+
+
+def test_task_timeout_seconds_defaults_to_1800():
+    cfg = _cfg()
+    assert cfg.task_timeout_seconds == 1800
+
+
+@pytest.mark.parametrize("value", [60, 1800, 7200])
+def test_task_timeout_seconds_accepts_valid_range(value):
+    cfg = _cfg(advanced_settings={"task_timeout_seconds": value})
+    assert cfg.task_timeout_seconds == value
+
+
+@pytest.mark.parametrize("value", [0, 59, 7201, "fast", None])
+def test_task_timeout_seconds_rejects_invalid_values(value):
+    _raises(advanced_settings={"task_timeout_seconds": value})

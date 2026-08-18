@@ -116,6 +116,7 @@ def test_advanced_group_items(schema):
     items = schema["advanced_settings"]["items"]
     assert set(items) == {
         "connect_timeout_seconds",
+        "task_timeout_seconds",
         "search_timeout_seconds",
         "image_timeout_seconds",
         "video_create_timeout_seconds",
@@ -131,7 +132,7 @@ def test_advanced_group_items(schema):
         "model_retry_count",
         "video_retry_count",
         "retry_base_delay_seconds",
-        "retry_excluded_errors",
+        "model_switch_errors",
         "save_media",
         "temp_retention_hours",
         "panel_period",

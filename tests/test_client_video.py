@@ -230,3 +230,15 @@ async def test_get_video_uses_escaped_base():
     s.push(FakeResponse(200, body=json.dumps({"status": "pending", "progress": 0})))
     await c.get_video("video_a-b_c9")
     assert s.calls[0]["url"] == "https://grok.example.com/v1/videos/video_a-b_c9"
+
+
+async def test_wait_for_video_deadline_timeout():
+    from core.common.deadline import task_deadline_scope
+    from core.common.errors import PluginError
+
+    c, s = _client()
+    s.push(FakeResponse(200, body=json.dumps({"status": "pending", "progress": 10})))
+    with task_deadline_scope(-1.0):
+        with pytest.raises(PluginError) as ei:
+            await c.wait_for_video("video_abc")
+        assert ei.value.code == "task_timeout"

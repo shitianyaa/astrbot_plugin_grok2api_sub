@@ -8,15 +8,20 @@ import logging
 import time
 import uuid
 from dataclasses import dataclass, replace
+from functools import wraps
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from .common.access import check_access
+from .common.deadline import (
+    check_task_deadline,
+    remaining_task_timeout,
+    task_deadline_scope,
+)
 from .common.errors import (
     APIError,
     PluginError,
     ProtocolError,
-    SearchNotPerformedError,
 )
 from .common.models import (
     ImageGenerationRequest,
@@ -26,6 +31,7 @@ from .common.models import (
 from .common.observability import (
     operation_scope,
     record_task_model,
+    record_task_retry,
     safe_log,
     safe_task_log,
     task_candidate_attempts,
@@ -101,6 +107,49 @@ class _ModelFallbackOutcome:
     value: Any
     model: str
     candidate_attempts: int
+
+
+def _enforce_task_timeout(operation: str):
+    """Apply the configured user-task timeout to the complete service coroutine."""
+
+    def decorator(func):
+        @wraps(func)
+        async def wrapped(self, *args, **kwargs):
+            configured_timeout = float(self._config.task_timeout_seconds)
+            started_at = time.monotonic()
+            with task_deadline_scope(configured_timeout):
+                timeout = remaining_task_timeout(configured_timeout)
+                if timeout <= 0:
+                    raise PluginError("任务执行超时", code="task_timeout", retryable=False)
+                with operation_scope(operation):
+                    try:
+                        return await asyncio.wait_for(
+                            func(self, *args, **kwargs),
+                            timeout=timeout,
+                        )
+                    except asyncio.CancelledError:
+                        raise
+                    except asyncio.TimeoutError as exc:
+                        safe_task_log(
+                            logging.WARNING,
+                            "请求失败",
+                            operation=operation,
+                            model=task_model(operation),
+                            candidate_fallbacks=max(task_candidate_attempts(operation) - 1, 0),
+                            retry_count=task_retry_count(),
+                            stage="task_timeout",
+                            error_code="task_timeout",
+                            elapsed_ms=int((time.monotonic() - started_at) * 1000),
+                        )
+                        raise PluginError(
+                            "任务执行超时",
+                            code="task_timeout",
+                            retryable=False,
+                        ) from exc
+
+        return wrapped
+
+    return decorator
 
 
 class GrokService:
@@ -228,72 +277,74 @@ class GrokService:
     # -- search ------------------------------------------------------------
     # search() deliberately does not call rewrite: the caller (command handler
     # or tool) decides whether/when to rewrite so tool execution stays unmutated.
+    @_enforce_task_timeout("search")
     async def search(self, event: Any, query: str, *, required: bool = True) -> SearchResult:
-        with operation_scope("search"):
-            started_at = time.monotonic()
-            request_params = {
-                "required": required,
-                "web_search": self._config.enable_web_search,
-                "x_search": self._config.enable_x_search,
-                "reasoning_effort": self._config.search_reasoning_effort,
-            }
-            try:
-                self._preflight(event, "search")
+        with task_deadline_scope(self._config.task_timeout_seconds):
+            with operation_scope("search"):
+                started_at = time.monotonic()
+                request_params = {
+                    "required": required,
+                    "web_search": self._config.enable_web_search,
+                    "x_search": self._config.enable_x_search,
+                    "reasoning_effort": self._config.search_reasoning_effort,
+                }
+                try:
+                    self._preflight(event, "search")
+                    safe_task_log(
+                        logging.INFO,
+                        "请求开始",
+                        operation="search",
+                        source_prompt=query,
+                        request_prompt=query,
+                        request_params=request_params,
+                        candidate_models=", ".join(self._config.search_models),
+                    )
+                    async with self._search_sem:
+                        outcome = await self._search_with_fallback(
+                            query,
+                            self._config.search_models,
+                            required=required,
+                        )
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:  # noqa: BLE001
+                    fields: dict[str, object] = {
+                        "operation": "search",
+                        "source_prompt": query,
+                        "request_prompt": query,
+                        "request_params": request_params,
+                        "model": task_model("search"),
+                        "candidate_fallbacks": max(task_candidate_attempts("search") - 1, 0),
+                        "retry_count": task_retry_count(),
+                        "stage": "search",
+                        "elapsed_ms": self._elapsed_ms(started_at),
+                        "error_code": exc.code if isinstance(exc, PluginError) else "unknown",
+                    }
+                    if isinstance(exc, APIError):
+                        fields["status"] = exc.status
+                    safe_task_log(
+                        logging.WARNING,
+                        "请求失败",
+                        **fields,
+                    )
+                    raise
+                result = outcome.value
                 safe_task_log(
                     logging.INFO,
-                    "请求开始",
+                    "请求完成",
                     operation="search",
-                    source_prompt=query,
-                    request_prompt=query,
                     request_params=request_params,
-                    candidate_models=", ".join(self._config.search_models),
+                    model=outcome.model,
+                    result="已生成搜索结果",
+                    result_status=result.status,
+                    search_performed=result.search_performed,
+                    incomplete=result.incomplete,
+                    candidate_fallbacks=max(outcome.candidate_attempts - 1, 0),
+                    retry_count=task_retry_count(),
+                    elapsed_ms=self._elapsed_ms(started_at),
+                    source_count=len(result.sources),
                 )
-                async with self._search_sem:
-                    outcome = await self._search_with_fallback(
-                        query,
-                        self._config.search_models,
-                        required=required,
-                    )
-            except asyncio.CancelledError:
-                raise
-            except Exception as exc:  # noqa: BLE001
-                fields: dict[str, object] = {
-                    "operation": "search",
-                    "source_prompt": query,
-                    "request_prompt": query,
-                    "request_params": request_params,
-                    "model": task_model("search"),
-                    "candidate_fallbacks": max(task_candidate_attempts("search") - 1, 0),
-                    "retry_count": task_retry_count(),
-                    "stage": "search",
-                    "elapsed_ms": self._elapsed_ms(started_at),
-                    "error_code": exc.code if isinstance(exc, PluginError) else "unknown",
-                }
-                if isinstance(exc, APIError):
-                    fields["status"] = exc.status
-                safe_task_log(
-                    logging.WARNING,
-                    "请求失败",
-                    **fields,
-                )
-                raise
-            result = outcome.value
-            safe_task_log(
-                logging.INFO,
-                "请求完成",
-                operation="search",
-                request_params=request_params,
-                model=outcome.model,
-                result="已生成搜索结果",
-                result_status=result.status,
-                search_performed=result.search_performed,
-                incomplete=result.incomplete,
-                candidate_fallbacks=max(outcome.candidate_attempts - 1, 0),
-                retry_count=task_retry_count(),
-                elapsed_ms=self._elapsed_ms(started_at),
-                source_count=len(result.sources),
-            )
-            return result
+                return result
 
     async def _search_with_fallback(
         self,
@@ -337,6 +388,7 @@ class GrokService:
                 self._log_model_skipped(model, index, "search_tool_unsupported")
                 continue
             try:
+                check_task_deadline()
                 record_task_model("search", model)
                 result = await self._client.search(
                     query,
@@ -355,13 +407,10 @@ class GrokService:
                     model=model,
                     candidate_attempts=task_candidate_attempts("search"),
                 )
-            except APIError as exc:
-                if exc.code not in {"model_not_found", "model_not_allowed"}:
+            except PluginError as exc:
+                if not exc.retryable or exc.code == "task_timeout":
                     raise
                 self._log_model_skipped(model, index, exc.code)
-                continue
-            except SearchNotPerformedError:
-                self._log_model_skipped(model, index, "search_not_performed")
                 continue
 
         safe_log(
@@ -419,6 +468,7 @@ class GrokService:
             raise PluginError("未配置生图模型", code="capability_unavailable")
         for index, model in enumerate(models):
             try:
+                check_task_deadline()
                 record_task_model("image_generate", model)
                 safe_log(
                     logging.DEBUG,
@@ -442,18 +492,18 @@ class GrokService:
                     model=model,
                     candidate_attempts=task_candidate_attempts("image_generate"),
                 )
-            except APIError as exc:
-                if exc.code in {"model_not_found", "model_not_allowed"}:
-                    safe_log(
-                        logging.DEBUG,
-                        "media_job_model_skipped",
-                        operation="image_generate",
-                        model=model,
-                        model_index=index,
-                        error_code=exc.code,
-                    )
-                    continue
-                raise
+            except PluginError as exc:
+                if not exc.retryable or exc.code == "task_timeout":
+                    raise
+                safe_log(
+                    logging.DEBUG,
+                    "media_job_model_skipped",
+                    operation="image_generate",
+                    model=model,
+                    model_index=index,
+                    error_code=exc.code,
+                )
+                continue
         raise PluginError("所有生图模型均不可用", code="media_models_exhausted")
 
     async def _edit_image_with_fallback(
@@ -467,6 +517,7 @@ class GrokService:
             raise PluginError("未配置改图模型", code="capability_unavailable")
         for index, model in enumerate(models):
             try:
+                check_task_deadline()
                 record_task_model("image_edit", model)
                 safe_log(
                     logging.DEBUG,
@@ -488,18 +539,18 @@ class GrokService:
                     model=model,
                     candidate_attempts=task_candidate_attempts("image_edit"),
                 )
-            except APIError as exc:
-                if exc.code in {"model_not_found", "model_not_allowed"}:
-                    safe_log(
-                        logging.DEBUG,
-                        "media_job_model_skipped",
-                        operation="image_edit",
-                        model=model,
-                        model_index=index,
-                        error_code=exc.code,
-                    )
-                    continue
-                raise
+            except PluginError as exc:
+                if not exc.retryable or exc.code == "task_timeout":
+                    raise
+                safe_log(
+                    logging.DEBUG,
+                    "media_job_model_skipped",
+                    operation="image_edit",
+                    model=model,
+                    model_index=index,
+                    error_code=exc.code,
+                )
+                continue
         raise PluginError("所有改图模型均不可用", code="media_models_exhausted")
 
     async def _create_video_with_fallback(
@@ -511,278 +562,310 @@ class GrokService:
     ) -> _ModelFallbackOutcome:
         if not models:
             raise PluginError("未配置视频模型", code="capability_unavailable")
+        attempts_per_model = self._config.video_retry_count + 1
         for index, model in enumerate(models):
-            try:
-                record_task_model("video_generate", model)
-                safe_log(
-                    logging.DEBUG,
-                    "media_job_model_attempt",
-                    operation="video_generate",
-                    model=model,
-                    model_index=index,
-                )
-                request_id = await self._client.create_video(
-                    request.prompt,
-                    model=model,
-                    duration=request.duration,
-                    aspect_ratio=request.aspect_ratio,
-                    resolution=request.resolution,
-                    image_data_url=image_data_url,
-                )
-                return _ModelFallbackOutcome(
-                    value=request_id,
-                    model=model,
-                    candidate_attempts=task_candidate_attempts("video_generate"),
-                )
-            except APIError as exc:
-                if exc.code in {"model_not_found", "model_not_allowed"}:
+            record_task_model("video_generate", model)
+            safe_log(
+                logging.DEBUG,
+                "media_job_model_attempt",
+                operation="video_generate",
+                model=model,
+                model_index=index,
+            )
+            model_failed_code: str | None = None
+            for attempt in range(1, attempts_per_model + 1):
+                check_task_deadline()
+                if attempt > 1:
+                    record_task_retry()
+                try:
+                    request_id = await self._client.create_video(
+                        request.prompt,
+                        model=model,
+                        duration=request.duration,
+                        aspect_ratio=request.aspect_ratio,
+                        resolution=request.resolution,
+                        image_data_url=image_data_url,
+                    )
                     safe_log(
                         logging.DEBUG,
-                        "media_job_model_skipped",
+                        "video_created",
                         operation="video_generate",
-                        model=model,
-                        model_index=index,
-                        error_code=exc.code,
+                        request_id=request_id,
+                        attempt=attempt,
                     )
-                    continue
-                raise
+                    job = await self._client.wait_for_video(request_id)
+                    if job.status == "done":
+                        return _ModelFallbackOutcome(
+                            value=(request_id, job),
+                            model=model,
+                            candidate_attempts=task_candidate_attempts("video_generate"),
+                        )
+                    if job.status == "failed":
+                        err_code = job.error_code or "video_failed"
+                        model_failed_code = err_code
+                        should_switch = err_code in self._config.model_switch_errors
+                        if should_switch or attempt >= attempts_per_model:
+                            break
+                        await self._client.retry_backoff(attempt)
+                        continue
+                except PluginError as exc:
+                    if not exc.retryable or exc.code == "task_timeout":
+                        raise
+                    model_failed_code = exc.code
+                    break
+
+            safe_log(
+                logging.DEBUG,
+                "media_job_model_skipped",
+                operation="video_generate",
+                model=model,
+                model_index=index,
+                error_code=model_failed_code or "unknown",
+            )
+            continue
         raise PluginError("所有视频模型均不可用", code="media_models_exhausted")
 
     # -- images ------------------------------------------------------------
+    @_enforce_task_timeout("image_generate")
     async def deliver_generated_images(
         self, event: Any, prompt: str, *, skip_prompt_processing: bool = False
     ) -> None:
-        operation = "image_generate"
-        with operation_scope(operation):
-            preflight_started_at = time.monotonic()
-            try:
-                self._preflight(event, "image")
-            except asyncio.CancelledError:
-                raise
-            except Exception as exc:
-                self._log_media_failure(
-                    operation,
-                    preflight_started_at,
-                    "preflight",
-                    exc,
-                    source_prompt=prompt,
-                )
-                raise
-            async with self._media_sem:
+        with task_deadline_scope(self._config.task_timeout_seconds):
+            operation = "image_generate"
+            with operation_scope(operation):
+                preflight_started_at = time.monotonic()
                 try:
-                    lock = self._session_guard(event)
+                    self._preflight(event, "image")
+                except asyncio.CancelledError:
+                    raise
                 except Exception as exc:
                     self._log_media_failure(
                         operation,
                         preflight_started_at,
-                        "session_lock",
+                        "preflight",
                         exc,
                         source_prompt=prompt,
                     )
                     raise
-                await lock.acquire()
-                paths: list[Path] = []
-                started_at = time.monotonic()
-                stage = "prompt_processing"
-                request_prompt = ""
-                request_params: dict[str, object] = {}
-                try:
-                    request = await self._resolve_image_request(prompt, skip=skip_prompt_processing)
-                    request_prompt = request.prompt
-                    request_params = {
-                        "n": 1,
-                        "response_format": self._config.image_response_format,
-                        "aspect_ratio": request.aspect_ratio,
-                        "resolution": request.resolution,
-                    }
-                    safe_task_log(
-                        logging.INFO,
-                        "请求开始",
-                        operation=operation,
-                        source_prompt=prompt,
-                        request_prompt=request_prompt,
-                        request_params=request_params,
-                        prompt_mode=self._effective_prompt_mode(
-                            self._config, has_reference_image=False
-                        ),
-                        reference_image="无",
-                        candidate_models=", ".join(self._config.image_models),
-                    )
-                    await self._send_media_progress(
-                        event,
-                        operation,
-                        "正在生成图片，请稍候…",
-                    )
-                    stage = "generate"
-                    outcome = await self._generate_image_with_fallback(
-                        request,
-                        self._config.image_models,
-                        started_at,
-                    )
-                    results = outcome.value
-                    for result in results:
-                        if result.content:
-                            paths.append(await self._workspace.save_image(result))
-                        else:
-                            stage = "download"
-                            dest = self._new_media_path("img")
-                            await self._client.download_media(
-                                result.source_url,
-                                dest,
-                                max_bytes=self._config.max_image_download_mb * 1024 * 1024,
-                            )
-                            paths.append(dest)
-                    stage = "send"
-                    await self._sender.send_images(event, paths)
-                    await self._finish(paths, success=True)
-                    safe_task_log(
-                        logging.INFO,
-                        "请求完成",
-                        operation=operation,
-                        model=outcome.model,
-                        result="图片生成并发送成功",
-                        request_params=request_params,
-                        media_count=len(paths),
-                        candidate_fallbacks=max(outcome.candidate_attempts - 1, 0),
-                        retry_count=task_retry_count(),
-                        elapsed_ms=self._elapsed_ms(started_at),
-                    )
-                except asyncio.CancelledError:
-                    await self._finish(paths, success=False)
-                    raise
-                except Exception as exc:
-                    await self._finish(paths, success=False)
-                    self._log_media_failure(
-                        operation,
-                        started_at,
-                        stage,
-                        exc,
-                        source_prompt=prompt,
-                        request_prompt=request_prompt,
-                        request_params=request_params,
-                    )
-                    raise
-                finally:
-                    self._release_session_lock(event, lock)
+                async with self._media_sem:
+                    try:
+                        lock = self._session_guard(event)
+                    except Exception as exc:
+                        self._log_media_failure(
+                            operation,
+                            preflight_started_at,
+                            "session_lock",
+                            exc,
+                            source_prompt=prompt,
+                        )
+                        raise
+                    await lock.acquire()
+                    paths: list[Path] = []
+                    started_at = time.monotonic()
+                    stage = "prompt_processing"
+                    request_prompt = ""
+                    request_params: dict[str, object] = {}
+                    try:
+                        request = await self._resolve_image_request(
+                            prompt, skip=skip_prompt_processing
+                        )
+                        request_prompt = request.prompt
+                        request_params = {
+                            "n": 1,
+                            "response_format": self._config.image_response_format,
+                            "aspect_ratio": request.aspect_ratio,
+                            "resolution": request.resolution,
+                        }
+                        safe_task_log(
+                            logging.INFO,
+                            "请求开始",
+                            operation=operation,
+                            source_prompt=prompt,
+                            request_prompt=request_prompt,
+                            request_params=request_params,
+                            prompt_mode=self._effective_prompt_mode(
+                                self._config, has_reference_image=False
+                            ),
+                            reference_image="无",
+                            candidate_models=", ".join(self._config.image_models),
+                        )
+                        await self._send_media_progress(
+                            event,
+                            operation,
+                            "正在生成图片，请稍候…",
+                        )
+                        stage = "generate"
+                        outcome = await self._generate_image_with_fallback(
+                            request,
+                            self._config.image_models,
+                            started_at,
+                        )
+                        results = outcome.value
+                        for result in results:
+                            if result.content:
+                                paths.append(await self._workspace.save_image(result))
+                            else:
+                                stage = "download"
+                                dest = self._new_media_path("img")
+                                await self._client.download_media(
+                                    result.source_url,
+                                    dest,
+                                    max_bytes=self._config.max_image_download_mb * 1024 * 1024,
+                                )
+                                paths.append(dest)
+                        stage = "send"
+                        await self._sender.send_images(event, paths)
+                        await self._finish(paths, success=True)
+                        safe_task_log(
+                            logging.INFO,
+                            "请求完成",
+                            operation=operation,
+                            model=outcome.model,
+                            result="图片生成并发送成功",
+                            request_params=request_params,
+                            media_count=len(paths),
+                            candidate_fallbacks=max(outcome.candidate_attempts - 1, 0),
+                            retry_count=task_retry_count(),
+                            elapsed_ms=self._elapsed_ms(started_at),
+                        )
+                    except asyncio.CancelledError:
+                        await self._finish(paths, success=False)
+                        raise
+                    except Exception as exc:
+                        await self._finish(paths, success=False)
+                        self._log_media_failure(
+                            operation,
+                            started_at,
+                            stage,
+                            exc,
+                            source_prompt=prompt,
+                            request_prompt=request_prompt,
+                            request_params=request_params,
+                        )
+                        raise
+                    finally:
+                        self._release_session_lock(event, lock)
 
+    @_enforce_task_timeout("image_edit")
     async def deliver_edited_image(
         self, event: Any, prompt: str, *, skip_prompt_processing: bool = False
     ) -> None:
-        operation = "image_edit"
-        with operation_scope(operation):
-            preflight_started_at = time.monotonic()
-            try:
-                self._preflight(event, "image_edit")
-            except asyncio.CancelledError:
-                raise
-            except Exception as exc:
-                self._log_media_failure(
-                    operation,
-                    preflight_started_at,
-                    "preflight",
-                    exc,
-                    source_prompt=prompt,
-                )
-                raise
-            async with self._media_sem:
+        with task_deadline_scope(self._config.task_timeout_seconds):
+            operation = "image_edit"
+            with operation_scope(operation):
+                preflight_started_at = time.monotonic()
                 try:
-                    lock = self._session_guard(event)
+                    self._preflight(event, "image_edit")
+                except asyncio.CancelledError:
+                    raise
                 except Exception as exc:
                     self._log_media_failure(
                         operation,
                         preflight_started_at,
-                        "session_lock",
+                        "preflight",
                         exc,
                         source_prompt=prompt,
                     )
                     raise
-                await lock.acquire()
-                paths: list[Path] = []
-                started_at = time.monotonic()
-                stage = "input"
-                request_prompt = ""
-                request_params: dict[str, object] = {}
-                try:
-                    data_url = await self._find_input_image(event)
-                    stage = "prompt_processing"
-                    resolved_prompt = await self._resolve_image_edit_prompt(
-                        prompt, skip=skip_prompt_processing
-                    )
-                    request_prompt = resolved_prompt
-                    request_params = {
-                        "n": 1,
-                        "response_format": self._config.image_response_format,
-                    }
-                    safe_task_log(
-                        logging.INFO,
-                        "请求开始",
-                        operation=operation,
-                        source_prompt=prompt,
-                        request_prompt=request_prompt,
-                        request_params=request_params,
-                        prompt_mode=self._effective_prompt_mode(
-                            self._config, has_reference_image=True
-                        ),
-                        reference_image="有",
-                        candidate_models=", ".join(self._config.image_edit_models),
-                    )
-                    await self._send_media_progress(
-                        event,
-                        operation,
-                        self._media_progress_text(operation),
-                    )
-                    stage = "generate"
-                    outcome = await self._edit_image_with_fallback(
-                        resolved_prompt,
-                        data_url,
-                        self._config.image_edit_models,
-                        started_at,
-                    )
-                    results = outcome.value
-                    for result in results[:1]:
-                        if result.content:
-                            paths.append(await self._workspace.save_image(result))
-                        else:
-                            stage = "download"
-                            dest = self._new_media_path("edit")
-                            await self._client.download_media(
-                                result.source_url,
-                                dest,
-                                max_bytes=self._config.max_image_download_mb * 1024 * 1024,
-                            )
-                            paths.append(dest)
-                    stage = "send"
-                    await self._sender.send_images(event, paths)
-                    await self._finish(paths, success=True)
-                    safe_task_log(
-                        logging.INFO,
-                        "请求完成",
-                        operation=operation,
-                        model=outcome.model,
-                        result="图片编辑并发送成功",
-                        request_params=request_params,
-                        media_count=len(paths),
-                        candidate_fallbacks=max(outcome.candidate_attempts - 1, 0),
-                        retry_count=task_retry_count(),
-                        elapsed_ms=self._elapsed_ms(started_at),
-                    )
-                except asyncio.CancelledError:
-                    await self._finish(paths, success=False)
-                    raise
-                except Exception as exc:
-                    await self._finish(paths, success=False)
-                    self._log_media_failure(
-                        operation,
-                        started_at,
-                        stage,
-                        exc,
-                        source_prompt=prompt,
-                        request_prompt=request_prompt,
-                        request_params=request_params,
-                    )
-                    raise
-                finally:
-                    self._release_session_lock(event, lock)
+                async with self._media_sem:
+                    try:
+                        lock = self._session_guard(event)
+                    except Exception as exc:
+                        self._log_media_failure(
+                            operation,
+                            preflight_started_at,
+                            "session_lock",
+                            exc,
+                            source_prompt=prompt,
+                        )
+                        raise
+                    await lock.acquire()
+                    paths: list[Path] = []
+                    started_at = time.monotonic()
+                    stage = "input"
+                    request_prompt = ""
+                    request_params: dict[str, object] = {}
+                    try:
+                        data_url = await self._find_input_image(event)
+                        stage = "prompt_processing"
+                        resolved_prompt = await self._resolve_image_edit_prompt(
+                            prompt, skip=skip_prompt_processing
+                        )
+                        request_prompt = resolved_prompt
+                        request_params = {
+                            "n": 1,
+                            "response_format": self._config.image_response_format,
+                        }
+                        safe_task_log(
+                            logging.INFO,
+                            "请求开始",
+                            operation=operation,
+                            source_prompt=prompt,
+                            request_prompt=request_prompt,
+                            request_params=request_params,
+                            prompt_mode=self._effective_prompt_mode(
+                                self._config, has_reference_image=True
+                            ),
+                            reference_image="有",
+                            candidate_models=", ".join(self._config.image_edit_models),
+                        )
+                        await self._send_media_progress(
+                            event,
+                            operation,
+                            self._media_progress_text(operation),
+                        )
+                        stage = "generate"
+                        outcome = await self._edit_image_with_fallback(
+                            resolved_prompt,
+                            data_url,
+                            self._config.image_edit_models,
+                            started_at,
+                        )
+                        results = outcome.value
+                        for result in results[:1]:
+                            if result.content:
+                                paths.append(await self._workspace.save_image(result))
+                            else:
+                                stage = "download"
+                                dest = self._new_media_path("edit")
+                                await self._client.download_media(
+                                    result.source_url,
+                                    dest,
+                                    max_bytes=self._config.max_image_download_mb * 1024 * 1024,
+                                )
+                                paths.append(dest)
+                        stage = "send"
+                        await self._sender.send_images(event, paths)
+                        await self._finish(paths, success=True)
+                        safe_task_log(
+                            logging.INFO,
+                            "请求完成",
+                            operation=operation,
+                            model=outcome.model,
+                            result="图片编辑并发送成功",
+                            request_params=request_params,
+                            media_count=len(paths),
+                            candidate_fallbacks=max(outcome.candidate_attempts - 1, 0),
+                            retry_count=task_retry_count(),
+                            elapsed_ms=self._elapsed_ms(started_at),
+                        )
+                    except asyncio.CancelledError:
+                        await self._finish(paths, success=False)
+                        raise
+                    except Exception as exc:
+                        await self._finish(paths, success=False)
+                        self._log_media_failure(
+                            operation,
+                            started_at,
+                            stage,
+                            exc,
+                            source_prompt=prompt,
+                            request_prompt=request_prompt,
+                            request_params=request_params,
+                        )
+                        raise
+                    finally:
+                        self._release_session_lock(event, lock)
 
     def _find_input_image_component(self, event: Any) -> object:
         from astrbot.api.message_components import Image, Reply
@@ -807,6 +890,7 @@ class GrokService:
         return await self._workspace.image_component_to_normalized_image(component)
 
     # -- video -------------------------------------------------------------
+    @_enforce_task_timeout("video_generate")
     async def deliver_video(
         self,
         event: Any,
@@ -815,136 +899,127 @@ class GrokService:
         reference_image_url: str = "",
         skip_prompt_processing: bool = False,
     ) -> None:
-        operation = "video_generate"
-        with operation_scope(operation):
-            preflight_started_at = time.monotonic()
-            try:
-                self._preflight(event, "video")
-            except asyncio.CancelledError:
-                raise
-            except Exception as exc:
-                self._log_media_failure(
-                    operation,
-                    preflight_started_at,
-                    "preflight",
-                    exc,
-                    source_prompt=prompt,
-                )
-                raise
-            async with self._media_sem:
+        with task_deadline_scope(self._config.task_timeout_seconds):
+            operation = "video_generate"
+            with operation_scope(operation):
+                preflight_started_at = time.monotonic()
                 try:
-                    lock = self._session_guard(event)
+                    self._preflight(event, "video")
+                except asyncio.CancelledError:
+                    raise
                 except Exception as exc:
                     self._log_media_failure(
                         operation,
                         preflight_started_at,
-                        "session_lock",
+                        "preflight",
                         exc,
                         source_prompt=prompt,
                     )
                     raise
-                await lock.acquire()
-                paths: list[Path] = []
-                started_at = time.monotonic()
-                stage = "input"
-                request_prompt = ""
-                request_params: dict[str, object] = {}
-                try:
-                    (
-                        image_data_url,
-                        reference_aspect_ratio,
-                    ) = await self._resolve_video_reference_image(event, reference_image_url)
-                    stage = "prompt_processing"
-                    request = await self._resolve_video_request(
-                        prompt,
-                        has_reference_image=bool(image_data_url),
-                        reference_aspect_ratio=reference_aspect_ratio,
-                        skip=skip_prompt_processing,
-                    )
-                    request_prompt = request.prompt
-                    request_params = {
-                        "duration": request.duration,
-                        "aspect_ratio": request.aspect_ratio,
-                        "resolution": request.resolution,
-                        "reference_image_present": bool(image_data_url),
-                    }
-                    safe_task_log(
-                        logging.INFO,
-                        "请求开始",
-                        operation=operation,
-                        source_prompt=prompt,
-                        request_prompt=request_prompt,
-                        request_params=request_params,
-                        prompt_mode=self._effective_prompt_mode(
-                            self._config, has_reference_image=bool(image_data_url)
-                        ),
-                        reference_image="有" if image_data_url else "无",
-                        reference_aspect_ratio=reference_aspect_ratio,
-                        candidate_models=", ".join(self._config.video_models),
-                    )
-                    await self._send_media_progress(
-                        event,
-                        operation,
-                        self._media_progress_text(operation),
-                    )
-                    stage = "generate"
-                    outcome = await self._create_video_with_fallback(
-                        request,
-                        image_data_url,
-                        self._config.video_models,
-                        started_at,
-                    )
-                    request_id = outcome.value
-                    safe_log(
-                        logging.DEBUG,
-                        "video_created",
-                        operation=operation,
-                        request_id=request_id,
-                    )
-                    stage = "poll"
-                    job = await self._client.wait_for_video(request_id)
-                    if job.status == "failed":
-                        raise ProtocolError(f"视频生成失败：{job.error_code}", code="video_failed")
-                    dest = self._workspace.allocate_video_path(request_id)
-                    paths.append(dest)
-                    stage = "download"
-                    await self._client.download_video(
-                        request_id,
-                        dest,
-                        max_bytes=self._config.max_video_download_mb * 1024 * 1024,
-                    )
-                    stage = "send"
-                    await self._sender.send_video(event, dest)
-                    await self._finish(paths, success=True)
-                    safe_task_log(
-                        logging.INFO,
-                        "请求完成",
-                        operation=operation,
-                        model=outcome.model,
-                        result="视频生成并发送成功",
-                        request_params=request_params,
-                        media_count=1,
-                        candidate_fallbacks=max(outcome.candidate_attempts - 1, 0),
-                        retry_count=task_retry_count(),
-                        elapsed_ms=self._elapsed_ms(started_at),
-                    )
-                except asyncio.CancelledError:
-                    await self._finish(paths, success=False)
-                    raise
-                except Exception as exc:
-                    await self._finish(paths, success=False)
-                    self._log_media_failure(
-                        operation,
-                        started_at,
-                        stage,
-                        exc,
-                        source_prompt=prompt,
-                        request_prompt=request_prompt,
-                        request_params=request_params,
-                    )
-                    raise
-                finally:
-                    self._release_session_lock(event, lock)
+                async with self._media_sem:
+                    try:
+                        lock = self._session_guard(event)
+                    except Exception as exc:
+                        self._log_media_failure(
+                            operation,
+                            preflight_started_at,
+                            "session_lock",
+                            exc,
+                            source_prompt=prompt,
+                        )
+                        raise
+                    await lock.acquire()
+                    paths: list[Path] = []
+                    started_at = time.monotonic()
+                    stage = "input"
+                    request_prompt = ""
+                    request_params: dict[str, object] = {}
+                    try:
+                        (
+                            image_data_url,
+                            reference_aspect_ratio,
+                        ) = await self._resolve_video_reference_image(event, reference_image_url)
+                        stage = "prompt_processing"
+                        request = await self._resolve_video_request(
+                            prompt,
+                            has_reference_image=bool(image_data_url),
+                            reference_aspect_ratio=reference_aspect_ratio,
+                            skip=skip_prompt_processing,
+                        )
+                        request_prompt = request.prompt
+                        request_params = {
+                            "duration": request.duration,
+                            "aspect_ratio": request.aspect_ratio,
+                            "resolution": request.resolution,
+                            "reference_image_present": bool(image_data_url),
+                        }
+                        safe_task_log(
+                            logging.INFO,
+                            "请求开始",
+                            operation=operation,
+                            source_prompt=prompt,
+                            request_prompt=request_prompt,
+                            request_params=request_params,
+                            prompt_mode=self._effective_prompt_mode(
+                                self._config, has_reference_image=bool(image_data_url)
+                            ),
+                            reference_image="有" if image_data_url else "无",
+                            reference_aspect_ratio=reference_aspect_ratio,
+                            candidate_models=", ".join(self._config.video_models),
+                        )
+                        await self._send_media_progress(
+                            event,
+                            operation,
+                            self._media_progress_text(operation),
+                        )
+                        stage = "generate"
+                        outcome = await self._create_video_with_fallback(
+                            request,
+                            image_data_url,
+                            self._config.video_models,
+                            started_at,
+                        )
+                        request_id, _job = outcome.value
+                        dest = self._workspace.allocate_video_path(request_id)
+                        paths.append(dest)
+                        stage = "download"
+                        await self._client.download_video(
+                            request_id,
+                            dest,
+                            max_bytes=self._config.max_video_download_mb * 1024 * 1024,
+                        )
+                        stage = "send"
+                        await self._sender.send_video(event, dest)
+                        await self._finish(paths, success=True)
+                        safe_task_log(
+                            logging.INFO,
+                            "请求完成",
+                            operation=operation,
+                            model=outcome.model,
+                            result="视频生成并发送成功",
+                            request_params=request_params,
+                            media_count=1,
+                            candidate_fallbacks=max(outcome.candidate_attempts - 1, 0),
+                            retry_count=task_retry_count(),
+                            elapsed_ms=self._elapsed_ms(started_at),
+                        )
+                    except asyncio.CancelledError:
+                        await self._finish(paths, success=False)
+                        raise
+                    except Exception as exc:
+                        await self._finish(paths, success=False)
+                        self._log_media_failure(
+                            operation,
+                            started_at,
+                            stage,
+                            exc,
+                            source_prompt=prompt,
+                            request_prompt=request_prompt,
+                            request_params=request_params,
+                        )
+                        raise
+                    finally:
+                        self._release_session_lock(event, lock)
 
     async def _resolve_image_request(self, prompt: str, *, skip: bool = False):
         if self._prompt_processor is None or skip:

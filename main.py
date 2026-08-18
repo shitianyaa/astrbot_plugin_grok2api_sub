@@ -102,7 +102,7 @@ class Grok2APISubPlugin(HelpMixin, SearchMixin, MediaMixin, PanelMixin, Star):
                 model_retry_count=cfg.model_retry_count,
                 video_retry_count=cfg.video_retry_count,
                 retry_base_delay=cfg.retry_base_delay_seconds,
-                retry_excluded_errors=cfg.retry_excluded_errors,
+                model_switch_errors=cfg.model_switch_errors,
             )
             sender = DeliveryAdapter(workspace)
             self._sender = sender

@@ -2,6 +2,14 @@
 
 from .access import check_access, redacted_id
 from .config import PluginConfig
+from .deadline import (
+    check_task_deadline,
+    get_task_deadline,
+    remaining_task_timeout,
+    reset_task_deadline,
+    set_task_deadline,
+    task_deadline_scope,
+)
 from .errors import (
     APIError,
     ConfigurationError,
@@ -65,18 +73,24 @@ __all__ = [
     "VideoJob",
     "_sanitize_user_message",
     "check_access",
+    "check_task_deadline",
+    "get_task_deadline",
     "operation_scope",
     "record_task_attempt",
     "record_task_model",
     "record_task_retry",
     "redacted_id",
+    "remaining_task_timeout",
+    "reset_task_deadline",
     "resolve_platform",
     "safe_log",
     "safe_task_log",
     "sanitize_diagnostic",
     "sanitize_prompt_json",
+    "set_task_deadline",
     "task_attempts",
     "task_candidate_attempts",
+    "task_deadline_scope",
     "task_model",
     "task_retry_count",
 ]

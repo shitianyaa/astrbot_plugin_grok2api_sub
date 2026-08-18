@@ -15,20 +15,21 @@ class FakeResponse:
         self,
         status: int = 200,
         headers: dict | None = None,
-        body: str = "",
+        body: str | bytes = "",
         error: Exception | None = None,
     ) -> None:
         self.status = status
         self.headers = headers or {}
-        self._body = body
+        self._body = body if isinstance(body, str) else body.decode("utf-8", errors="replace")
+        self._raw_bytes = body.encode("utf-8") if isinstance(body, str) else body
         self._error = error
         self._text_called = 0
         self._json_called = 0
-        self._bounded = FakeStreamReader(body.encode("utf-8"))
+        self._bounded = FakeStreamReader(self._raw_bytes)
 
     @property
     def content_length(self) -> int:
-        return len(self._body.encode("utf-8"))
+        return len(self._raw_bytes)
 
     @property
     def content(self):

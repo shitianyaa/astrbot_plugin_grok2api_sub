@@ -42,6 +42,10 @@ DEFAULT_IMAGE_MODELS = (
     "grok-imagine-image",
     "grok-imagine-image-quality",
 )
+
+DEFAULT_MODEL_SWITCH_ERRORS = (
+    "401,403,404,429,auth_error,not_found,rate_limited,model_not_found,model_not_allowed"
+)
 DEFAULT_IMAGE_EDIT_MODELS = (
     "grok-imagine-image",
     "grok-imagine-image-quality",
@@ -180,17 +184,17 @@ def parse_panel_cron_expression(value: object) -> str:
     return expression
 
 
-def parse_retry_excluded_errors(value: object) -> frozenset[str]:
-    """Parse configured HTTP status codes or stable error codes to skip.
+def parse_model_switch_errors(value: object) -> frozenset[str]:
+    """Parse configured HTTP status codes or stable error codes for model switching.
 
     The WebUI field is intentionally a comma-separated string rather than a
     free-form object. It can only contain HTTP statuses (100-599) or lowercase
     stable plugin error codes, never upstream response text.
     """
     if not isinstance(value, str):
-        _fail("advanced_settings.retry_excluded_errors", "必须是英文逗号分隔的字符串")
+        _fail("advanced_settings.model_switch_errors", "必须是英文逗号分隔的字符串")
     if "，" in value:
-        _fail("advanced_settings.retry_excluded_errors", "请使用英文逗号 , 分隔")
+        _fail("advanced_settings.model_switch_errors", "请使用英文逗号 , 分隔")
     values: set[str] = set()
     for raw in value.split(","):
         token = raw.strip().lower()
@@ -199,12 +203,10 @@ def parse_retry_excluded_errors(value: object) -> frozenset[str]:
         if token.isdecimal():
             status = int(token)
             if not 100 <= status <= 599:
-                _fail(
-                    "advanced_settings.retry_excluded_errors", "HTTP 状态码必须在 100 到 599 之间"
-                )
+                _fail("advanced_settings.model_switch_errors", "HTTP 状态码必须在 100 到 599 之间")
         elif not _RETRY_ERROR_CODE_RE.fullmatch(token):
             _fail(
-                "advanced_settings.retry_excluded_errors",
+                "advanced_settings.model_switch_errors",
                 "只能填写 HTTP 状态码或小写稳定错误码",
             )
         values.add(token)
@@ -317,6 +319,7 @@ class PluginConfig:
     max_search_output_chars: int
 
     connect_timeout_seconds: int
+    task_timeout_seconds: int
     search_timeout_seconds: int
     image_timeout_seconds: int
     video_create_timeout_seconds: int
@@ -341,7 +344,7 @@ class PluginConfig:
     model_retry_count: int
     video_retry_count: int
     retry_base_delay_seconds: float
-    retry_excluded_errors: frozenset[str]
+    model_switch_errors: frozenset[str]
 
     save_media: bool
     temp_retention_hours: int
@@ -590,6 +593,12 @@ class PluginConfig:
                 1,
                 60,
             ),
+            task_timeout_seconds=_to_int(
+                "advanced_settings.task_timeout_seconds",
+                g(adv, "task_timeout_seconds", 1800),
+                60,
+                7200,
+            ),
             search_timeout_seconds=_to_int(
                 "advanced_settings.search_timeout_seconds",
                 g(adv, "search_timeout_seconds", 180),
@@ -699,7 +708,9 @@ class PluginConfig:
                 0.1,
                 5.0,
             ),
-            retry_excluded_errors=parse_retry_excluded_errors(g(adv, "retry_excluded_errors", "")),
+            model_switch_errors=parse_model_switch_errors(
+                g(adv, "model_switch_errors", DEFAULT_MODEL_SWITCH_ERRORS)
+            ),
             save_media=_bool_flag("advanced_settings.save_media", g(adv, "save_media"), False),
             temp_retention_hours=_to_int(
                 "advanced_settings.temp_retention_hours",

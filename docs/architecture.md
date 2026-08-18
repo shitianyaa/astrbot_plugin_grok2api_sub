@@ -84,25 +84,27 @@ Provider；无论选哪个 Provider，插件都以完成态 `web_search_call` �
 - `grok2api_web_search` 是给 AstrBot 主模型选择的 FunctionTool。主模型决定是否调用；调用后 Tool
   同样强制远端搜索，但只返回受 `show_search_sources` 与 `max_search_sources` 限制的结果，最终用户回复仍由主模型组织。
 
-## 多模型搜索回退矩阵
+## 多模型搜索与媒体回退矩阵
 
-`capability_settings.search_models` 按多行、上方优先配置有序候选。每次搜索
+`capability_settings.search_models`、`image_models`、`image_edit_models`、`video_models` 按多行、上方优先配置有序候选。每次任务
 都从配置第一项开始，**不**根据历史成功率/延迟/费用动态排序，**不**把成功模型
 写回配置。
 
-允许切换到下一候选的失败只有 3 类：
+切换到下一候选的契约：
 
-| 失败 | 错误码 | 行为 |
+| 失败类型 | 典型错误码 / 场景 | 行为 |
 |---|---|---|
 | 模型不在目录 | `not_visible` | 跳过，不发 POST |
-| 搜索模型不存在 | `model_not_found` | 当前候选重试耗尽后切换到下一候选 |
-| 无权使用该模型 | `model_not_allowed` | 当前候选重试耗尽后切换到下一候选 |
-| 模型未执行联网搜索 | `search_not_performed` | 当前候选重试耗尽后切换到下一候选 |
+| 远端稳定错误 | `model_not_found`、`model_not_allowed`、`unsupported_model`、`search_not_performed` | 当前候选重试耗尽后切换到下一候选；命中 `model_switch_errors` 立即切换 |
+| 远端暂时/业务失败 | HTTP 4xx/5xx、网络中断、请求超时、JSON 无效、业务 error 块 | 当前候选重试耗尽后切换到下一候选；命中 `model_switch_errors` 立即切换 |
+| 视频任务终态失败 | `status=failed` | 按 `video_retry_count` 重新创建新任务重试，耗尽后切换下一候选 |
+| 本地不可重试错误 | 输入校验失败、媒体大小超限、SSRF / 越界路径、未初始化、权限拒绝 | 立即终止本次任务，不切换下一候选 |
+| 用户任务超时 | `task_timeout`（超过 `task_timeout_seconds`） | 立即终止重试与候选切换，清理工作区并安全退出 |
 
 远端 HTTP、网络、JSON、远端结构错误和 `search_not_performed` 都会先在当前候选上按
-`model_retry_count` 重试。重试耗尽后，只有上表的三类候选级结果会继续下一候选；其他错误立即
-向上抛出。`retry_excluded_errors` 只会跳过当前候选的重试，不会取消这三类候选回退。全部候选耗尽时
-抛 `search_models_exhausted`。
+`model_retry_count` 重试。重试耗尽后，所有远端错误均允许继续下一候选；本地错误与任务超时立即
+向上抛出。`model_switch_errors` 只会跳过当前候选的重试并立即进入下一候选。全部候选耗尽时
+抛 `*_models_exhausted`。
 
 注意事项：
 
@@ -131,29 +133,32 @@ Provider；无论选哪个 Provider，插件都以完成态 `web_search_call` �
 - 每个媒体任务使用多行块记录开始、完成或失败；开始块完整记录原始提示词与实际提示词，结束块记录最终模型、候选回退、远端重试、结果和耗时。日志不包含图片内容、参考图 URL、媒体 URL、请求 ID、上游响应正文或凭据。
 - INFO 仅记录任务开始、汇总完成或失败；任务块包含原始/实际提示词、脱敏请求参数、最终模型、候选回退、远端重试和结果状态。通用命令包装、消息发送、模型选择、提示词处理过程、视频轮询、面板背景回退、面板渲染准备和每次 HTTP/管理面请求均仅在 DEBUG 记录。任务失败以 WARN 的最终块记录，包含稳定错误码与最终 HTTP 状态（有时）；不使用 `trace_id`。
 
-## 远端重试边界
+## 远端重试与任务超时边界
 
-- `model_retry_count` 管理搜索、生图、改图、模型目录和图片下载；`video_retry_count` 管理视频创建、
+- `task_timeout_seconds` 覆盖搜索、生图、改图和视频整个用户任务（默认 1800 秒）。服务入口使用 `asyncio.wait_for` 主动取消超时协程，并通过 ContextVar-backed `task_deadline_scope` 向传输层传递剩余预算；每次 HTTP 尝试与等待间隔都会按剩余时间裁剪。超时到达后统一抛出 `task_timeout` 终止。
+- `model_retry_count` 管理搜索、生图、改图、模型目录和图片下载；`video_retry_count` 管理视频任务重建重试、
   视频状态轮询和视频下载。两项均表示首次调用以外的额外次数，默认 `2`。
-- `retry_excluded_errors` 为空时，远端 HTTP、网络、JSON 解析和远端响应结构错误均允许重试；
-  可按 HTTP 状态码或稳定错误码关闭特定重试。`Retry-After` 仍优先于指数退避。
+- 未命中 `model_switch_errors` 时，远端 HTTP、网络、JSON 解析和远端响应结构错误均允许重试；
+  命中配置的 HTTP 状态码或稳定错误码时跳过当前模型重试。`Retry-After` 仍优先于指数退避。
 - 数字秒和 HTTP-date 两种 `Retry-After` 均受支持；HTTP-date 固定按 UTC 解释，最终退避上限为 30 秒。
 - 生成 POST 也遵循此策略，因此可能产生重复生成或重复扣费。平台发送、访问控制、用户输入、媒体大小
   与路径安全错误均位于传输层之外，绝不自动重放。
-- 每一次 HTTP 尝试只使用其操作自己的单次总超时。重试不裁剪单次超时，也不由视频轮询生命周期
-  重新分配时间预算。
 - 任务汇总在每个 HTTP 调用真正发出第 2 次及后续请求时累计一次重试；模型目录、生成、轮询和下载共享任务计数，独立的正常轮询请求均从首次尝试开始，不计为重试。
 
-## 视频状态机
+## 视频状态机与任务重建
 
 ```text
-create_video -> request_id -> wait_for_video (poll) -> done/failed
-   -> download /v1/videos/{id}/content (.part, 原子改名) -> send_video
+[创建] create_video -> request_id -> wait_for_video (poll) ->
+  ├── done: download /v1/videos/{id}/content (.part, 原子改名) -> send_video
+  └── failed: 检查 model_switch_errors
+        ├── 命中或重试耗尽 -> 切换下一候选视频模型
+        └── 未超限 -> 重新发起 create_video 创建新任务并轮询新 request_id
 ```
 
 - 轮询支持 `pending/done/failed`，progress 限制到 0–100。
-- 每次状态查询使用 `video_poll_timeout_seconds`；处于 `pending` 时按
-  `video_poll_interval_seconds` 继续轮询，直到远端返回 `done` 或 `failed`。没有插件侧总等待上限。
+- 每次状态查询使用 `video_poll_timeout_seconds` 并受全局 task deadline 裁剪；处于 `pending` 时按
+  `video_poll_interval_seconds` 继续轮询，直到远端返回 `done` 或 `failed`。
+- 收到 `status=failed` 时，不再重复轮询已失败的 `request_id`，而是重新创建新的视频任务。
 - 完成后忽略响应里的绝对 `video.url` 主机，固定向配置的 base URL 请求 content。
 
 ## 清理生命周期

@@ -38,10 +38,10 @@ def test_error_message_stable_and_short():
     assert e.status == 401
 
 
-def test_api_error_can_be_marked_retryable():
-    e = APIError(503, "upstream_503", "上游暂时失败", retryable=True)
+def test_api_error_defaults_to_retryable():
+    e = APIError(400, "new_upstream_error", "上游业务失败")
     assert e.retryable is True
-    assert e.status == 503
+    assert e.status == 400
 
 
 def test_subclass_hierarchy():

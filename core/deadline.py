@@ -1,0 +1,8 @@
+"""Backward-compatibility bridge: re-exports from core.common.deadline."""
+
+import sys
+
+from .common import deadline as _m
+
+globals().update({k: v for k, v in _m.__dict__.items() if not k.startswith("__")})
+sys.modules[__name__] = _m

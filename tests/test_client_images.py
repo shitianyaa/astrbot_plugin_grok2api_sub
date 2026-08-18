@@ -31,7 +31,7 @@ def _client(
     api_base="https://grok.example.com",
     *,
     model_retry_count: int = 2,
-    retry_excluded_errors: frozenset[str] = frozenset(),
+    model_switch_errors: frozenset[str] = frozenset(),
 ) -> tuple[Grok2APIClient, FakeSession]:
     s = FakeSession()
     t = HTTPTransport(
@@ -43,7 +43,7 @@ def _client(
     return Grok2APIClient(
         t,
         model_retry_count=model_retry_count,
-        retry_excluded_errors=retry_excluded_errors,
+        model_switch_errors=model_switch_errors,
     ), s
 
 
@@ -273,10 +273,10 @@ async def test_image_post_503_retries_then_succeeds():
     assert len(s.calls) == 2
 
 
-async def test_image_post_timeout_honors_excluded_network_error():
+async def test_image_post_timeout_honors_model_switch_network_error():
     import asyncio
 
-    c, s = _client(retry_excluded_errors=frozenset({"network_error"}))
+    c, s = _client(model_switch_errors=frozenset({"network_error"}))
     s.push(FakeResponse(200, error=asyncio.TimeoutError()))
     with pytest.raises(Exception) as ei:
         await c.generate_images(

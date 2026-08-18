@@ -61,7 +61,7 @@ class APIError(PluginError):
         upstream_code: str,
         user_message: str,
         *,
-        retryable: bool = False,
+        retryable: bool = True,
     ) -> None:
         super().__init__(user_message, code=upstream_code, retryable=retryable)
         self.status = status

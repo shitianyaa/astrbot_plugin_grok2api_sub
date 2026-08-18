@@ -44,9 +44,9 @@
 - `panel_background_ready` 与各图源失败原因均在 DEBUG 记录，包含最终背景状态、具体图源和安全图片名，且不输出完整媒体 URL 或查询参数。
 - 默认代理地址 `client_proxy_url` 从 `http://127.0.0.1:3067` 改为空字符串（用户不再需代理时手动清空）。
 - `/g2帮助` 改为动态输出能力状态（可用/未配置，不泄露密钥或凭据）。
-- 配置注入：`connect_timeout_seconds`、`search_timeout_seconds`、`image_timeout_seconds`、`video_create_timeout_seconds`、`video_poll_timeout_seconds`、`video_poll_interval_seconds`、`download_timeout_seconds`、`max_input_image_mb`、`model_retry_count`、`video_retry_count`、`retry_base_delay_seconds`、`retry_excluded_errors` 从 `PluginConfig` 完整注入 transport/client/media，不再硬编码。
+- 配置注入：`connect_timeout_seconds`、`search_timeout_seconds`、`image_timeout_seconds`、`video_create_timeout_seconds`、`video_poll_timeout_seconds`、`video_poll_interval_seconds`、`download_timeout_seconds`、`max_input_image_mb`、`model_retry_count`、`video_retry_count`、`retry_base_delay_seconds`、`model_switch_errors` 从 `PluginConfig` 完整注入 transport/client/media，不再硬编码。
 - **远端重试分组**：搜索、生图、改图、模型目录和图片下载共用 `model_retry_count`；视频创建、状态轮询和视频下载使用 `video_retry_count`。两项均为不含首次请求的额外次数，默认 `2`。
-- **默认重试范围**：空的 `retry_excluded_errors` 会重试远端 HTTP、网络、JSON 与远端响应结构错误，包含生成 POST；可用英文逗号排除 HTTP 状态码或稳定错误码。生成请求可能重复生成或扣费。
+- **默认重试范围**：远端 HTTP、网络、JSON 与远端响应结构错误默认都会重试，包含生成 POST；命中 `model_switch_errors` 的 HTTP 状态码或稳定错误码时，跳过当前模型的剩余重试并直接切换下一模型。生成请求可能重复生成或扣费。
 - **视频轮询超时**：新增 `video_poll_timeout_seconds` 作为每次状态查询的单次超时，移除 `video_max_wait_seconds` 的插件侧总等待上限；重试不再裁剪任何单次超时。
 - **配置重构为 4 分组**：`_conf_schema.json` 顶层只有 `connection_settings`/`capability_settings`/`access_settings`/`advanced_settings` 四个 `object`；`api_base_url`/`client_proxy_url` 默认空字符串，未配置远端地址时插件可初始化但能力禁用。
 - **多搜索模型**：`search_model` 单值改为 `search_models` 有序候选（英文逗号分隔、左侧优先、最多 12 个、保序去重、中文逗号拒绝）；默认 `grok-4.5,grok-4.3,grok-4.20-0309-reasoning,grok-4.20-0309-non-reasoning,grok-4.20-multi-agent-0309,grok-build-0.1,grok-chat-fast`。
