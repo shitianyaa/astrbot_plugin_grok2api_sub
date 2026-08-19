@@ -55,7 +55,9 @@ async def test_image_processing_failure_retries_with_skip():
     calls: list[bool] = []
 
     class Svc:
-        async def deliver_generated_images(self, event, prompt, *, skip_prompt_processing=False):
+        async def deliver_generated_images(
+            self, event, prompt, *, skip_prompt_processing=False, **_kwargs
+        ):
             calls.append(skip_prompt_processing)
             if not skip_prompt_processing:
                 raise PluginError("处理失败", code="prompt_processing_provider_failed")
@@ -71,7 +73,9 @@ async def test_image_processing_failure_retries_with_skip():
 
 async def test_image_processing_failure_reports_when_switch_off():
     class Svc:
-        async def deliver_generated_images(self, event, prompt, *, skip_prompt_processing=False):
+        async def deliver_generated_images(
+            self, event, prompt, *, skip_prompt_processing=False, **_kwargs
+        ):
             raise PluginError("处理失败", code="prompt_processing_provider_failed")
 
     mixin = _mixin(_fallback_cfg(fallback_enabled=False, mode="enhance"))
@@ -87,7 +91,9 @@ async def test_image_processing_failure_not_fallback_when_mode_off():
     calls: list[bool] = []
 
     class Svc:
-        async def deliver_generated_images(self, event, prompt, *, skip_prompt_processing=False):
+        async def deliver_generated_images(
+            self, event, prompt, *, skip_prompt_processing=False, **_kwargs
+        ):
             calls.append(skip_prompt_processing)
             raise PluginError("处理失败", code="prompt_processing_provider_failed")
 
@@ -104,7 +110,9 @@ async def test_edit_image_processing_failure_retries_with_skip():
     calls: list[bool] = []
 
     class Svc:
-        async def deliver_edited_image(self, event, prompt, *, skip_prompt_processing=False):
+        async def deliver_edited_image(
+            self, event, prompt, *, skip_prompt_processing=False, **_kwargs
+        ):
             calls.append(skip_prompt_processing)
             if not skip_prompt_processing:
                 raise PluginError("处理失败", code="prompt_processing_timeout")
@@ -123,7 +131,7 @@ async def test_video_processing_failure_retries_with_skip_and_reference_image():
 
     class Svc:
         async def deliver_video(
-            self, event, prompt, *, reference_image_url="", skip_prompt_processing=False
+            self, event, prompt, *, reference_image_url="", skip_prompt_processing=False, **_kwargs
         ):
             calls.append(skip_prompt_processing)
             if not skip_prompt_processing:
@@ -143,7 +151,7 @@ async def test_video_fallback_failure_path_reports_error():
 
     class Svc:
         async def deliver_video(
-            self, event, prompt, *, reference_image_url="", skip_prompt_processing=False
+            self, event, prompt, *, reference_image_url="", skip_prompt_processing=False, **_kwargs
         ):
             calls.append(skip_prompt_processing)
             if not skip_prompt_processing:

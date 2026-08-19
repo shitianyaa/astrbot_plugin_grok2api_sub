@@ -157,15 +157,16 @@ def _pyproject_version(root: Path, result: CheckResult) -> str | None:
 
 
 def _config_version(root: Path, result: CheckResult) -> str | None:
-    text = _read_text(root, "core/config.py", result)
+    config_path = (
+        "core/common/config.py" if (root / "core/common/config.py").exists() else "core/config.py"
+    )
+    text = _read_text(root, config_path, result)
     if text is None:
         return None
     match = CONFIG_VERSION_RE.search(text)
     version = _normalise_version(match.group("version") if match else None)
     if version is None:
-        result.errors.append(
-            Error("invalid_version", "core/config.py", "version() must return vX.Y.Z")
-        )
+        result.errors.append(Error("invalid_version", config_path, "version() must return vX.Y.Z"))
     return version
 
 

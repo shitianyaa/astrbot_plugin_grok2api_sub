@@ -115,3 +115,19 @@ def test_media_command_requires_prompt_after_url_option():
         )
 
     assert caught.value.code == "prompt_length"
+
+
+@pytest.mark.parametrize(
+    ("input_text", "expected_prompt", "expected_search"),
+    [
+        ("-s 画一只洛茜吃草莓", "画一只洛茜吃草莓", True),
+        ("画一只洛茜吃草莓 -s", "画一只洛茜吃草莓", True),
+        ("--search 1980年代索尼随身听", "1980年代索尼随身听", True),
+        ("1980年代索尼随身听 --search", "1980年代索尼随身听", True),
+        ("画一只洛茜吃草莓", "画一只洛茜吃草莓", False),
+    ],
+)
+def test_media_command_extracts_explicit_search_flags(input_text, expected_prompt, expected_search):
+    parsed = parse_media_command(input_text, allow_reference_image_url=True)
+    assert parsed.prompt == expected_prompt
+    assert parsed.explicit_search is expected_search

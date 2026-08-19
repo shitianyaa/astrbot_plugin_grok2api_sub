@@ -479,71 +479,14 @@ async def test_character_reference_injection_in_image_and_video():
     assert "character_reference" not in payload
 
 
-async def test_fidelity_failure_rejects_and_raises_retryable_error():
-    # Quotes missing
+async def test_enhancement_allows_english_output_and_preserves_prompt():
     context = Context(
         _assistant(
             {
-                "prompt": "A girl in a jacket outdoors",
-                "aspect_ratio": "1:1",
-                "resolution": "1k",
-            }
-        )
-    )
-    processor = PromptProcessor(context, _config(mode="enhance"))
-    with pytest.raises(PluginError) as exc_info:
-        await processor.resolve_image("女孩衣服上写着 'KEEPOUT'")
-    assert exc_info.value.code == "prompt_processing_fidelity_failed"
-    assert exc_info.value.retryable is True
-
-    # Negation missing in image
-    context = Context(
-        _assistant(
-            {
-                "prompt": "A girl in a jacket with dogs",
-                "aspect_ratio": "1:1",
-                "resolution": "1k",
-            }
-        )
-    )
-    processor = PromptProcessor(context, _config(mode="enhance"))
-    with pytest.raises(PluginError) as exc_info:
-        await processor.resolve_image("女孩穿着夹克，不要出现狗")
-    assert exc_info.value.code == "prompt_processing_fidelity_failed"
-    assert exc_info.value.retryable is True
-
-    # Negation missing in video
-    context = Context(
-        _assistant(
-            {
-                "prompt": "A robot walking",
-                "duration": 6,
-                "aspect_ratio": "16:9",
-                "resolution": "720p",
-            }
-        )
-    )
-    processor = PromptProcessor(context, _config(mode="enhance"))
-    with pytest.raises(PluginError) as exc_info:
-        await processor.resolve_video("机器人前进，不要爆炸")
-    assert exc_info.value.code == "prompt_processing_fidelity_failed"
-    assert exc_info.value.retryable is True
-
-    # Image edit missing quote
-    context = Context(_assistant({"prompt": "Change the background color to white"}))
-    processor = PromptProcessor(context, _config(mode="enhance"))
-    with pytest.raises(PluginError) as exc_info:
-        await processor.resolve_image_edit("将背景改成白色，上面写着 'SAMPLE'")
-    assert exc_info.value.code == "prompt_processing_fidelity_failed"
-    assert exc_info.value.retryable is True
-
-
-async def test_fidelity_success_allows_valid_enhancement():
-    # Quotes & negations preserved
-    context = Context(
-        _assistant(
-            {
-                "prompt": "A girl wearing a jacket with 'KEEPOUT' text. No dogs in the scene.",
+                "prompt": (
+                    "A young woman wearing a jacket with 'KEEPOUT' printed on it, "
+                    "standing in the rain. No dogs."
+                ),
                 "aspect_ratio": "1:1",
                 "resolution": "1k",
             }
@@ -555,42 +498,18 @@ async def test_fidelity_success_allows_valid_enhancement():
     assert "No dogs" in req.prompt
 
 
-async def test_fidelity_failure_runs_one_strict_repair_attempt():
-    class SequenceContext(Context):
-        def __init__(self, responses):
-            super().__init__()
-            self.responses = list(responses)
-
-        async def llm_generate(self, **kwargs):
-            self.calls.append(kwargs)
-            return self.responses.pop(0)
-
-    failed = _assistant(
-        {
-            "prompt": "A girl in a studio.",
-            "aspect_ratio": None,
-            "resolution": "1k",
-        }
+async def test_resolve_image_edit_passes_character_reference():
+    context = Context(
+        _assistant({"prompt": "Change the jacket color to silver based on character reference"})
     )
-    repaired = _assistant(
-        {
-            "prompt": "A red-haired girl holds a black umbrella in her left hand.",
-            "aspect_ratio": None,
-            "resolution": "1k",
-        }
-    )
-    context = SequenceContext([failed, repaired])
     processor = PromptProcessor(context, _config(mode="enhance"))
-
-    result = await processor.resolve_image(
-        "A red-haired girl holds a black umbrella in her left hand."
+    prompt = await processor.resolve_image_edit(
+        "把夹克改成银色",
+        character_reference="Silver jacket with neon trim",
     )
-
-    assert result.prompt == "A red-haired girl holds a black umbrella in her left hand."
-    assert len(context.calls) == 2
-    repair_payload = json.loads(context.calls[1]["prompt"])
-    assert repair_payload["repair_candidate"] == "A girl in a studio."
-    assert "failed deterministic fidelity checks" in context.calls[1]["system_prompt"]
+    assert prompt == "Change the jacket color to silver based on character reference"
+    payload = json.loads(context.calls[0]["prompt"])
+    assert payload["character_reference"] == "Silver jacket with neon trim"
 
 
 async def test_deadline_bounds_wait_for_timeout():

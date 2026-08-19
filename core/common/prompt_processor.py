@@ -14,7 +14,6 @@ from .deadline import remaining_task_timeout
 from .errors import PluginError
 from .models import ImageGenerationRequest, VideoGenerationRequest
 from .observability import safe_log
-from .prompt_fidelity import fidelity_check
 
 _ASPECT_RATIOS = ("1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3")
 _IMAGE_RESOLUTIONS = ("1k", "2k")
@@ -53,7 +52,6 @@ Do not replace a specific entity with a generic archetype.
 Do not change subject count or spatial relationships.
 Do not remove negative requirements.
 Do not invent a different character, action, costume, scene, or object.
-Do not translate unless explicitly requested.
 Do not add quality claims such as "8K", "masterpiece", "ultra-detailed",
 "cinematic", or "photorealistic" unless the user explicitly requests them.
 
@@ -65,11 +63,16 @@ Structured media parameters are authoritative:
 Do not force structured parameters into the rewritten prompt text.
 If a parameter is not explicitly requested, do not invent it.
 
+Translate and compose the output `prompt` in descriptive, visually precise
+English optimized for image and video generation models (Grok / Flux / SD),
+unless the user explicitly requests another language for the entire prompt.
+However, strictly preserve any explicit quoted text, required signs, or
+printed words verbatim (e.g. keep the exact text '不要忘记我').
+
 You may improve wording, lighting, composition, camera language, material
 description, and visual clarity only when all explicit requirements remain
 semantically unchanged.
 
-Keep the user's language unless translation is explicitly requested.
 Before returning the JSON object, silently verify that every explicit
 requirement is still present and semantically unchanged."""
 
@@ -269,26 +272,9 @@ class PromptProcessor:
             )
         else:
             self._require_exact_keys(data, {"prompt", "aspect_ratio", "resolution"})
-            try:
-                prompt = self._parse_prompt(
-                    data["prompt"], source_prompt=source_prompt, media_type="image"
-                )
-            except PluginError as exc:
-                if exc.code != "prompt_processing_fidelity_failed":
-                    raise
-                repaired = await self._run_model(
-                    "image",
-                    source_prompt,
-                    mode=mode,
-                    has_reference_image=False,
-                    character_reference=character_reference,
-                    repair_candidate=str(data["prompt"]),
-                )
-                self._require_exact_keys(repaired, {"prompt", "aspect_ratio", "resolution"})
-                prompt = self._parse_prompt(
-                    repaired["prompt"], source_prompt=source_prompt, media_type="image"
-                )
-                data = repaired
+            prompt = self._parse_prompt(
+                data["prompt"], source_prompt=source_prompt, media_type="image"
+            )
             request = ImageGenerationRequest(
                 prompt=prompt,
                 aspect_ratio=self._parse_aspect_ratio(data["aspect_ratio"]),
@@ -298,7 +284,11 @@ class PromptProcessor:
         return request
 
     async def resolve_image_edit(
-        self, source_prompt: str, *, has_reference_image: bool = True
+        self,
+        source_prompt: str,
+        *,
+        has_reference_image: bool = True,
+        character_reference: str = "",
     ) -> str:
         """Resolve an image-edit prompt; edits do not expose media parameters."""
         mode = self._effective_mode(has_reference_image=has_reference_image)
@@ -309,26 +299,12 @@ class PromptProcessor:
             source_prompt,
             mode=mode,
             has_reference_image=has_reference_image,
+            character_reference=character_reference,
         )
         self._require_exact_keys(data, {"prompt"})
-        try:
-            prompt = self._parse_prompt(
-                data["prompt"], source_prompt=source_prompt, media_type="image_edit"
-            )
-        except PluginError as exc:
-            if exc.code != "prompt_processing_fidelity_failed":
-                raise
-            repaired = await self._run_model(
-                "image_edit",
-                source_prompt,
-                mode=mode,
-                has_reference_image=has_reference_image,
-                repair_candidate=str(data["prompt"]),
-            )
-            self._require_exact_keys(repaired, {"prompt"})
-            prompt = self._parse_prompt(
-                repaired["prompt"], source_prompt=source_prompt, media_type="image_edit"
-            )
+        prompt = self._parse_prompt(
+            data["prompt"], source_prompt=source_prompt, media_type="image_edit"
+        )
         self._log_resolved_request("image_edit", prompt, mode=mode)
         return prompt
 
@@ -368,28 +344,9 @@ class PromptProcessor:
             )
         else:
             self._require_exact_keys(data, {"prompt", "duration", "aspect_ratio", "resolution"})
-            try:
-                prompt = self._parse_prompt(
-                    data["prompt"], source_prompt=source_prompt, media_type="video"
-                )
-            except PluginError as exc:
-                if exc.code != "prompt_processing_fidelity_failed":
-                    raise
-                repaired = await self._run_model(
-                    "video",
-                    source_prompt,
-                    mode=mode,
-                    has_reference_image=has_reference_image,
-                    character_reference=character_reference,
-                    repair_candidate=str(data["prompt"]),
-                )
-                self._require_exact_keys(
-                    repaired, {"prompt", "duration", "aspect_ratio", "resolution"}
-                )
-                prompt = self._parse_prompt(
-                    repaired["prompt"], source_prompt=source_prompt, media_type="video"
-                )
-                data = repaired
+            prompt = self._parse_prompt(
+                data["prompt"], source_prompt=source_prompt, media_type="video"
+            )
             request = VideoGenerationRequest(
                 prompt=prompt,
                 duration=self._parse_video_duration(data["duration"]),
@@ -593,12 +550,6 @@ class PromptProcessor:
         prompt = value.strip()
         if not self._config.prompt_min_chars <= len(prompt) <= self._config.prompt_max_chars:
             raise PluginError("提示词处理模型返回提示词长度无效", code="prompt_processing_invalid")
-        if not fidelity_check(source_prompt, prompt, media_type):
-            raise PluginError(
-                "提示词处理结果未通过保真度校验",
-                code="prompt_processing_fidelity_failed",
-                retryable=True,
-            )
         return prompt
 
     @staticmethod

@@ -15,15 +15,17 @@ REFERENCE_IMAGE_URL_MAX = 8192
 
 _IMAGE_URL_OPTION_RE = re.compile(r"(?<!\S)--image-url(?:=|\s+)(\S+)")
 _IMAGE_URL_FLAG_RE = re.compile(r"(?<!\S)--image-url(?:=|\s|$)")
+_SEARCH_FLAG_RE = re.compile(r"(?<!\S)(?:-s|--search)(?!\S)")
 _LEGACY_IPV4_LABEL_RE = re.compile(r"(?:0[xX][0-9A-Fa-f]+|0[0-7]*|\d+)\Z")
 
 
 @dataclass(frozen=True, slots=True)
 class ParsedMediaCommand:
-    """Validated prompt with an optional explicit video reference-image URL."""
+    """Validated prompt with an optional explicit video reference-image URL and search flag."""
 
     prompt: str
     reference_image_url: str = ""
+    explicit_search: bool = False
 
 
 def _check_length(text: str) -> None:
@@ -42,22 +44,30 @@ def validate_search_query(query: str) -> str:
     return stripped
 
 
-def parse_media_command(arguments: str, *, allow_reference_image_url: bool) -> ParsedMediaCommand:
-    """Split one explicit ``--image-url`` option from the user prompt.
+def parse_media_command(
+    arguments: str, *, allow_reference_image_url: bool = True
+) -> ParsedMediaCommand:
+    """Split explicit ``--image-url`` and ``-s``/``--search`` options from the user prompt.
 
     The URL remains opaque after validation so signed query strings can reach
-    the upstream video endpoint unchanged. It is never part of the prompt.
+    the upstream video endpoint unchanged. Flags are stripped from the prompt.
     """
+    text = arguments
+    explicit_search = bool(_SEARCH_FLAG_RE.search(text))
+    if explicit_search:
+        text = _SEARCH_FLAG_RE.sub(" ", text)
 
-    flags = list(_IMAGE_URL_FLAG_RE.finditer(arguments))
+    flags = list(_IMAGE_URL_FLAG_RE.finditer(text))
     if len(flags) > 1:
         raise ConfigurationError("图片 URL 参数只能提供一次", code="image_url_duplicate")
 
-    matches = list(_IMAGE_URL_OPTION_RE.finditer(arguments))
+    matches = list(_IMAGE_URL_OPTION_RE.finditer(text))
     if not matches:
         if flags:
             raise ConfigurationError("图片 URL 参数缺少地址", code="image_url_missing")
-        return ParsedMediaCommand(prompt=validate_search_query(arguments))
+        return ParsedMediaCommand(
+            prompt=validate_search_query(text), explicit_search=explicit_search
+        )
     if len(matches) != 1:
         raise ConfigurationError("图片 URL 参数只能提供一次", code="image_url_duplicate")
     if not allow_reference_image_url:
@@ -65,9 +75,11 @@ def parse_media_command(arguments: str, *, allow_reference_image_url: bool) -> P
 
     match = matches[0]
     reference_image_url = _validate_reference_image_url(match.group(1))
-    remaining = f"{arguments[: match.start()]} {arguments[match.end() :]}"
+    remaining = f"{text[: match.start()]} {text[match.end() :]}"
     return ParsedMediaCommand(
-        prompt=validate_search_query(remaining), reference_image_url=reference_image_url
+        prompt=validate_search_query(remaining),
+        reference_image_url=reference_image_url,
+        explicit_search=explicit_search,
     )
 
 

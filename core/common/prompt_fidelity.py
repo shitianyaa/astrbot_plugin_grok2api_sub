@@ -314,8 +314,10 @@ _CONTROL_CHARS_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 # URL removal regex
 _URL_RE = re.compile(r"https?://[^\s)\]}>\"']+", re.IGNORECASE)
 
-# Marker for no named character found by search model
-_NO_NAMED_CHARACTER_RE = re.compile(r"(?i)\bno[_\s]+named[_\s]+character\b|no_named_character")
+# Marker for no named character or specific entity found by search model
+_NO_NAMED_CHARACTER_RE = re.compile(
+    r"(?i)\bno[_\s]+(?:named[_\s]+character|specific[_\s]+entity)\b|no_named_character|no_specific_entity"
+)
 
 
 def _contains_alias(text: str, alias: str) -> bool:

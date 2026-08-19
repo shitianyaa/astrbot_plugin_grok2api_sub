@@ -2,7 +2,7 @@
 
 <div align="center">
 
-<a href="https://github.com/shitianyaa/astrbot_plugin_grok2api_sub/releases"><img alt="Version" src="https://img.shields.io/badge/version-0.2.1-22c55e?style=for-the-badge" /></a>
+<a href="https://github.com/shitianyaa/astrbot_plugin_grok2api_sub/releases"><img alt="Version" src="https://img.shields.io/badge/version-0.3.0-22c55e?style=for-the-badge" /></a>
 <a href="https://github.com/Soulter/AstrBot"><img alt="AstrBot" src="https://img.shields.io/badge/AstrBot-plugin-5865f2?style=for-the-badge" /></a>
 <img alt="Python" src="https://img.shields.io/badge/Python-3.10+-3776ab?style=for-the-badge&logo=python&logoColor=white" />
 <img alt="Platform" src="https://img.shields.io/badge/platform-OneBot%20%2F%20QQ%20Official-f97316?style=for-the-badge" />
@@ -54,7 +54,7 @@
 | 场景 | 能力与行为 |
 |---|---|
 | 实时搜索 | 手动指令 `/g2搜索` 强制联网检索；大模型 Tool（`grok2api_web_search`）会话级自动调用；默认 Web/X 双引擎检索，由会话模型整理正文并追加引用来源 |
-| 生图与改图 | 单/多张文生图；基于附图或回复链消息的局部改图；支持原文直传、参数提取与大模型无损提示词优化及角色视觉资料联网补充 |
+| 生图与改图 | 单/多张文生图；基于附图或回复链消息的局部改图；支持原文直传、参数提取与大模型地道英文 Prompt 优化及视觉事实联网补充 |
 | 视频生成 | 文生短视频与参考图引导生视频；自动将输入图片尺寸对齐到最近的合法比例（`16:9`、`9:16`、`4:3` 等） |
 | 监控看板 | `/g2面板` 聚合账号池、媒体库与审计趋势；经 AstrBot T2I 渲染输出 1080p 磨砂玻璃卡片；支持会话定时订阅与 Cron 推送 |
 | 平台适配 | 原生适配 **OneBot / aiocqhttp / NapCat** 与 **QQ Official** 双平台 |
@@ -88,9 +88,9 @@ python -m pip install -r requirements.txt
 | 指令 | 别名 | 权限 | 说明 |
 |---|---|:---:|---|
 | `/g2搜索 <问题>` | `/grok2搜索` | 访问规则 | 强制执行联网搜索并整理输出（附带来源引用） |
-| `/g2生图 <提示词>` | `/grok2生图` | 访问规则 | 文本生成图片，每次 1 张（默认 1K 分辨率） |
-| `/g2改图 <要求>` | `/grok2改图` | 访问规则 | 编辑当前消息或回复消息中的第一张图片 |
-| `/g2视频 [参数] <提示词>` | `/grok2视频` | 访问规则 | 生成短视频；支持附图/回复图或 `--image-url=<URL>` 参考图 |
+| `/g2生图 <提示词>` | `/grok2生图` | 访问规则 | 文本生成图片，每次 1 张（支持 `-s` 显式检索事实资料） |
+| `/g2改图 <要求>` | `/grok2改图` | 访问规则 | 编辑当前消息或回复消息中的第一张图片（以图片为准，不支持资料检索） |
+| `/g2视频 [参数] <提示词>` | `/grok2视频` | 访问规则 | 生成短视频；支持附图/回复图、`--image-url` 参考图或 `-s` 显式检索 |
 | `/g2面板` | `/grok2面板` | ADMIN | 渲染输出管理面板可视化卡片（需自部署管理端） |
 | `/g2面板订阅` | `/grok2面板订阅` | ADMIN | 为当前会话订阅定时面板大盘推送 |
 | `/g2面板退订` | `/grok2面板退订` | ADMIN | 退订当前会话的定时面板推送 |
@@ -130,8 +130,8 @@ python -m pip install -r requirements.txt
 
 ### 3. 提示词处理（`prompt_settings`）
 
-- **`mode`**：`off`（原文直传）、`extract`（仅补全结构化参数）、`enhance`（严格无损优化并补全参数）。
-- **`character_research_mode`**：`off`（关闭）、`auto`（识别具名角色后搜索）、`always`（每次生图/生视频均尝试搜索）；失败会软回退普通增强。
+- **`mode`**：`off`（原文直传）、`extract`（仅补全结构化参数）、`enhance`（地道英文优化并补全参数）。
+- **`character_research_mode`**：`off`（关闭）、`auto`（识别具名实体/角色后搜索）、`always`（每次生图/生视频均尝试搜索）；启用 `enhance` 时指令中使用 `-s` 可显式强制触发搜索。
 - **`extract_provider_id` / `enhance_provider_id`**：指定已配置的 AstrBot 文本模型。
 - **`disable_prompt_processing_with_reference_image`**：有参考图时跳过提示词处理，原文直传。
 - **`fallback_to_original_on_error`**：处理失败时使用原始提示词继续媒体任务（默认开启）。

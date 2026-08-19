@@ -7,7 +7,7 @@ from astrbot.api.event import AstrMessageEvent
 
 from ..common.errors import PluginError
 from ..common.observability import operation_scope, safe_log
-from ..media.parser import parse_media_command, validate_search_query
+from ..media.parser import parse_media_command
 from .base import BaseHandler
 
 _FALLBACK_SUCCESS_EVENTS = {
@@ -72,10 +72,15 @@ class MediaMixin(BaseHandler):
                 await self._send_error(event, exc, operation=operation)
 
     async def _handle_generate_image(self, event: AstrMessageEvent, arguments: object) -> None:
+        parsed = parse_media_command(str(arguments), allow_reference_image_url=False)
+
         def _call(skip: bool):
             service = self._require_service(event)
             return service.deliver_generated_images(
-                event, validate_search_query(str(arguments)), skip_prompt_processing=skip
+                event,
+                parsed.prompt,
+                explicit_search=parsed.explicit_search,
+                skip_prompt_processing=skip,
             )
 
         await self._execute_media_task(
@@ -86,10 +91,16 @@ class MediaMixin(BaseHandler):
         )
 
     async def _handle_edit_image(self, event: AstrMessageEvent, prompt: object) -> None:
+        parsed = parse_media_command(str(prompt), allow_reference_image_url=False)
+
         def _call(skip: bool):
             service = self._require_service(event)
-            parsed = parse_media_command(str(prompt), allow_reference_image_url=False)
-            return service.deliver_edited_image(event, parsed.prompt, skip_prompt_processing=skip)
+            return service.deliver_edited_image(
+                event,
+                parsed.prompt,
+                explicit_search=parsed.explicit_search,
+                skip_prompt_processing=skip,
+            )
 
         await self._execute_media_task(
             event,
@@ -99,13 +110,15 @@ class MediaMixin(BaseHandler):
         )
 
     async def _handle_generate_video(self, event: AstrMessageEvent, arguments: object) -> None:
+        parsed = parse_media_command(str(arguments), allow_reference_image_url=True)
+
         def _call(skip: bool):
             service = self._require_service(event)
-            parsed = parse_media_command(str(arguments), allow_reference_image_url=True)
             return service.deliver_video(
                 event,
                 parsed.prompt,
                 reference_image_url=parsed.reference_image_url,
+                explicit_search=parsed.explicit_search,
                 skip_prompt_processing=skip,
             )
 
