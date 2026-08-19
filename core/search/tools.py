@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import logging
+from contextlib import nullcontext
 from dataclasses import dataclass
 from typing import Any
 
@@ -21,6 +22,7 @@ from pydantic.dataclasses import dataclass as pydataclass
 
 from ..common.errors import PluginError
 from ..common.observability import operation_scope, safe_log
+from ..common.search_budget import SearchBudget, search_budget_scope
 
 
 @dataclass(frozen=True, slots=True)
@@ -31,6 +33,7 @@ class SearchToolPolicy:
     has_model: bool
     show_sources: bool = True
     max_sources: int = 5
+    max_search_requests: int = 3
 
     def allow(self) -> bool:
         return self.enabled and self.enable_tool and self.has_key and self.has_model
@@ -109,8 +112,28 @@ class Grok2APISearchTool(FunctionTool[AstrAgentContext]):
                     error_code="no_event_context",
                 )
                 return self._result(False, "", [], False, "no_event_context")
+            agent_context = getattr(context, "context", None)
+            extra = getattr(agent_context, "extra", None)
+            budget = None
+            if isinstance(extra, dict):
+                try:
+                    used = int(extra.get("grok2api_search_requests", "0"))
+                except (TypeError, ValueError):
+                    used = 0
+                if used >= self.policy.max_search_requests:
+                    return self._result(False, "", [], False, "search_budget_exhausted")
+                budget = SearchBudget(limit=self.policy.max_search_requests, used=used)
+            scope = (
+                search_budget_scope(
+                    self.policy.max_search_requests,
+                    budget=budget,
+                )
+                if budget is not None
+                else nullcontext()
+            )
             try:
-                result = await self.service.search(event, query, required=True)
+                with scope:
+                    result = await self.service.search(event, query, required=True)
             except PluginError as exc:
                 safe_log(
                     logging.DEBUG,
@@ -129,6 +152,9 @@ class Grok2APISearchTool(FunctionTool[AstrAgentContext]):
                     exception_type=type(exc).__name__,
                 )
                 return self._result(False, "", [], False, "search_error")
+            finally:
+                if budget is not None:
+                    extra["grok2api_search_requests"] = str(budget.used)
             sources = []
             if self.policy.show_sources and self.policy.max_sources > 0:
                 sources = [

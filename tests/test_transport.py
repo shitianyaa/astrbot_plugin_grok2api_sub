@@ -9,6 +9,7 @@ from pathlib import Path
 
 import pytest
 
+from core.common.search_budget import search_budget_scope
 from core.errors import APIError, ConfigurationError, PluginError
 from core.transport import (
     HTTPTransport,
@@ -215,6 +216,24 @@ async def test_generation_post_retries_network_and_invalid_json():
     )
     assert result == {"ok": 1}
     assert len(s.calls) == 3
+
+
+async def test_search_retry_consumes_budget_before_second_upstream_request():
+    t, s = _make()
+    s.push(FakeResponse(503, body="{}"), FakeResponse(200, body='{"ok":1}'))
+    with search_budget_scope(1) as budget:
+        with pytest.raises(PluginError) as ei:
+            await t.request_json(
+                "POST",
+                "/v1/responses",
+                json_body={},
+                timeout_seconds=5,
+                retry_policy=_policy(),
+                operation="search",
+            )
+    assert ei.value.code == "search_budget_exhausted"
+    assert budget.used == 1
+    assert len(s.calls) == 1
 
 
 async def test_excluded_status_stops_generation_post_retry():

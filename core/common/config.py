@@ -61,7 +61,7 @@ _IMAGE_FORMATS = ("b64_json", "url")
 _SEARCH_REASONING_EFFORTS = ("auto", "none", "low", "medium", "high", "xhigh")
 _PROMPT_PROCESSING_MODES = ("off", "extract", "enhance")
 _CHARACTER_RESEARCH_MODES = ("off", "auto", "always")
-_CONFIG_LAYOUT_VERSION = 1
+_CONFIG_LAYOUT_VERSION = 2
 
 _URL_SCHEME_RE = re.compile(r"^[a-zA-Z][a-zA-Z0-9+.-]*://")
 _RETRY_ERROR_CODE_RE = re.compile(r"^[a-z][a-z0-9_.-]{0,63}$")
@@ -120,7 +120,7 @@ def _compat_value(
 
 
 def _prepare_config_layout(cmapping: Mapping[str, object]) -> tuple[int, bool]:
-    """Copy customized legacy values into the clearer v1 WebUI layout once."""
+    """Copy customized legacy values into the clearer WebUI layout once."""
 
     conn_value = cmapping.get("connection_settings", {})
     if not isinstance(conn_value, Mapping):
@@ -197,6 +197,7 @@ def _prepare_config_layout(cmapping: Mapping[str, object]) -> tuple[int, bool]:
         ("show_search_sources", True),
         ("max_search_sources", 5),
         ("max_search_output_chars", 6000),
+        ("max_search_requests_per_task", 3),
     ):
         copy_customized(search, key, legacy_cap, default)
 
@@ -205,16 +206,26 @@ def _prepare_config_layout(cmapping: Mapping[str, object]) -> tuple[int, bool]:
     for key, default in (
         ("connect_timeout_seconds", 10),
         ("task_timeout_seconds", 1800),
-        ("search_timeout_seconds", 180),
+        ("search_timeout_seconds", 300),
         ("image_timeout_seconds", 300),
         ("video_create_timeout_seconds", 120),
         ("video_poll_timeout_seconds", 30),
         ("video_poll_interval_seconds", 3),
         ("download_timeout_seconds", 300),
-        ("prompt_processing_timeout_seconds", 15),
-        ("character_research_timeout_seconds", 20),
+        ("prompt_processing_timeout_seconds", 60),
+        ("character_research_timeout_seconds", 120),
     ):
         copy_customized(timeouts, key, legacy_adv, default)
+
+    if version < 2:
+        for key, old_default, new_default in (
+            ("search_timeout_seconds", 180, 300),
+            ("prompt_processing_timeout_seconds", 15, 60),
+            ("character_research_timeout_seconds", 20, 120),
+        ):
+            if timeouts.get(key, old_default) == old_default:
+                timeouts[key] = new_default
+        search.setdefault("max_search_requests_per_task", 3)
 
     reliability = mutable_section(performance, "reliability")
     for key, default in (
@@ -495,6 +506,7 @@ class PluginConfig:
     show_search_sources: bool
     max_search_sources: int
     max_search_output_chars: int
+    max_search_requests_per_task: int
 
     connect_timeout_seconds: int
     task_timeout_seconds: int
@@ -635,6 +647,7 @@ class PluginConfig:
             "enable_web_search": self.enable_web_search,
             "enable_x_search": self.enable_x_search,
             "search_reasoning_effort": self.search_reasoning_effort,
+            "max_search_requests_per_task": self.max_search_requests_per_task,
             "image_models": self.image_models,
             "image_edit_models": self.image_edit_models,
             "video_models": self.video_models,
@@ -833,6 +846,12 @@ class PluginConfig:
                 500,
                 20000,
             ),
+            max_search_requests_per_task=_to_int(
+                "search_settings.max_search_requests_per_task",
+                compat(search, "max_search_requests_per_task", legacy_cap, 3),
+                1,
+                10,
+            ),
             connect_timeout_seconds=_to_int(
                 "performance_settings.timeouts.connect_timeout_seconds",
                 compat(timeouts, "connect_timeout_seconds", legacy_adv, 10),
@@ -847,9 +866,9 @@ class PluginConfig:
             ),
             search_timeout_seconds=_to_int(
                 "performance_settings.timeouts.search_timeout_seconds",
-                compat(timeouts, "search_timeout_seconds", legacy_adv, 180),
+                compat(timeouts, "search_timeout_seconds", legacy_adv, 300),
                 10,
-                600,
+                900,
             ),
             image_timeout_seconds=_to_int(
                 "performance_settings.timeouts.image_timeout_seconds",
@@ -941,9 +960,9 @@ class PluginConfig:
             ),
             prompt_processing_timeout_seconds=_to_int(
                 "performance_settings.timeouts.prompt_processing_timeout_seconds",
-                compat(timeouts, "prompt_processing_timeout_seconds", legacy_adv, 15),
+                compat(timeouts, "prompt_processing_timeout_seconds", legacy_adv, 60),
                 1,
-                60,
+                300,
             ),
             prompt_fallback_to_original_on_error=_bool_flag(
                 "prompt_settings.fallback_to_original_on_error",
@@ -957,9 +976,9 @@ class PluginConfig:
             ),
             prompt_character_research_timeout_seconds=_to_int(
                 "performance_settings.timeouts.character_research_timeout_seconds",
-                compat(timeouts, "character_research_timeout_seconds", legacy_adv, 20),
+                compat(timeouts, "character_research_timeout_seconds", legacy_adv, 120),
                 5,
-                60,
+                600,
             ),
             model_retry_count=_to_int(
                 "performance_settings.reliability.model_retry_count",

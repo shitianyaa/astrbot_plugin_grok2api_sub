@@ -50,6 +50,12 @@ from .prompt_fidelity import (
     should_research_character,
 )
 from .prompt_processor import PromptProcessor
+from .search_budget import (
+    SearchBudget,
+    consume_search_request,
+    search_budget_scope,
+    search_budget_usage,
+)
 from .sender import DeliveryAdapter, DeliveryError
 from .transport import HTTPTransport, RetryPolicy, SleepFn
 
@@ -71,6 +77,7 @@ __all__ = [
     "ProtocolError",
     "RetryPolicy",
     "SearchNotPerformedError",
+    "SearchBudget",
     "SearchResult",
     "SearchSource",
     "SleepFn",
@@ -92,10 +99,13 @@ __all__ = [
     "resolve_platform",
     "safe_log",
     "safe_task_log",
+    "consume_search_request",
     "sanitize_diagnostic",
     "sanitize_prompt_json",
     "set_task_deadline",
     "should_research_character",
+    "search_budget_scope",
+    "search_budget_usage",
     "task_attempts",
     "task_candidate_attempts",
     "task_deadline_scope",

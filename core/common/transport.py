@@ -32,6 +32,7 @@ import aiohttp
 from .deadline import check_task_deadline, remaining_task_timeout
 from .errors import APIError, ConfigurationError, PluginError, ProtocolError
 from .observability import record_task_attempt, record_task_retry, safe_log
+from .search_budget import consume_search_request
 
 logger = logging.getLogger("astrbot_plugin_grok2api_sub.transport")
 
@@ -250,6 +251,8 @@ class HTTPTransport:
             )
             session = self._session_for()
             started_at = time.monotonic()
+            if operation == "search":
+                consume_search_request()
             record_task_attempt(operation)
             if attempt > 1:
                 record_task_retry()

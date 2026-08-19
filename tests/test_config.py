@@ -28,6 +28,7 @@ def _default_raw() -> dict:
             "show_search_sources": True,
             "max_search_sources": 5,
             "max_search_output_chars": 6000,
+            "max_search_requests_per_task": 3,
             "image_response_format": "b64_json",
             "prompt_processing": {
                 "mode": "off",
@@ -45,7 +46,7 @@ def _default_raw() -> dict:
         "advanced_settings": {
             "connect_timeout_seconds": 10,
             "task_timeout_seconds": 1800,
-            "search_timeout_seconds": 180,
+            "search_timeout_seconds": 300,
             "image_timeout_seconds": 300,
             "video_create_timeout_seconds": 120,
             "video_poll_timeout_seconds": 30,
@@ -65,7 +66,7 @@ def _default_raw() -> dict:
             ),
             "save_media": False,
             "temp_retention_hours": 24,
-            "prompt_processing_timeout_seconds": 15,
+            "prompt_processing_timeout_seconds": 60,
         },
     }
 
@@ -118,7 +119,7 @@ def test_legacy_layout_migrates_custom_values_into_new_groups():
     assert cfg.panel_period == "30d"
     assert cfg.admin_username == "legacy-admin"
     assert cfg.admin_password == "legacy-pass"
-    assert raw["connection_settings"]["config_layout_version"] == 1
+    assert raw["connection_settings"]["config_layout_version"] == 2
     assert raw["search_settings"]["search_models"] == "legacy-search"
     assert raw["performance_settings"]["timeouts"]["task_timeout_seconds"] == 900
     assert raw["panel_settings"]["admin_username"] == " legacy-admin "
@@ -145,6 +146,28 @@ def test_migration_save_config_runs_once_and_new_values_win_afterward():
     raw["search_settings"]["search_models"] = "\n".join(DEFAULT_SEARCH_MODELS)
     third = PluginConfig.from_astrbot(raw)
     assert third.search_models == DEFAULT_SEARCH_MODELS
+
+
+def test_v1_saved_defaults_migrate_to_longer_timeouts_and_search_budget():
+    raw = _raw(
+        connection_settings={"config_layout_version": 1},
+        search_settings={"search_models": "grok-chat-fast"},
+        performance_settings={
+            "timeouts": {
+                "search_timeout_seconds": 180,
+                "prompt_processing_timeout_seconds": 15,
+                "character_research_timeout_seconds": 20,
+            }
+        },
+    )
+
+    cfg = PluginConfig.from_astrbot(raw)
+
+    assert cfg.search_timeout_seconds == 300
+    assert cfg.prompt_processing_timeout_seconds == 60
+    assert cfg.prompt_character_research_timeout_seconds == 120
+    assert cfg.max_search_requests_per_task == 3
+    assert raw["connection_settings"]["config_layout_version"] == 2
 
 
 def test_immutable_legacy_mapping_still_uses_compatibility_fallback():
@@ -232,9 +255,11 @@ def test_defaults():
     assert c.image_response_format == "b64_json"
     assert c.prompt_processing_mode == "off"
     assert c.prompt_character_research_mode == "off"
-    assert c.prompt_character_research_timeout_seconds == 20
+    assert c.prompt_character_research_timeout_seconds == 120
     assert c.prompt_disable_processing_with_reference_image is False
-    assert c.prompt_processing_timeout_seconds == 15
+    assert c.prompt_processing_timeout_seconds == 60
+    assert c.search_timeout_seconds == 300
+    assert c.max_search_requests_per_task == 3
     assert c.save_media is False
     assert c.enable_web_search is True
     assert c.enable_x_search is True
@@ -365,7 +390,7 @@ def test_reject_bool_as_int():
 def test_reject_out_of_range():
     _raises(capability_settings={"max_search_output_chars": 100})
     _raises(capability_settings={"max_search_output_chars": 90000})
-    _raises(advanced_settings={"prompt_processing_timeout_seconds": 61})
+    _raises(advanced_settings={"prompt_processing_timeout_seconds": 301})
     _raises(advanced_settings={"prompt_processing_timeout_seconds": 0})
     _raises(advanced_settings={"model_retry_count": -1})
     _raises(advanced_settings={"model_retry_count": 6})
@@ -595,7 +620,7 @@ def test_task_timeout_seconds_rejects_invalid_values(value):
 def test_character_research_config_defaults_and_overrides():
     c = _cfg()
     assert c.prompt_character_research_mode == "off"
-    assert c.prompt_character_research_timeout_seconds == 20
+    assert c.prompt_character_research_timeout_seconds == 120
 
     c_custom = _cfg(
         capability_settings={"prompt_processing": {"character_research_mode": "auto"}},
@@ -616,9 +641,14 @@ def test_character_research_mode_rejects_invalid():
     _raises(capability_settings={"prompt_processing": {"character_research_mode": True}})
 
 
-@pytest.mark.parametrize("timeout", [4, 61, "20", True, None])
+@pytest.mark.parametrize("timeout", [4, 601, "20", True, None])
 def test_character_research_timeout_rejects_out_of_range(timeout):
     _raises(advanced_settings={"character_research_timeout_seconds": timeout})
+
+
+@pytest.mark.parametrize("value", [0, 11, "3", True, None])
+def test_search_request_budget_rejects_invalid_values(value):
+    _raises(capability_settings={"max_search_requests_per_task": value})
 
 
 def test_character_research_redacted_summary():

@@ -58,10 +58,13 @@ ALLOWED_FIELDS = {
     "background_provider",
     "background_image_name",
     "prompt_mode",
+    "prompt_status",
     "prompt_json",
     "resource",
     "section_count",
     "job_count",
+    "tool_status",
+    "search_budget",
     "stage",
     "attempted_count",
     "delivered_count",
@@ -76,6 +79,7 @@ TASK_FIELDS = {
     "request_prompt",
     "request_params",
     "prompt_mode",
+    "prompt_status",
     "reference_image",
     "reference_aspect_ratio",
     "candidate_models",
@@ -99,14 +103,20 @@ TASK_FIELDS = {
     "result_status",
     "search_performed",
     "incomplete",
+    "capability",
+    "job_count",
+    "cleanup_count",
+    "tool_status",
+    "search_budget",
 }
 
 _TASK_LABELS = {
     "operation": "操作",
     "source_prompt": "原始提示词",
-    "request_prompt": "实际提示词",
+    "request_prompt": "实际发送提示词",
     "request_params": "请求参数",
     "prompt_mode": "提示词优化",
+    "prompt_status": "提示词处理状态",
     "reference_image": "参考图",
     "reference_aspect_ratio": "参考图比例",
     "candidate_models": "候选模型",
@@ -130,6 +140,11 @@ _TASK_LABELS = {
     "result_status": "结果状态",
     "search_performed": "已执行搜索",
     "incomplete": "结果不完整",
+    "capability": "能力状态",
+    "job_count": "面板任务数",
+    "cleanup_count": "清理文件数",
+    "tool_status": "LLM 搜索 Tool",
+    "search_budget": "搜索预算",
 }
 
 _OPERATION_LABELS = {
@@ -137,8 +152,12 @@ _OPERATION_LABELS = {
     "image_generate": "图片生成",
     "image_edit": "图片编辑",
     "video_generate": "视频生成",
+    "character_research": "角色资料搜索",
     "panel_build": "构建管理面板",
     "panel_push": "推送管理面板",
+    "panel_schedule": "面板定时任务",
+    "plugin_initialize": "插件初始化",
+    "plugin_terminate": "插件停止",
 }
 
 _KEY_RE = re.compile(r"g2a_[A-Za-z0-9_]+")

@@ -121,9 +121,45 @@ def test_safe_task_log_renders_complete_prompt_without_trace():
     assert "请求开始" in joined
     assert "操作: 图片编辑" in joined
     assert "原始提示词: " + "x" * 800 in joined
-    assert "实际提示词:" in joined
+    assert "实际发送提示词:" in joined
     assert '请求参数: {"duration":10,"aspect_ratio":"16:9","resolution":"1080p"}' in joined
     assert "候选模型: first, second" in joined
     assert "trace_id" not in joined
     for secret in ("live_secret", "abc.def.ghi", "hunter2", "proxy-pass", "base64,"):
         assert secret not in joined
+
+
+def test_safe_task_log_renders_plugin_startup_summary():
+    from astrbot.api import logger as astrbot_logger
+
+    records: list[str] = []
+
+    class _Sink:
+        def write(self, msg: str) -> None:
+            records.append(msg)
+
+    old_handlers = list(astrbot_logger.handlers)
+    try:
+        astrbot_logger.handlers.clear()
+        astrbot_logger.addHandler(logging.StreamHandler(_Sink()))
+        astrbot_logger.setLevel(logging.DEBUG)
+        safe_task_log(
+            logging.INFO,
+            "插件加载完成",
+            operation="plugin_initialize",
+            result="初始化成功",
+            capability="搜索、生图、改图、视频",
+            tool_status="已注册",
+            search_budget="3 次/任务",
+            job_count=1,
+        )
+    finally:
+        astrbot_logger.handlers = old_handlers
+
+    joined = "".join(records)
+    assert "插件加载完成" in joined
+    assert "操作: 插件初始化" in joined
+    assert "能力状态: 搜索、生图、改图、视频" in joined
+    assert "LLM 搜索 Tool: 已注册" in joined
+    assert "搜索预算: 3 次/任务" in joined
+    assert "面板任务数: 1" in joined

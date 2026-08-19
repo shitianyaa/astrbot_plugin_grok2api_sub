@@ -148,10 +148,13 @@ python -m pip install -r requirements.txt
 | `show_search_sources` | `true` | 是否返回结构化来源 |
 | `max_search_sources` | `5` | 最多显示来源数，`0` 表示不显示 |
 | `max_search_output_chars` | `6000` | 搜索正文最大长度 |
+| `max_search_requests_per_task` | `3` | 单次任务最多发出的实际上游搜索请求数；重试、候选模型回退和角色资料搜索均计入 |
 
 ### 5. 性能、文件与访问控制
 
-通常只需要调整 `performance_settings.timeouts.task_timeout_seconds`，它是单次任务从排队到发送完成的总预算。搜索、生图、视频创建、视频轮询、下载、提示词处理和角色资料搜索仍有独立阶段超时，位于 `performance_settings.timeouts` 的折叠专家项中；并发与重试位于 `performance_settings.reliability`。
+通常只需要调整 `performance_settings.timeouts.task_timeout_seconds`，它是单次任务从排队到发送完成的总预算。默认阶段超时为：普通搜索 300 秒、提示词处理 60 秒、角色资料搜索 120 秒；这些值仍可在 `performance_settings.timeouts` 的折叠专家项中调整。并发与重试位于 `performance_settings.reliability`。
+
+搜索预算只在当前 `/g2搜索`、当前媒体任务或当前 LLM agent 回合内生效，不跨用户、跨消息累计；读取 `/v1/models` 模型目录不占用搜索次数。
 
 `storage_settings` 管理输入/下载媒体大小、发送后是否保留和临时文件清理；`access_settings` 管理用户与群聊黑白名单。
 

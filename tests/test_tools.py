@@ -6,6 +6,7 @@ import json
 
 import pytest
 
+from core.common.search_budget import consume_search_request
 from core.errors import SearchNotPerformedError
 from core.platform import PlatformKind
 from core.service import GrokService
@@ -21,18 +22,21 @@ def _policy(**over) -> SearchToolPolicy:
 
 class _Ctx:
     def __init__(self, event):
-        self.context = type("C", (), {"event": event})()
+        self.context = type("C", (), {"event": event, "extra": {}})()
 
 
 class _FakeService:
-    def __init__(self, result=None, error=None):
+    def __init__(self, result=None, error=None, *, consume_request=False):
         self._result = result
         self._error = error
+        self._consume_request = consume_request
         self.calls = 0
 
     async def search(self, event, query, *, required=True):
         self.calls += 1
         assert required is True
+        if self._consume_request:
+            consume_search_request()
         if self._error:
             raise self._error
         return self._result
@@ -227,6 +231,20 @@ async def test_tool_calls_service_once_with_tuple_models():
     tool, ctx = _tool(service=svc)
     await tool.call(ctx, query="q")
     assert svc.calls == 1
+
+
+async def test_tool_shares_actual_search_budget_across_one_agent_turn():
+    svc = _FakeService(result=_service_result(), consume_request=True)
+    tool, ctx = _tool(policy=_policy(max_search_requests=2), service=svc)
+
+    assert _parse(await tool.call(ctx, query="one"))["ok"] is True
+    assert _parse(await tool.call(ctx, query="two"))["ok"] is True
+    exhausted = _parse(await tool.call(ctx, query="three"))
+
+    assert exhausted["ok"] is False
+    assert exhausted["error_code"] == "search_budget_exhausted"
+    assert svc.calls == 2
+    assert ctx.context.extra["grok2api_search_requests"] == "2"
 
 
 async def test_tool_logs_lengths_and_outcome_without_logging_query(monkeypatch):

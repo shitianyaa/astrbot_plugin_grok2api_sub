@@ -253,6 +253,40 @@ async def test_deliver_images_passes_skip_prompt_processing_to_resolver(tmp_path
     assert skip_seen == [True]
 
 
+async def test_skip_prompt_processing_logs_original_fallback_and_forwards_original_prompt(
+    tmp_path, monkeypatch
+):
+    ws = MediaWorkspace(tmp_path)
+    s = FakeSession()
+    image = base64.b64encode(_png_bytes()).decode()
+    s.push(FakeResponse(200, body=json.dumps({"data": [{"b64_json": image}]})))
+    cfg = _cfg(
+        capability_settings={
+            "send_media_progress": False,
+            "prompt_processing": {"mode": "enhance"},
+        }
+    )
+
+    class Processor:
+        async def resolve_image(self, prompt, *, character_reference=""):
+            raise AssertionError("fallback path must skip the processor")
+
+    events = []
+    monkeypatch.setattr(
+        "core.service.safe_task_log",
+        lambda level, title, **fields: events.append((level, title, fields)),
+    )
+    svc, _ = _make_service(ws, cfg=cfg, session=s, prompt_processor=Processor())
+
+    await svc.deliver_generated_images(FakeEvent(), "原始提示词", skip_prompt_processing=True)
+
+    started = next(fields for _level, title, fields in events if title == "请求开始")
+    assert started["prompt_mode"] == "off"
+    assert started["prompt_status"] == "回退原文（跳过处理）"
+    assert started["request_prompt"] == "原始提示词"
+    assert s.calls[0]["json"]["prompt"] == "原始提示词"
+
+
 # -- concurrency -----------------------------------------------------------
 async def test_search_semaphore_limits(tmp_path):
     ws = MediaWorkspace(tmp_path)
@@ -456,7 +490,7 @@ async def test_deliver_images_is_always_single_result(tmp_path):
     assert s.calls[0]["json"]["n"] == 1
 
 
-async def test_service_forwards_resolved_image_and_video_parameters(tmp_path):
+async def test_service_forwards_resolved_image_and_video_parameters(tmp_path, monkeypatch):
     from core.models import ImageGenerationRequest, VideoGenerationRequest
 
     class Processor:
@@ -486,16 +520,43 @@ async def test_service_forwards_resolved_image_and_video_parameters(tmp_path):
     s.push(FakeResponse(200, body=json.dumps({"request_id": "video_abc"})))
     s.push(FakeResponse(200, body=json.dumps({"status": "done", "progress": 100})))
     s.responses.append(_StreamResp([b"fake-mp4"]))
-    cfg = _cfg(capability_settings={"send_media_progress": False})
+    cfg = _cfg(
+        capability_settings={
+            "send_media_progress": False,
+            "prompt_processing": {"mode": "enhance"},
+        }
+    )
     client = Grok2APIClient(
         HTTPTransport(
             cfg.api_base_url, cfg.api_key, sleep=_no_retry_sleep, session_factory=lambda: s
         )
     )
     svc = GrokService(cfg, client, ws, DeliveryAdapter(ws), prompt_processor=Processor())
+    task_events = []
+    monkeypatch.setattr(
+        "core.service.safe_task_log",
+        lambda _level, title, **fields: task_events.append((title, fields)),
+    )
 
     await svc.deliver_generated_images(FakeEvent(), "source image")
     await svc.deliver_video(FakeEvent(sender_id="u2"), "source video")
+
+    image_started = next(
+        fields
+        for title, fields in task_events
+        if title == "请求开始" and fields.get("operation") == "image_generate"
+    )
+    video_started = next(
+        fields
+        for title, fields in task_events
+        if title == "请求开始" and fields.get("operation") == "video_generate"
+    )
+    assert image_started["prompt_mode"] == "enhance"
+    assert image_started["prompt_status"] == "增强完成"
+    assert image_started["request_prompt"] == "enhanced image"
+    assert video_started["prompt_mode"] == "enhance"
+    assert video_started["prompt_status"] == "增强完成"
+    assert video_started["request_prompt"] == "enhanced video"
 
     assert s.calls[0]["json"] == {
         "model": "grok-imagine-image",
@@ -1182,6 +1243,7 @@ async def test_search_skips_catalog_missing_models_and_uses_first_visible(tmp_pa
         "web_search": True,
         "x_search": True,
         "reasoning_effort": "auto",
+        "max_search_requests": 3,
     }
     assert task_events[1][2]["model"] == "grok-4.5"
     assert task_events[1][2]["result_status"] == "completed"
@@ -1306,7 +1368,7 @@ async def test_search_fallback_exhausts_first_model_retries_before_second(tmp_pa
         FakeResponse(200, body=_search_response()),
     )
     cfg = _cfg(
-        capability_settings={"search_models": "first\nsecond"},
+        capability_settings={"search_models": "first\nsecond", "max_search_requests_per_task": 5},
         advanced_settings={"model_switch_errors": ""},
     )
     service, _ = _make_service(ws, cfg=cfg, session=session)
@@ -1332,7 +1394,9 @@ async def test_search_not_performed_exhausts_retries_before_next_model(tmp_path)
         FakeResponse(200, body=_search_without_tool_response()),
         FakeResponse(200, body=_search_response()),
     )
-    cfg = _cfg(capability_settings={"search_models": "first\nsecond"})
+    cfg = _cfg(
+        capability_settings={"search_models": "first\nsecond", "max_search_requests_per_task": 5},
+    )
     service, _ = _make_service(ws, cfg=cfg, session=session)
 
     await service.search(FakeEvent(), "question")
@@ -1736,7 +1800,7 @@ async def test_character_research_discards_incomplete_results(tmp_path):
     assert await svc._research_character_visuals("画芙宁娜") == ""
 
 
-async def test_character_research_triggered_on_named_character_in_auto_mode(tmp_path):
+async def test_character_research_triggered_on_named_character_in_auto_mode(tmp_path, monkeypatch):
     ws = MediaWorkspace(tmp_path)
     s = FakeSession()
     s.push(FakeResponse(200, body=json.dumps({"data": [{"id": "grok-4.5"}]})))
@@ -1755,6 +1819,11 @@ async def test_character_research_triggered_on_named_character_in_auto_mode(tmp_
     )
     processor = RecordingPromptProcessor()
     svc, _ = _make_service(ws, cfg, session=s, prompt_processor=processor)
+    task_events = []
+    monkeypatch.setattr(
+        "core.service.safe_task_log",
+        lambda _level, title, **fields: task_events.append((title, fields)),
+    )
 
     await svc.deliver_generated_images(FakeEvent(), "画《原神》里的芙宁娜")
 
@@ -1766,6 +1835,9 @@ async def test_character_research_triggered_on_named_character_in_auto_mode(tmp_
     search_call = next(c for c in s.calls if c["url"].endswith("/v1/responses"))
     assert "<USER_PROMPT>" in search_call["json"]["input"]
     assert "芙宁娜" in search_call["json"]["input"]
+    research_events = [fields for title, fields in task_events if title == "角色资料搜索"]
+    assert research_events[0]["result"] == "已触发"
+    assert any(fields["result"] == "已获得可用资料" for fields in research_events)
 
 
 async def test_character_research_triggered_in_always_mode(tmp_path):
@@ -2032,7 +2104,7 @@ async def test_character_research_low_budget_skips_immediately(tmp_path, monkeyp
     svc, _ = _make_service(ws, cfg, session=s, prompt_processor=processor)
 
     # Mock remaining_task_timeout to return 0.2s (< 0.5s)
-    monkeypatch.setattr("core.service.remaining_task_timeout", lambda _d: 0.2)
+    monkeypatch.setattr("core.service.remaining_task_timeout", lambda *_args: 0.2)
 
     await svc.deliver_generated_images(FakeEvent(), "画《原神》里的芙宁娜")
 

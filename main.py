@@ -20,7 +20,7 @@ from astrbot.core.star.filter.command import GreedyStr
 
 from .core.client import Grok2APIClient
 from .core.common.config import PluginConfig
-from .core.common.observability import safe_log
+from .core.common.observability import safe_log, safe_task_log
 from .core.common.prompt_processor import PromptProcessor
 from .core.common.sender import DeliveryAdapter
 from .core.common.transport import HTTPTransport
@@ -118,9 +118,40 @@ class Grok2APISubPlugin(HelpMixin, SearchMixin, MediaMixin, PanelMixin, Star):
             if cfg.enable_llm_search_tool and cfg.capability_enabled("search"):
                 self._register_search_tool()
             await self._register_panel_jobs()
-            safe_log(logging.INFO, "plugin_initialized", capability="all")
+            capabilities = [
+                label
+                for capability, label in (
+                    ("search", "搜索"),
+                    ("image", "生图"),
+                    ("image_edit", "改图"),
+                    ("video", "视频"),
+                )
+                if cfg.capability_enabled(capability)
+            ]
+            if self._tool_registered:
+                tool_status = "已注册"
+            elif not cfg.enable_llm_search_tool:
+                tool_status = "已关闭"
+            else:
+                tool_status = "未注册（搜索能力不可用）"
+            safe_task_log(
+                logging.INFO,
+                "插件加载完成",
+                operation="plugin_initialize",
+                result="初始化成功",
+                capability="、".join(capabilities) or "无可用能力",
+                tool_status=tool_status,
+                search_budget=f"{cfg.max_search_requests_per_task} 次/任务",
+                job_count=len(self._panel_job_ids),
+            )
             if removed:
-                safe_log(logging.INFO, "startup_cleanup", cleanup_count=removed)
+                safe_task_log(
+                    logging.INFO,
+                    "启动清理完成",
+                    operation="plugin_initialize",
+                    result="已清理过期临时文件",
+                    cleanup_count=removed,
+                )
         except Exception as exc:  # noqa: BLE001
             safe_log(
                 logging.ERROR,
@@ -183,6 +214,9 @@ class Grok2APISubPlugin(HelpMixin, SearchMixin, MediaMixin, PanelMixin, Star):
             ),
             show_sources=self._plugin_config.show_search_sources if self._plugin_config else True,
             max_sources=self._plugin_config.max_search_sources if self._plugin_config else 5,
+            max_search_requests=(
+                self._plugin_config.max_search_requests_per_task if self._plugin_config else 3
+            ),
         )
         tool = build_search_tool(self._service, policy=policy)
         self.context.add_llm_tools(tool)
@@ -282,5 +316,6 @@ class Grok2APISubPlugin(HelpMixin, SearchMixin, MediaMixin, PanelMixin, Star):
             enable_tool=cfg.enable_llm_search_tool,
             has_key=cfg.has_api_key,
             has_model=cfg.capability_enabled("search"),
+            max_search_requests=cfg.max_search_requests_per_task,
         )
         return tool_allowed_for_event(event, policy, cfg)

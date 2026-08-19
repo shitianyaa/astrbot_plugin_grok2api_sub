@@ -123,10 +123,11 @@ class PanelMixin(BaseHandler):
             )
             self._panel_job_ids.append(job.job_id)
         if self._panel_job_ids:
-            safe_log(
+            safe_task_log(
                 logging.INFO,
-                "panel_schedule_registered",
+                "面板定时任务已注册",
                 operation="panel_schedule",
+                result="注册成功",
                 job_count=len(self._panel_job_ids),
             )
 

@@ -196,6 +196,14 @@
         "slider": { "min": 500, "max": 20000, "step": 100 },
         "collapsed": true,
         "hint": "超出后会截断正文。"
+      },
+      "max_search_requests_per_task": {
+        "description": "单次任务最大搜索请求数",
+        "type": "int",
+        "default": 3,
+        "slider": { "min": 1, "max": 10, "step": 1 },
+        "collapsed": true,
+        "hint": "限制 /g2搜索、LLM 搜索 Tool 和角色资料搜索实际发出的上游搜索请求；重试与候选模型回退也计入。"
       }
     }
   },
@@ -272,6 +280,13 @@
         "default": 6000,
         "slider": { "min": 500, "max": 20000, "step": 100 },
         "hint": "超出后追加 [内容已截断] 标记。"
+      },
+      "max_search_requests_per_task": {
+        "description": "单次任务最大搜索请求数。",
+        "type": "int",
+        "default": 3,
+        "slider": { "min": 1, "max": 10, "step": 1 },
+        "hint": "限制 /g2搜索、LLM 搜索 Tool 和角色资料搜索的实际上游请求数；重试与候选模型回退也计入。"
       },
       "image_response_format": {
         "description": "生图/改图响应格式。",
@@ -383,11 +398,11 @@
             "collapsed": true,
             "hint": "只限制建立网络连接，不等同于整个请求超时。"
           },
-          "search_timeout_seconds": {
-            "description": "普通搜索请求超时（秒）",
-            "type": "int",
-            "default": 180,
-            "slider": { "min": 10, "max": 600, "step": 10 },
+      "search_timeout_seconds": {
+        "description": "普通搜索请求超时（秒）",
+        "type": "int",
+        "default": 300,
+        "slider": { "min": 10, "max": 900, "step": 10 },
             "collapsed": true,
             "hint": "用于 /g2搜索 和会话级搜索 Tool；角色资料搜索还会受自己的阶段预算限制。"
           },
@@ -430,16 +445,16 @@
           "prompt_processing_timeout_seconds": {
             "description": "提示词处理超时（秒）",
             "type": "int",
-            "default": 15,
-            "slider": { "min": 1, "max": 60, "step": 1 },
+            "default": 60,
+            "slider": { "min": 1, "max": 300, "step": 1 },
             "collapsed": true,
             "hint": "提示词整理/优化或搜索结果整理模型的上限。"
           },
           "character_research_timeout_seconds": {
             "description": "角色资料补充超时（秒）",
             "type": "int",
-            "default": 20,
-            "slider": { "min": 5, "max": 60, "step": 1 },
+            "default": 120,
+            "slider": { "min": 5, "max": 600, "step": 1 },
             "collapsed": true,
             "hint": "角色资料搜索的独立上限；超时后自动继续普通提示词优化。"
           }
@@ -631,8 +646,8 @@
       "search_timeout_seconds": {
         "description": "搜索请求整体超时（秒）。",
         "type": "int",
-        "default": 180,
-        "slider": { "min": 10, "max": 600, "step": 10 }
+        "default": 300,
+        "slider": { "min": 10, "max": 900, "step": 10 }
       },
       "image_timeout_seconds": {
         "description": "生图/改图请求整体超时（秒）。",
@@ -667,15 +682,15 @@
       "prompt_processing_timeout_seconds": {
         "description": "提示词处理与搜索结果整理模型超时（秒）。",
         "type": "int",
-        "default": 15,
-        "slider": { "min": 1, "max": 60, "step": 1 },
+        "default": 60,
+        "slider": { "min": 1, "max": 300, "step": 1 },
         "hint": "整理或优化失败时媒体生成终止；/g2搜索 整理失败时发送原始搜索结果。"
       },
       "character_research_timeout_seconds": {
         "description": "角色资料搜索超时（秒）。",
         "type": "int",
-        "default": 20,
-        "slider": { "min": 5, "max": 60, "step": 1 },
+        "default": 120,
+        "slider": { "min": 5, "max": 600, "step": 1 },
         "hint": "单次角色事实检索上限；超时后自动继续普通提示词增强。"
       },
       "max_input_image_mb": {

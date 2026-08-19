@@ -43,6 +43,7 @@ from .common.prompt_fidelity import (
     clean_and_truncate_reference,
     should_research_character,
 )
+from .common.search_budget import search_budget_scope, search_budget_usage
 from .media.workspace import MediaWorkspace, closest_aspect_ratio
 from .panel.client import AdminClient
 from .panel.models import (
@@ -152,31 +153,32 @@ def _enforce_task_timeout(operation: str):
                 timeout = remaining_task_timeout(configured_timeout)
                 if timeout <= 0:
                     raise PluginError("任务执行超时", code="task_timeout", retryable=False)
-                with operation_scope(operation):
-                    try:
-                        return await asyncio.wait_for(
-                            func(self, *args, **kwargs),
-                            timeout=timeout,
-                        )
-                    except asyncio.CancelledError:
-                        raise
-                    except asyncio.TimeoutError as exc:
-                        safe_task_log(
-                            logging.WARNING,
-                            "请求失败",
-                            operation=operation,
-                            model=task_model(operation),
-                            candidate_fallbacks=max(task_candidate_attempts(operation) - 1, 0),
-                            retry_count=task_retry_count(),
-                            stage="task_timeout",
-                            error_code="task_timeout",
-                            elapsed_ms=int((time.monotonic() - started_at) * 1000),
-                        )
-                        raise PluginError(
-                            "任务执行超时",
-                            code="task_timeout",
-                            retryable=False,
-                        ) from exc
+                with search_budget_scope(self._config.max_search_requests_per_task):
+                    with operation_scope(operation):
+                        try:
+                            return await asyncio.wait_for(
+                                func(self, *args, **kwargs),
+                                timeout=timeout,
+                            )
+                        except asyncio.CancelledError:
+                            raise
+                        except asyncio.TimeoutError as exc:
+                            safe_task_log(
+                                logging.WARNING,
+                                "请求失败",
+                                operation=operation,
+                                model=task_model(operation),
+                                candidate_fallbacks=max(task_candidate_attempts(operation) - 1, 0),
+                                retry_count=task_retry_count(),
+                                stage="task_timeout",
+                                error_code="task_timeout",
+                                elapsed_ms=int((time.monotonic() - started_at) * 1000),
+                            )
+                            raise PluginError(
+                                "任务执行超时",
+                                code="task_timeout",
+                                retryable=False,
+                            ) from exc
 
         return wrapped
 
@@ -269,6 +271,11 @@ class GrokService:
     def _elapsed_ms(started_at: float) -> int:
         return int((time.monotonic() - started_at) * 1000)
 
+    @staticmethod
+    def _search_budget_label() -> str:
+        used, limit = search_budget_usage()
+        return f"{used}/{limit}" if limit else ""
+
     def _log_media_failure(
         self,
         operation: str,
@@ -300,10 +307,38 @@ class GrokService:
         safe_task_log(logging.WARNING, "请求失败", **fields)
 
     @staticmethod
-    def _effective_prompt_mode(config: PluginConfig, *, has_reference_image: bool) -> str:
+    def _effective_prompt_mode(
+        config: PluginConfig,
+        *,
+        has_reference_image: bool,
+        skip_prompt_processing: bool = False,
+    ) -> str:
+        if skip_prompt_processing:
+            return "off"
         if has_reference_image and config.prompt_disable_processing_with_reference_image:
             return "off"
         return config.prompt_processing_mode
+
+    def _prompt_processing_status(
+        self,
+        *,
+        has_reference_image: bool,
+        skip_prompt_processing: bool,
+    ) -> str:
+        if skip_prompt_processing:
+            return "回退原文（跳过处理）"
+        mode = self._effective_prompt_mode(
+            self._config,
+            has_reference_image=has_reference_image,
+        )
+        if mode == "off":
+            return "原文直传"
+        if self._prompt_processor is None:
+            return "未执行（处理器不可用）"
+        return {
+            "extract": "参数提取完成",
+            "enhance": "增强完成",
+        }.get(mode, "未处理")
 
     # -- search ------------------------------------------------------------
     # search() deliberately does not call rewrite: the caller (command handler
@@ -318,6 +353,7 @@ class GrokService:
                     "web_search": self._config.enable_web_search,
                     "x_search": self._config.enable_x_search,
                     "reasoning_effort": self._config.search_reasoning_effort,
+                    "max_search_requests": self._config.max_search_requests_per_task,
                 }
                 try:
                     self._preflight(event, "search")
@@ -339,6 +375,7 @@ class GrokService:
                 except asyncio.CancelledError:
                     raise
                 except Exception as exc:  # noqa: BLE001
+                    search_requests_used, search_request_limit = search_budget_usage()
                     fields: dict[str, object] = {
                         "operation": "search",
                         "source_prompt": query,
@@ -350,6 +387,11 @@ class GrokService:
                         "stage": "search",
                         "elapsed_ms": self._elapsed_ms(started_at),
                         "error_code": exc.code if isinstance(exc, PluginError) else "unknown",
+                        "search_budget": (
+                            f"{search_requests_used}/{search_request_limit}"
+                            if search_request_limit
+                            else ""
+                        ),
                     }
                     if isinstance(exc, APIError):
                         fields["status"] = exc.status
@@ -360,6 +402,7 @@ class GrokService:
                     )
                     raise
                 result = outcome.value
+                search_requests_used, search_request_limit = search_budget_usage()
                 safe_task_log(
                     logging.INFO,
                     "请求完成",
@@ -374,6 +417,7 @@ class GrokService:
                     retry_count=task_retry_count(),
                     elapsed_ms=self._elapsed_ms(started_at),
                     source_count=len(result.sources),
+                    search_budget=f"{search_requests_used}/{search_request_limit}",
                 )
                 return result
 
@@ -728,7 +772,13 @@ class GrokService:
                             request_prompt=request_prompt,
                             request_params=request_params,
                             prompt_mode=self._effective_prompt_mode(
-                                self._config, has_reference_image=False
+                                self._config,
+                                has_reference_image=False,
+                                skip_prompt_processing=skip_prompt_processing,
+                            ),
+                            prompt_status=self._prompt_processing_status(
+                                has_reference_image=False,
+                                skip_prompt_processing=skip_prompt_processing,
                             ),
                             reference_image="无",
                             candidate_models=", ".join(self._config.image_models),
@@ -848,7 +898,13 @@ class GrokService:
                             request_prompt=request_prompt,
                             request_params=request_params,
                             prompt_mode=self._effective_prompt_mode(
-                                self._config, has_reference_image=True
+                                self._config,
+                                has_reference_image=True,
+                                skip_prompt_processing=skip_prompt_processing,
+                            ),
+                            prompt_status=self._prompt_processing_status(
+                                has_reference_image=True,
+                                skip_prompt_processing=skip_prompt_processing,
                             ),
                             reference_image="有",
                             candidate_models=", ".join(self._config.image_edit_models),
@@ -1005,7 +1061,13 @@ class GrokService:
                             request_prompt=request_prompt,
                             request_params=request_params,
                             prompt_mode=self._effective_prompt_mode(
-                                self._config, has_reference_image=bool(image_data_url)
+                                self._config,
+                                has_reference_image=bool(image_data_url),
+                                skip_prompt_processing=skip_prompt_processing,
+                            ),
+                            prompt_status=self._prompt_processing_status(
+                                has_reference_image=bool(image_data_url),
+                                skip_prompt_processing=skip_prompt_processing,
                             ),
                             reference_image="有" if image_data_url else "无",
                             reference_aspect_ratio=reference_aspect_ratio,
@@ -1066,12 +1128,21 @@ class GrokService:
                         self._release_session_lock(event, lock)
 
     async def _research_character_visuals(self, prompt: str) -> str:
+        started_at = time.monotonic()
         budget = min(
             float(self._config.prompt_character_research_timeout_seconds),
             float(self._config.search_timeout_seconds),
-            remaining_task_timeout(60.0),
+            remaining_task_timeout(),
         )
         if budget <= 0.5:
+            safe_task_log(
+                logging.INFO,
+                "角色资料搜索",
+                operation="character_research",
+                result="已跳过（剩余任务时间不足）",
+                search_budget=self._search_budget_label(),
+                elapsed_ms=self._elapsed_ms(started_at),
+            )
             return ""
 
         async def run_search() -> _ModelFallbackOutcome:
@@ -1090,49 +1161,125 @@ class GrokService:
                 or result.status != "completed"
                 or not result.search_performed
             ):
+                safe_task_log(
+                    logging.INFO,
+                    "角色资料搜索",
+                    operation="character_research",
+                    model=outcome.model,
+                    result="未获得可用资料",
+                    search_performed=(
+                        result.search_performed if isinstance(result, SearchResult) else False
+                    ),
+                    incomplete=(result.incomplete if isinstance(result, SearchResult) else True),
+                    source_count=(len(result.sources) if isinstance(result, SearchResult) else 0),
+                    search_budget=self._search_budget_label(),
+                    elapsed_ms=self._elapsed_ms(started_at),
+                )
                 return ""
-            return clean_and_truncate_reference(getattr(result, "text", "") or "")
+            reference = clean_and_truncate_reference(getattr(result, "text", "") or "")
+            safe_task_log(
+                logging.INFO,
+                "角色资料搜索",
+                operation="character_research",
+                model=outcome.model,
+                result="已获得可用资料" if reference else "未提取到可用外观事实",
+                search_performed=True,
+                incomplete=False,
+                source_count=len(result.sources),
+                text_chars=len(reference),
+                search_budget=self._search_budget_label(),
+                elapsed_ms=self._elapsed_ms(started_at),
+            )
+            return reference
         except asyncio.CancelledError:
             raise
         except asyncio.TimeoutError as exc:
             check_task_deadline()
-            safe_log(
-                logging.DEBUG,
-                "character_research_failed",
+            safe_task_log(
+                logging.INFO,
+                "角色资料搜索",
                 operation="character_research",
+                result="搜索超时，继续普通增强",
                 error_code="character_research_timeout",
+                search_budget=self._search_budget_label(),
                 exception_type=type(exc).__name__,
+                elapsed_ms=self._elapsed_ms(started_at),
             )
             return ""
         except PluginError as exc:
             if exc.code == "task_timeout":
                 raise
-            safe_log(
-                logging.DEBUG,
-                "character_research_failed",
+            safe_task_log(
+                logging.INFO,
+                "角色资料搜索",
                 operation="character_research",
+                result="搜索失败，继续普通增强",
                 error_code=exc.code,
+                search_budget=self._search_budget_label(),
                 exception_type=type(exc).__name__,
+                elapsed_ms=self._elapsed_ms(started_at),
             )
             return ""
         except Exception as exc:  # noqa: BLE001
-            safe_log(
-                logging.DEBUG,
-                "character_research_failed",
+            safe_task_log(
+                logging.INFO,
+                "角色资料搜索",
                 operation="character_research",
+                result="搜索失败，继续普通增强",
                 error_code="character_research_failed",
+                search_budget=self._search_budget_label(),
                 exception_type=type(exc).__name__,
+                elapsed_ms=self._elapsed_ms(started_at),
             )
             return ""
+
+    def _should_research_character(
+        self,
+        prompt: str,
+        *,
+        has_reference_image: bool = False,
+    ) -> bool:
+        mode = self._config.prompt_character_research_mode
+        if has_reference_image:
+            reason = "reference_image_present"
+        elif self._config.prompt_processing_mode != "enhance":
+            reason = "prompt_mode_not_enhance"
+        elif mode == "off":
+            reason = "disabled"
+        elif not should_research_character(prompt, mode):
+            reason = "no_named_character"
+        else:
+            safe_task_log(
+                logging.INFO,
+                "角色资料搜索",
+                operation="character_research",
+                result="已触发",
+                trigger=mode,
+                search_budget=self._search_budget_label(),
+            )
+            return True
+        skip_result = {
+            "reference_image_present": "已有参考图",
+            "prompt_mode_not_enhance": "提示词模式不是增强",
+            "disabled": "功能已关闭",
+            "no_named_character": "未识别到角色名",
+        }.get(reason, "条件不满足")
+        safe_task_log(
+            logging.INFO,
+            "角色资料搜索",
+            operation="character_research",
+            result=f"已跳过（{skip_result}）",
+            trigger=mode,
+            search_budget=self._search_budget_label(),
+        )
+        return False
 
     async def _resolve_image_request(
         self, prompt: str, *, skip: bool = False
     ) -> ImageGenerationRequest:
         if self._prompt_processor is None or skip:
             return ImageGenerationRequest(prompt=prompt)
-        if self._config.prompt_processing_mode == "enhance" and should_research_character(
-            prompt, self._config.prompt_character_research_mode
-        ):
+        if self._should_research_character(prompt):
             character_ref = await self._research_character_visuals(prompt)
         else:
             character_ref = ""
@@ -1170,10 +1317,9 @@ class GrokService:
     ) -> VideoGenerationRequest:
         if self._prompt_processor is None or skip:
             return VideoGenerationRequest(prompt=prompt, aspect_ratio=reference_aspect_ratio)
-        if (
-            self._config.prompt_processing_mode == "enhance"
-            and not has_reference_image
-            and should_research_character(prompt, self._config.prompt_character_research_mode)
+        if self._should_research_character(
+            prompt,
+            has_reference_image=has_reference_image,
         ):
             character_ref = await self._research_character_visuals(prompt)
         else:
@@ -1429,4 +1575,9 @@ class GrokService:
                     "admin_client_close_failed",
                     exception_type=type(exc).__name__,
                 )
-        safe_log(logging.INFO, "plugin_terminated", operation="close")
+        safe_task_log(
+            logging.INFO,
+            "插件已停止",
+            operation="plugin_terminate",
+            result="资源已释放",
+        )
