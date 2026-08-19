@@ -248,7 +248,7 @@ class Grok2APISubPlugin(HelpMixin, SearchMixin, MediaMixin, PanelMixin, Star):
 
     @filter.command("g2生图", alias={"grok2生图"})
     async def g2_generate_image(self, event: AstrMessageEvent, arguments: GreedyStr):
-        """生成图片：/g2生图 <提示词>。"""
+        """生成图片：/g2生图 [-off|-ex|-st|-en|-enp] [-s] <提示词>。"""
         await self._handle_generate_image(event, arguments)
 
     @filter.command("g2改图", alias={"grok2改图"})
@@ -258,7 +258,7 @@ class Grok2APISubPlugin(HelpMixin, SearchMixin, MediaMixin, PanelMixin, Star):
 
     @filter.command("g2视频", alias={"grok2视频"})
     async def g2_generate_video(self, event: AstrMessageEvent, arguments: GreedyStr):
-        """生成视频：/g2视频 [--image-url HTTPS_URL] <提示词>，可附带首帧图片。"""
+        """生成视频：/g2视频 [--image-url HTTPS_URL] <提示词>，原文直传。"""
         await self._handle_generate_video(event, arguments)
 
     @filter.permission_type(PermissionType.ADMIN)

@@ -94,48 +94,48 @@
     }
   },
   "prompt_settings": {
-    "description": "提示词处理：整理、无损优化与角色资料补充。",
+    "description": "生图提示词处理：参数提取、精准整理、受控增强与深度增强。",
     "type": "object",
     "items": {
       "mode": {
-        "description": "提示词处理模式",
+        "description": "生图提示词处理模式",
         "type": "string",
         "default": "off",
-        "options": ["off", "extract", "enhance"],
-        "hint": "关闭=原文直传；整理=只提取参数；优化=无损改写并补全参数。"
+        "options": ["off", "extract", "standard", "enhance", "enhance_pro"],
+        "hint": "关闭=原文直传；提取=只读取比例/分辨率；standard=精准整理；enhance=受控增强；enhance_pro=深度增强。仅 /g2生图 生效。"
       },
       "extract_provider_id": {
-        "description": "提示词整理模型",
+        "description": "生图参数提取模型",
         "type": "string",
         "default": "",
         "_special": "select_provider",
-        "hint": "仅在“整理”模式使用。"
+        "hint": "仅在 extract 模式使用。"
       },
       "enhance_provider_id": {
-        "description": "提示词优化模型",
+        "description": "生图提示词改写模型",
         "type": "string",
         "default": "",
         "_special": "select_provider",
-        "hint": "仅在“优化”模式使用。"
+        "hint": "在 standard、enhance、enhance_pro 模式使用。"
       },
       "character_research_mode": {
-        "description": "角色资料补充",
+        "description": "生图视觉资料搜索",
         "type": "string",
         "default": "off",
         "options": ["off", "auto", "always"],
-        "hint": "关闭=不搜索；自动=识别具名角色后搜索；始终=每次生图/视频都尝试搜索。搜索失败会继续普通优化。"
+        "hint": "关闭=不搜索；自动=识别具名实体后搜索；始终=每次生图尝试搜索。-s/--search 可在生图命令中显式触发。"
       },
       "disable_prompt_processing_with_reference_image": {
-        "description": "有参考图时跳过提示词处理",
+        "description": "兼容项：参考图提示词处理开关",
         "type": "bool",
         "default": false,
-        "hint": "开启后，改图或带参考图视频直接使用原提示词，不调用提示词模型。"
+        "hint": "当前提示词处理仅用于 /g2生图；该项保留用于兼容带参考图的旧配置，不影响改图和视频。"
       },
       "fallback_to_original_on_error": {
-        "description": "提示词处理失败时使用原文",
+        "description": "默认模式失败时使用原文",
         "type": "bool",
         "default": true,
-        "hint": "开启后处理失败不会阻断媒体生成。"
+        "hint": "仅未显式指定模式时生效；命令使用 -off/-ex/-st/-en/-enp 后，处理失败会直接拒绝生成。"
       }
     }
   },

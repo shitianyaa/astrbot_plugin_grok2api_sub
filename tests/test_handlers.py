@@ -1,4 +1,4 @@
-"""Media command handler fallback contract tests."""
+"""Media command handler fallback and validation contract tests."""
 
 from __future__ import annotations
 
@@ -31,7 +31,12 @@ class StubEvent:
         self.stopped = True
 
 
-def _fallback_cfg(*, fallback_enabled: bool, mode: str) -> PluginConfig:
+def _fallback_cfg(
+    *,
+    fallback_enabled: bool = True,
+    mode: str = "standard",
+    character_research_mode: str = "auto",
+) -> PluginConfig:
     return PluginConfig.from_astrbot(
         {
             "connection_settings": {"api_base_url": "https://h.com", "api_key": "k"},
@@ -43,6 +48,7 @@ def _fallback_cfg(*, fallback_enabled: bool, mode: str) -> PluginConfig:
                 "send_media_progress": False,
                 "prompt_processing": {
                     "mode": mode,
+                    "character_research_mode": character_research_mode,
                     "enhance_provider_id": "session-model",
                     "fallback_to_original_on_error": fallback_enabled,
                 },
@@ -62,7 +68,7 @@ async def test_image_processing_failure_retries_with_skip():
             if not skip_prompt_processing:
                 raise PluginError("处理失败", code="prompt_processing_provider_failed")
 
-    mixin = _mixin(_fallback_cfg(fallback_enabled=True, mode="enhance"))
+    mixin = _mixin(_fallback_cfg(fallback_enabled=True, mode="standard"))
     mixin._service = Svc()
 
     await mixin._handle_generate_image(StubEvent(), "猫")
@@ -78,7 +84,7 @@ async def test_image_processing_failure_reports_when_switch_off():
         ):
             raise PluginError("处理失败", code="prompt_processing_provider_failed")
 
-    mixin = _mixin(_fallback_cfg(fallback_enabled=False, mode="enhance"))
+    mixin = _mixin(_fallback_cfg(fallback_enabled=False, mode="standard"))
     mixin._service = Svc()
 
     await mixin._handle_generate_image(StubEvent(), "猫")
@@ -106,62 +112,122 @@ async def test_image_processing_failure_not_fallback_when_mode_off():
     assert mixin.sent == ["智能改写提示词失败，请检查提示词改写模型的配置"]
 
 
-async def test_edit_image_processing_failure_retries_with_skip():
+async def test_explicit_prompt_mode_failure_does_not_fallback():
     calls: list[bool] = []
 
     class Svc:
-        async def deliver_edited_image(
+        async def deliver_generated_images(
             self, event, prompt, *, skip_prompt_processing=False, **_kwargs
         ):
             calls.append(skip_prompt_processing)
-            if not skip_prompt_processing:
-                raise PluginError("处理失败", code="prompt_processing_timeout")
+            raise PluginError("处理失败", code="prompt_processing_provider_failed")
 
-    mixin = _mixin(_fallback_cfg(fallback_enabled=True, mode="enhance"))
+    mixin = _mixin(_fallback_cfg(fallback_enabled=True, mode="standard"))
     mixin._service = Svc()
 
-    await mixin._handle_edit_image(StubEvent(), "变红")
+    await mixin._handle_generate_image(StubEvent(), "-en 猫")
 
-    assert calls == [False, True]
-    assert mixin.sent == []
+    assert calls == [False]  # 显式模式失败直接报错，不触发 skip 重试
+    assert mixin.sent == ["智能改写提示词失败，请检查提示词改写模型的配置"]
 
 
-async def test_video_processing_failure_retries_with_skip_and_reference_image():
+async def test_generate_image_explicit_search_fails_without_fallback_when_prompt_model_fails():
     calls: list[bool] = []
 
     class Svc:
-        async def deliver_video(
-            self, event, prompt, *, reference_image_url="", skip_prompt_processing=False, **_kwargs
+        async def deliver_generated_images(
+            self, event, prompt, *, skip_prompt_processing=False, **_kwargs
         ):
             calls.append(skip_prompt_processing)
-            if not skip_prompt_processing:
-                raise PluginError("处理失败", code="prompt_processing_invalid")
+            raise PluginError("提示词处理模型响应超时", code="prompt_processing_timeout")
 
-    mixin = _mixin(_fallback_cfg(fallback_enabled=True, mode="enhance"))
+    mixin = _mixin(_fallback_cfg(fallback_enabled=True, mode="standard"))
     mixin._service = Svc()
 
+    await mixin._handle_generate_image(StubEvent(), "-s a cute cat")
+
+    assert calls == [False]
+    assert mixin.sent == ["智能改写提示词超时，请重试"]
+
+
+async def test_generate_image_rejects_search_flag_with_off_or_extract_mode():
+    class Svc:
+        async def deliver_generated_images(self, *args, **kwargs):
+            pass
+
+    # 1. explicit -s with -off
+    mixin = _mixin(_fallback_cfg(mode="standard"))
+    mixin._service = Svc()
+    await mixin._handle_generate_image(StubEvent(), "-s -off 猫")
+    assert any("-s/--search 只能与 -st、-en 或 -enp 配合使用" in msg for msg in mixin.sent)
+
+    # 2. explicit -s with -ex
+    mixin.sent.clear()
+    await mixin._handle_generate_image(StubEvent(), "-s -ex 猫")
+    assert any("-s/--search 只能与 -st、-en 或 -enp 配合使用" in msg for msg in mixin.sent)
+
+    # 3. explicit -s with config mode "off" and no override
+    mixin = _mixin(_fallback_cfg(mode="off"))
+    mixin._service = Svc()
+    mixin.sent.clear()
+    await mixin._handle_generate_image(StubEvent(), "-s 猫")
+    assert any("-s/--search 只能与 -st、-en 或 -enp 配合使用" in msg for msg in mixin.sent)
+
+
+async def test_generate_image_rejects_search_flag_when_search_disabled_in_config():
+    class Svc:
+        async def deliver_generated_images(self, *args, **kwargs):
+            pass
+
+    mixin = _mixin(_fallback_cfg(mode="standard", character_research_mode="off"))
+    mixin._service = Svc()
+    await mixin._handle_generate_image(StubEvent(), "-s 猫")
+    assert any("资料搜索已在插件配置中关闭，无法使用 -s/--search" in msg for msg in mixin.sent)
+
+
+async def test_edit_image_disallows_prompt_processing_flags():
+    class Svc:
+        async def deliver_edited_image(self, *args, **kwargs):
+            pass
+
+    mixin = _mixin(_fallback_cfg())
+    mixin._service = Svc()
+    await mixin._handle_edit_image(StubEvent(), "-en 变红")
+    assert any("提示词处理和资料搜索参数仅支持 /g2生图" in msg for msg in mixin.sent)
+
+
+async def test_edit_image_calls_service_with_verbatim_prompt():
+    calls: list[str] = []
+
+    class Svc:
+        async def deliver_edited_image(self, event, prompt):
+            calls.append(prompt)
+
+    mixin = _mixin(_fallback_cfg())
+    mixin._service = Svc()
+    await mixin._handle_edit_image(StubEvent(), "变红 保持细节")
+    assert calls == ["变红 保持细节"]
+
+
+async def test_generate_video_disallows_prompt_processing_flags():
+    class Svc:
+        async def deliver_video(self, *args, **kwargs):
+            pass
+
+    mixin = _mixin(_fallback_cfg())
+    mixin._service = Svc()
+    await mixin._handle_generate_video(StubEvent(), "-s 纸飞机")
+    assert any("提示词处理和资料搜索参数仅支持 /g2生图" in msg for msg in mixin.sent)
+
+
+async def test_generate_video_calls_service_with_verbatim_prompt_and_image_url():
+    calls: list[tuple[str, str]] = []
+
+    class Svc:
+        async def deliver_video(self, event, prompt, *, reference_image_url=""):
+            calls.append((prompt, reference_image_url))
+
+    mixin = _mixin(_fallback_cfg())
+    mixin._service = Svc()
     await mixin._handle_generate_video(StubEvent(), "纸飞机 --image-url=https://e.com/i.png")
-
-    assert calls == [False, True]
-    assert mixin.sent == []
-
-
-async def test_video_fallback_failure_path_reports_error():
-    calls: list[bool] = []
-
-    class Svc:
-        async def deliver_video(
-            self, event, prompt, *, reference_image_url="", skip_prompt_processing=False, **_kwargs
-        ):
-            calls.append(skip_prompt_processing)
-            if not skip_prompt_processing:
-                raise PluginError("改写出错", code="prompt_processing_timeout")
-            raise PluginError("生成失败", code="video_failed")
-
-    mixin = _mixin(_fallback_cfg(fallback_enabled=True, mode="enhance"))
-    mixin._service = Svc()
-
-    await mixin._handle_generate_video(StubEvent(), "纸飞机")
-
-    assert calls == [False, True]  # 重试确实发生
-    assert "生成失败" in mixin.sent[0]  # 回退失败错误路径
+    assert calls == [("纸飞机", "https://e.com/i.png")]

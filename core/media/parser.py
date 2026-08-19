@@ -16,16 +16,32 @@ REFERENCE_IMAGE_URL_MAX = 8192
 _IMAGE_URL_OPTION_RE = re.compile(r"(?<!\S)--image-url(?:=|\s+)(\S+)")
 _IMAGE_URL_FLAG_RE = re.compile(r"(?<!\S)--image-url(?:=|\s|$)")
 _SEARCH_FLAG_RE = re.compile(r"(?<!\S)(?:-s|--search)(?!\S)")
+_PROMPT_MODE_FLAG_RE = re.compile(
+    r"(?<!\S)(?:-off|--off|-ex|--extract|-st|--standard|-en|--enhance|-enp|--enhance-pro)(?!\S)"
+)
+_PROMPT_MODE_FLAGS = {
+    "-off": "off",
+    "--off": "off",
+    "-ex": "extract",
+    "--extract": "extract",
+    "-st": "standard",
+    "--standard": "standard",
+    "-en": "enhance",
+    "--enhance": "enhance",
+    "-enp": "enhance_pro",
+    "--enhance-pro": "enhance_pro",
+}
 _LEGACY_IPV4_LABEL_RE = re.compile(r"(?:0[xX][0-9A-Fa-f]+|0[0-7]*|\d+)\Z")
 
 
 @dataclass(frozen=True, slots=True)
 class ParsedMediaCommand:
-    """Validated prompt with an optional explicit video reference-image URL and search flag."""
+    """Validated media prompt and supported request-level options."""
 
     prompt: str
     reference_image_url: str = ""
     explicit_search: bool = False
+    prompt_mode: str = ""
 
 
 def _check_length(text: str) -> None:
@@ -45,17 +61,40 @@ def validate_search_query(query: str) -> str:
 
 
 def parse_media_command(
-    arguments: str, *, allow_reference_image_url: bool = True
+    arguments: str,
+    *,
+    allow_reference_image_url: bool = True,
+    allow_prompt_processing: bool = False,
 ) -> ParsedMediaCommand:
-    """Split explicit ``--image-url`` and ``-s``/``--search`` options from the user prompt.
+    """Split supported media options from one user prompt.
 
     The URL remains opaque after validation so signed query strings can reach
-    the upstream video endpoint unchanged. Flags are stripped from the prompt.
+    the upstream video endpoint unchanged. Prompt-processing flags are accepted
+    only by image generation. All option matching is token-exact and order-free.
     """
     text = arguments
-    explicit_search = bool(_SEARCH_FLAG_RE.search(text))
+    search_flags = [match.group(0) for match in _SEARCH_FLAG_RE.finditer(text)]
+    mode_flags = [match.group(0) for match in _PROMPT_MODE_FLAG_RE.finditer(text)]
+    if (search_flags or mode_flags) and not allow_prompt_processing:
+        raise ConfigurationError(
+            "提示词处理和资料搜索参数仅支持 /g2生图",
+            code="prompt_options_unsupported",
+        )
+    if len(search_flags) > 1:
+        raise ConfigurationError("搜索参数只能提供一次", code="search_flag_duplicate")
+    if len(mode_flags) > 1:
+        joined = "、".join(mode_flags)
+        raise ConfigurationError(
+            f"提示词处理模式只能指定一个，检测到：{joined}",
+            code="prompt_mode_conflict",
+        )
+
+    explicit_search = bool(search_flags)
+    prompt_mode = _PROMPT_MODE_FLAGS.get(mode_flags[0], "") if mode_flags else ""
     if explicit_search:
-        text = _SEARCH_FLAG_RE.sub(" ", text)
+        text = _SEARCH_FLAG_RE.sub("", text)
+    if prompt_mode:
+        text = _PROMPT_MODE_FLAG_RE.sub("", text)
 
     flags = list(_IMAGE_URL_FLAG_RE.finditer(text))
     if len(flags) > 1:
@@ -66,7 +105,9 @@ def parse_media_command(
         if flags:
             raise ConfigurationError("图片 URL 参数缺少地址", code="image_url_missing")
         return ParsedMediaCommand(
-            prompt=validate_search_query(text), explicit_search=explicit_search
+            prompt=validate_search_query(text),
+            explicit_search=explicit_search,
+            prompt_mode=prompt_mode,
         )
     if len(matches) != 1:
         raise ConfigurationError("图片 URL 参数只能提供一次", code="image_url_duplicate")
@@ -80,6 +121,7 @@ def parse_media_command(
         prompt=validate_search_query(remaining),
         reference_image_url=reference_image_url,
         explicit_search=explicit_search,
+        prompt_mode=prompt_mode,
     )
 
 

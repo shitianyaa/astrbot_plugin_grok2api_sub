@@ -59,9 +59,9 @@ PANEL_RESOLUTIONS = ("720p", "1080p", "1440p")
 DEFAULT_PANEL_RESOLUTION = "1080p"
 _IMAGE_FORMATS = ("b64_json", "url")
 _SEARCH_REASONING_EFFORTS = ("auto", "none", "low", "medium", "high", "xhigh")
-_PROMPT_PROCESSING_MODES = ("off", "extract", "enhance")
+_PROMPT_PROCESSING_MODES = ("off", "extract", "standard", "enhance", "enhance_pro")
 _CHARACTER_RESEARCH_MODES = ("off", "auto", "always")
-_CONFIG_LAYOUT_VERSION = 2
+_CONFIG_LAYOUT_VERSION = 3
 
 _URL_SCHEME_RE = re.compile(r"^[a-zA-Z][a-zA-Z0-9+.-]*://")
 _RETRY_ERROR_CODE_RE = re.compile(r"^[a-z][a-z0-9_.-]{0,63}$")
@@ -186,6 +186,11 @@ def _prepare_config_layout(cmapping: Mapping[str, object]) -> tuple[int, bool]:
         ("fallback_to_original_on_error", True),
     ):
         copy_customized(prompt, key, legacy_prompt, default)
+
+    if version < 3 and prompt.get("mode") == "enhance":
+        # v2 ``enhance`` was the old lossless rewrite behavior. Preserve that
+        # behavior under the new explicit ``standard`` name after migration.
+        prompt["mode"] = "standard"
 
     search = mutable_section(cmapping, "search_settings")
     for key, default in (
@@ -733,6 +738,9 @@ class PluginConfig:
             compat(panel, "panel_period", legacy_adv, DEFAULT_PANEL_PERIOD),
             PANEL_PERIODS,
         )
+        raw_prompt_mode = compat(prompt, "mode", legacy_prompt, "off")
+        if layout_version < 3 and raw_prompt_mode == "enhance":
+            raw_prompt_mode = "standard"
 
         cfg = cls(
             enabled=_bool_flag("connection_settings.enabled", g(conn, "enabled"), True),
@@ -937,7 +945,7 @@ class PluginConfig:
             ),
             prompt_processing_mode=_to_choice(
                 "prompt_settings.mode",
-                compat(prompt, "mode", legacy_prompt, "off"),
+                raw_prompt_mode,
                 _PROMPT_PROCESSING_MODES,
             ),
             prompt_extract_provider_id=_provider_id(

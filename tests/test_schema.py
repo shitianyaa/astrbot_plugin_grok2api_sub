@@ -121,7 +121,7 @@ def test_search_reasoning_effort_supports_auto(schema):
 
 def test_prompt_processing_uses_astrbot_provider_selectors(schema):
     items = schema["prompt_settings"]["items"]
-    assert items["mode"]["options"] == ["off", "extract", "enhance"]
+    assert items["mode"]["options"] == ["off", "extract", "standard", "enhance", "enhance_pro"]
     assert items["mode"]["default"] == "off"
     assert items["extract_provider_id"]["_special"] == "select_provider"
     assert items["enhance_provider_id"]["_special"] == "select_provider"

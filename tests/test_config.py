@@ -114,13 +114,14 @@ def test_legacy_layout_migrates_custom_values_into_new_groups():
     cfg = PluginConfig.from_astrbot(raw)
 
     assert cfg.search_models == ("legacy-search",)
-    assert cfg.prompt_processing_mode == "enhance"
+    assert cfg.prompt_processing_mode == "standard"
     assert cfg.task_timeout_seconds == 900
     assert cfg.panel_period == "30d"
     assert cfg.admin_username == "legacy-admin"
     assert cfg.admin_password == "legacy-pass"
-    assert raw["connection_settings"]["config_layout_version"] == 2
+    assert raw["connection_settings"]["config_layout_version"] == 3
     assert raw["search_settings"]["search_models"] == "legacy-search"
+    assert raw["prompt_settings"]["mode"] == "standard"
     assert raw["performance_settings"]["timeouts"]["task_timeout_seconds"] == 900
     assert raw["panel_settings"]["admin_username"] == " legacy-admin "
 
@@ -167,7 +168,7 @@ def test_v1_saved_defaults_migrate_to_longer_timeouts_and_search_budget():
     assert cfg.prompt_processing_timeout_seconds == 60
     assert cfg.prompt_character_research_timeout_seconds == 120
     assert cfg.max_search_requests_per_task == 3
-    assert raw["connection_settings"]["config_layout_version"] == 2
+    assert raw["connection_settings"]["config_layout_version"] == 3
 
 
 def test_immutable_legacy_mapping_still_uses_compatibility_fallback():
@@ -347,19 +348,81 @@ def test_reject_non_http_scheme():
     _raises(connection_settings={"client_proxy_url": "socks5://h.com"})
 
 
-def test_prompt_processing_config_accepts_independent_providers():
-    c = _cfg(
-        capability_settings={
-            "prompt_processing": {
-                "mode": "enhance",
-                "extract_provider_id": "small-model",
-                "enhance_provider_id": "large-model",
-            }
-        }
-    )
-    assert c.prompt_processing_mode == "enhance"
+@pytest.mark.parametrize("mode", ["off", "extract", "standard", "enhance", "enhance_pro"])
+def test_prompt_processing_config_accepts_independent_providers(mode):
+    raw = {
+        "connection_settings": {
+            "enabled": True,
+            "api_base_url": "https://grok.example.com",
+            "api_key": "key-1",
+            "config_layout_version": 3,
+        },
+        "prompt_settings": {
+            "mode": mode,
+            "extract_provider_id": "small-model",
+            "enhance_provider_id": "large-model",
+        },
+    }
+    c = PluginConfig.from_astrbot(raw)
+    assert c.prompt_processing_mode == mode
     assert c.prompt_extract_provider_id == "small-model"
     assert c.prompt_enhance_provider_id == "large-model"
+
+
+@pytest.mark.parametrize("initial_version", [0, 1, 2])
+def test_v3_migration_converts_legacy_enhance_to_standard(initial_version):
+    if initial_version == 0:
+        raw = _raw(
+            capability_settings={"prompt_processing": {"mode": "enhance"}},
+        )
+    else:
+        raw = _raw(
+            connection_settings={"config_layout_version": initial_version},
+            prompt_settings={"mode": "enhance"},
+        )
+
+    cfg = PluginConfig.from_astrbot(raw)
+
+    assert cfg.prompt_processing_mode == "standard"
+    assert raw["connection_settings"]["config_layout_version"] == 3
+    assert raw["prompt_settings"]["mode"] == "standard"
+
+
+@pytest.mark.parametrize("mode", ["off", "extract", "standard"])
+@pytest.mark.parametrize("initial_version", [1, 2])
+def test_v3_migration_preserves_other_modes(mode, initial_version):
+    raw = _raw(
+        connection_settings={"config_layout_version": initial_version},
+        prompt_settings={"mode": mode},
+    )
+
+    cfg = PluginConfig.from_astrbot(raw)
+
+    assert cfg.prompt_processing_mode == mode
+    assert raw["connection_settings"]["config_layout_version"] == 3
+    assert raw["prompt_settings"]["mode"] == mode
+
+
+@pytest.mark.parametrize("mode", ["off", "extract", "standard", "enhance", "enhance_pro"])
+def test_v3_layout_preserves_all_modes_without_modification(mode):
+    raw = _raw(
+        connection_settings={"config_layout_version": 3},
+        prompt_settings={"mode": mode},
+    )
+
+    cfg = PluginConfig.from_astrbot(raw)
+
+    assert cfg.prompt_processing_mode == mode
+    assert raw["connection_settings"]["config_layout_version"] == 3
+    assert raw["prompt_settings"]["mode"] == mode
+
+
+def test_immutable_legacy_mapping_migrates_enhance_to_standard():
+    from types import MappingProxyType
+
+    raw = MappingProxyType(_raw(capability_settings={"prompt_processing": {"mode": "enhance"}}))
+    cfg = PluginConfig.from_astrbot(raw)
+    assert cfg.prompt_processing_mode == "standard"
 
 
 def test_prompt_processing_reference_image_disable_is_configurable_without_legacy_migration():

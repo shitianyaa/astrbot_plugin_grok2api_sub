@@ -22,13 +22,21 @@ assets/ (静态资源)
 
 ## 媒体提示词处理
 
-`/g2生图`、`/g2改图` 与 `/g2视频` 接收命令后的整段文本，不再将数字、时长或比例前缀当作命令参数。`PromptProcessor` 在服务层发起 grok2api 请求前解析模式：`off` 直接保留原提示词，`extract` 调用配置的 AstrBot 整理供应商且只接受媒体参数，`enhance` 调用独立的优化供应商并可替换提示词。改图没有可用媒体参数，因此全局 `extract` 保留其原提示词。
+提示词处理与视觉事实检索**严格仅服务于 `/g2生图`**。`/g2改图` 与 `/g2视频` 彻底绕过 `PromptProcessor`，将用户提示词与编辑要求原文直传至上游端点，若检测到提示词控制标记（`-off`、`-ex`、`-st`、`-en`、`-enp`、`-s`、`--search`）会在远端调用前直接拦截拒绝。
 
-- 三套固定 system prompt 分别用于图片参数、视频参数和通用媒体优化；用户内容以 JSON 数据体传给 `Context.llm_generate()`，而不是插入 system prompt。带参考图的改图/视频仅额外传入 `reference_image_present` 布尔值，绝不传入图片、data URL、外链 URL 或签名 query。
-- 返回内容必须是无多余字段的 JSON。比例、图片 `1k/2k`、视频 `6/10/15` 秒和 `480p/720p/1080p` 逐项白名单校验；模型异常、工具调用响应、超时或格式错误都会在 grok2api 生成请求前终止本次命令。
-- `prompt_settings.disable_prompt_processing_with_reference_image=true` 时，检测到改图消息图片或视频消息图片/显式 URL 参考图会强制使用 `off`；因此不会调用文本模型，关闭时则完全遵循全局模式。
-- 消息或回复中的视频参考图在 Pillow 校验和归一化时保留宽高；若处理器没有返回比例，服务层以固定白名单选择最近比例。显式 URL 保持不透明转发，不下载、不读取尺寸。
-- `prompt_processor.py` 的内部处理过程均在 DEBUG 记录。用户启用 `extract` 或 `enhance` 且输出通过严格校验后，会额外写入一条本地 `prompt_processing_resolved`，包含实际发送的 `prompt` 与媒体参数 JSON，便于核对质量；自动填入的本地参考图比例会在该日志前合并。直传模式、原始输入、失败输出和 provider 标识不记录。该 JSON 会继续脱敏 API Key、Bearer/JWT、密码/secret 赋值、代理 userinfo 与 Base64。
+- **文生图五档模式与供应商调度**：`PromptProcessor` 在发起生图请求前解析最终有效模式：
+  - `off`：直接保留原提示词，不调用提示词模型与资料搜索。
+  - `extract`：调用 `extract_provider_id`，仅提取图片比例（`1:1`、`16:9`、`9:16`、`4:3`、`3:4`、`3:2`、`2:3`）与分辨率（`1k`/`2k`），保留原始提示词。
+  - `standard`、`enhance`、`enhance_pro`：共用 `enhance_provider_id`，按模式对应的 System Prompt 执行忠实整理、受控增强或深度增强，输出适配底模的地道英文 Prompt。
+- **纯净 System Prompt 架构**：提示词由 `SHARED_LOSSLESS_RULES` + 当前模式专属规则组成；用户输入以结构化 JSON 数据体（`{"media_type":"image","source_prompt":...}`）传给 `Context.llm_generate()`，绝不与 System Prompt 混淆。有视觉资料时追加 `REFERENCE_RULES` 与 `character_reference` 字段。
+- **严格 JSON 响应与白名单校验**：模型输出必须是无多余字段的合法 JSON，比例与分辨率经枚举白名单校验。
+- **显式控制硬报错与默认模式自愈**：
+  - 显式指定模式参数（如 `-en`）或显式搜索（`-s`）时，若改写模型超时/异常或搜索无资料，直接报错中止本次命令，绝不静默回退原文。
+  - 仅在未指定命令标记、使用 WebUI 默认配置模式时，若改写模型异常且 `fallback_to_original_on_error=true`，才降级为原提示词直传继续生图。
+- **改图与视频原文直传**：
+  - `/g2改图`：直接将消息/回复图片与原始编辑文本发往 `/v1/images/edits`。
+  - `/g2视频`：提示词原文直传，默认 `6s`、`720p`。消息/回复参考图经本地 Pillow 校验宽高比并对齐到最近合法比例；显式 `--image-url` 作为透明参数直传上游。
+- **可观测性与脱敏**：`prompt_processor.py` 内部处理细节仅在 DEBUG 记录。INFO 日志中生图任务块明确呈现配置默认模式、请求覆盖模式、最终有效模式、提示词状态（已增强/原文直传/回退原文）与搜索状态；改图与视频日志明确呈现“原文直传”。日志严禁输出凭据、Base64 或上游原始正文。
 
 ## 管理面板安全域（`/g2面板`）
 

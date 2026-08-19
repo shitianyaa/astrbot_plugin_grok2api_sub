@@ -128,6 +128,137 @@ def test_media_command_requires_prompt_after_url_option():
     ],
 )
 def test_media_command_extracts_explicit_search_flags(input_text, expected_prompt, expected_search):
-    parsed = parse_media_command(input_text, allow_reference_image_url=True)
+    parsed = parse_media_command(
+        input_text, allow_reference_image_url=True, allow_prompt_processing=True
+    )
     assert parsed.prompt == expected_prompt
     assert parsed.explicit_search is expected_search
+
+
+@pytest.mark.parametrize(
+    ("flag", "expected_mode"),
+    [
+        ("-off", "off"),
+        ("--off", "off"),
+        ("-ex", "extract"),
+        ("--extract", "extract"),
+        ("-st", "standard"),
+        ("--standard", "standard"),
+        ("-en", "enhance"),
+        ("--enhance", "enhance"),
+        ("-enp", "enhance_pro"),
+        ("--enhance-pro", "enhance_pro"),
+    ],
+)
+def test_parse_media_command_supports_short_and_long_mode_flags(flag, expected_mode):
+    parsed = parse_media_command(f"prompt {flag}", allow_prompt_processing=True)
+    assert parsed.prompt == "prompt"
+    assert parsed.prompt_mode == expected_mode
+
+    parsed_prefix = parse_media_command(f"{flag} prompt", allow_prompt_processing=True)
+    assert parsed_prefix.prompt == "prompt"
+    assert parsed_prefix.prompt_mode == expected_mode
+
+
+@pytest.mark.parametrize(
+    ("command_text", "expected_prompt", "expected_mode", "expected_search"),
+    [
+        ("-s -en 画一只洛茜吃草莓", "画一只洛茜吃草莓", "enhance", True),
+        ("-en -s 画一只洛茜吃草莓", "画一只洛茜吃草莓", "enhance", True),
+        ("画一只洛茜吃草莓 -s -en", "画一只洛茜吃草莓", "enhance", True),
+        ("画一只洛茜吃草莓 --search --enhance-pro", "画一只洛茜吃草莓", "enhance_pro", True),
+        ("--enhance-pro --search 画一只洛茜吃草莓", "画一只洛茜吃草莓", "enhance_pro", True),
+        ("前缀 -st 中间 -s 后缀", "前缀  中间  后缀", "standard", True),
+        ("前缀 --standard 中间 后缀", "前缀  中间 后缀", "standard", False),
+    ],
+)
+def test_parse_media_command_order_independence_and_middle_tokens(
+    command_text, expected_prompt, expected_mode, expected_search
+):
+    parsed = parse_media_command(command_text, allow_prompt_processing=True)
+    assert parsed.prompt == expected_prompt
+    assert parsed.prompt_mode == expected_mode
+    assert parsed.explicit_search is expected_search
+
+
+@pytest.mark.parametrize(
+    "command_text",
+    [
+        "-st -en prompt",
+        "-st -st prompt",
+        "--standard -st prompt",
+        "-off -enp prompt",
+        "--off --enhance-pro prompt",
+        "-ex --extract prompt",
+        "-en --enhance prompt",
+        "-enp -st prompt",
+        "prompt -st -en",
+        "prompt --standard --enhance",
+    ],
+)
+def test_parse_media_command_rejects_conflicting_mode_flags(command_text):
+    with pytest.raises(ConfigurationError) as exc_info:
+        parse_media_command(command_text, allow_prompt_processing=True)
+    assert exc_info.value.code == "prompt_mode_conflict"
+    assert "提示词处理模式只能指定一个" in str(exc_info.value)
+
+
+@pytest.mark.parametrize(
+    "command_text",
+    [
+        "-s -s prompt",
+        "-s --search prompt",
+        "--search -s prompt",
+        "--search --search prompt",
+        "prompt -s -s",
+        "prompt --search -s",
+    ],
+)
+def test_parse_media_command_rejects_duplicate_search_flags(command_text):
+    with pytest.raises(ConfigurationError) as exc_info:
+        parse_media_command(command_text, allow_prompt_processing=True)
+    assert exc_info.value.code == "search_flag_duplicate"
+    assert "搜索参数只能提供一次" in str(exc_info.value)
+
+
+@pytest.mark.parametrize(
+    "command_text",
+    [
+        "-s prompt",
+        "--search prompt",
+        "-off prompt",
+        "--off prompt",
+        "-ex prompt",
+        "--extract prompt",
+        "-st prompt",
+        "--standard prompt",
+        "-en prompt",
+        "--enhance prompt",
+        "-enp prompt",
+        "--enhance-pro prompt",
+        "-st -en prompt",
+        "-s -s prompt",
+    ],
+)
+def test_parse_media_command_rejects_prompt_flags_when_disallowed(command_text):
+    with pytest.raises(ConfigurationError) as exc_info:
+        parse_media_command(command_text, allow_prompt_processing=False)
+    assert exc_info.value.code == "prompt_options_unsupported"
+    assert "提示词处理和资料搜索参数仅支持 /g2生图" in str(exc_info.value)
+
+
+@pytest.mark.parametrize(
+    ("command_text", "expected_prompt"),
+    [
+        ("some-en prompt", "some-en prompt"),
+        ("prompt-st", "prompt-st"),
+        ("abc-ex-def", "abc-ex-def"),
+        ("-enhance-pro-bad", "-enhance-pro-bad"),
+        ("non-search-flag", "non-search-flag"),
+    ],
+)
+def test_parse_media_command_does_not_match_partial_tokens(command_text, expected_prompt):
+    parsed = parse_media_command(command_text, allow_prompt_processing=True)
+    assert parsed.prompt == expected_prompt
+    assert parsed.prompt_mode == ""
+    assert parsed.explicit_search is False

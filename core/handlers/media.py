@@ -26,9 +26,10 @@ class MediaMixin(BaseHandler):
     def _can_fallback_to_original(self, exc: Exception) -> bool:
         return isinstance(exc, PluginError) and exc.code.startswith("prompt_processing_")
 
-    def _fallback_allowed(self, exc: Exception) -> bool:
+    def _fallback_allowed(self, exc: Exception, *, explicit_prompt_mode: bool) -> bool:
         return (
-            self._prompt_fallback_enabled()
+            not explicit_prompt_mode
+            and self._prompt_fallback_enabled()
             and self._can_fallback_to_original(exc)
             and self._cfg.prompt_processing_mode != "off"
         )
@@ -46,7 +47,9 @@ class MediaMixin(BaseHandler):
         event: AstrMessageEvent,
         operation: str,
         task_fn: Callable[[], Awaitable[None]],
-        fallback_fn: Callable[[], Awaitable[None]],
+        fallback_fn: Callable[[], Awaitable[None]] | None = None,
+        *,
+        explicit_prompt_mode: bool = False,
     ) -> None:
         event.stop_event()
         with operation_scope(operation):
@@ -55,7 +58,14 @@ class MediaMixin(BaseHandler):
                 await task_fn()
                 safe_log(logging.DEBUG, "command_completed", operation=operation)
             except Exception as exc:  # noqa: BLE001
-                if self._fallback_allowed(exc) and self._service is not None:
+                if (
+                    fallback_fn is not None
+                    and self._fallback_allowed(
+                        exc,
+                        explicit_prompt_mode=explicit_prompt_mode,
+                    )
+                    and self._service is not None
+                ):
                     self._log_fallback_start(exc, operation)
                     try:
                         await fallback_fn()
@@ -72,7 +82,31 @@ class MediaMixin(BaseHandler):
                 await self._send_error(event, exc, operation=operation)
 
     async def _handle_generate_image(self, event: AstrMessageEvent, arguments: object) -> None:
-        parsed = parse_media_command(str(arguments), allow_reference_image_url=False)
+        try:
+            parsed = parse_media_command(
+                str(arguments),
+                allow_reference_image_url=False,
+                allow_prompt_processing=True,
+            )
+            effective_mode = parsed.prompt_mode or self._cfg.prompt_processing_mode
+            if parsed.explicit_search and effective_mode not in {
+                "standard",
+                "enhance",
+                "enhance_pro",
+            }:
+                raise PluginError(
+                    "-s/--search 只能与 -st、-en 或 -enp 配合使用",
+                    code="prompt_search_mode_invalid",
+                )
+            if parsed.explicit_search and self._cfg.prompt_character_research_mode == "off":
+                raise PluginError(
+                    "资料搜索已在插件配置中关闭，无法使用 -s/--search",
+                    code="prompt_search_disabled",
+                )
+        except Exception as exc:  # noqa: BLE001
+            event.stop_event()
+            await self._send_error(event, exc, operation="image_generate")
+            return
 
         def _call(skip: bool):
             service = self._require_service(event)
@@ -80,6 +114,7 @@ class MediaMixin(BaseHandler):
                 event,
                 parsed.prompt,
                 explicit_search=parsed.explicit_search,
+                prompt_mode=parsed.prompt_mode,
                 skip_prompt_processing=skip,
             )
 
@@ -88,43 +123,45 @@ class MediaMixin(BaseHandler):
             "image_generate",
             lambda: _call(False),
             lambda: _call(True),
+            explicit_prompt_mode=bool(parsed.prompt_mode or parsed.explicit_search),
         )
 
     async def _handle_edit_image(self, event: AstrMessageEvent, prompt: object) -> None:
-        parsed = parse_media_command(str(prompt), allow_reference_image_url=False)
-
-        def _call(skip: bool):
-            service = self._require_service(event)
-            return service.deliver_edited_image(
-                event,
-                parsed.prompt,
-                explicit_search=parsed.explicit_search,
-                skip_prompt_processing=skip,
+        try:
+            parsed = parse_media_command(
+                str(prompt),
+                allow_reference_image_url=False,
+                allow_prompt_processing=False,
             )
+        except Exception as exc:  # noqa: BLE001
+            event.stop_event()
+            await self._send_error(event, exc, operation="image_edit")
+            return
 
         await self._execute_media_task(
             event,
             "image_edit",
-            lambda: _call(False),
-            lambda: _call(True),
+            lambda: self._require_service(event).deliver_edited_image(event, parsed.prompt),
         )
 
     async def _handle_generate_video(self, event: AstrMessageEvent, arguments: object) -> None:
-        parsed = parse_media_command(str(arguments), allow_reference_image_url=True)
-
-        def _call(skip: bool):
-            service = self._require_service(event)
-            return service.deliver_video(
-                event,
-                parsed.prompt,
-                reference_image_url=parsed.reference_image_url,
-                explicit_search=parsed.explicit_search,
-                skip_prompt_processing=skip,
+        try:
+            parsed = parse_media_command(
+                str(arguments),
+                allow_reference_image_url=True,
+                allow_prompt_processing=False,
             )
+        except Exception as exc:  # noqa: BLE001
+            event.stop_event()
+            await self._send_error(event, exc, operation="video_generate")
+            return
 
         await self._execute_media_task(
             event,
             "video_generate",
-            lambda: _call(False),
-            lambda: _call(True),
+            lambda: self._require_service(event).deliver_video(
+                event,
+                parsed.prompt,
+                reference_image_url=parsed.reference_image_url,
+            ),
         )

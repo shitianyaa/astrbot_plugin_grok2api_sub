@@ -99,6 +99,8 @@ VISUAL_RESEARCH_SYSTEM_PROMPT = (
     "</USER_PROMPT>"
 )
 CHARACTER_RESEARCH_SYSTEM_PROMPT = VISUAL_RESEARCH_SYSTEM_PROMPT
+_IMAGE_REWRITE_MODES = frozenset({"standard", "enhance", "enhance_pro"})
+_IMAGE_PROMPT_MODES = frozenset({"off", "extract", *_IMAGE_REWRITE_MODES})
 
 _PANEL_CACHE_TTL = 60.0
 _MAX_MODEL_ROWS = 5000
@@ -310,34 +312,33 @@ class GrokService:
     def _effective_prompt_mode(
         config: PluginConfig,
         *,
-        has_reference_image: bool,
+        requested_prompt_mode: str = "",
         skip_prompt_processing: bool = False,
     ) -> str:
         if skip_prompt_processing:
             return "off"
-        if has_reference_image and config.prompt_disable_processing_with_reference_image:
-            return "off"
-        return config.prompt_processing_mode
+        mode = requested_prompt_mode or config.prompt_processing_mode
+        if mode not in _IMAGE_PROMPT_MODES:
+            raise PluginError("提示词处理模式无效", code="prompt_processing_mode_invalid")
+        return mode
 
     def _prompt_processing_status(
         self,
         *,
-        has_reference_image: bool,
+        mode: str,
         skip_prompt_processing: bool,
     ) -> str:
         if skip_prompt_processing:
             return "回退原文（跳过处理）"
-        mode = self._effective_prompt_mode(
-            self._config,
-            has_reference_image=has_reference_image,
-        )
         if mode == "off":
             return "原文直传"
         if self._prompt_processor is None:
             return "未执行（处理器不可用）"
         return {
             "extract": "参数提取完成",
-            "enhance": "增强完成",
+            "standard": "精准整理完成",
+            "enhance": "受控增强完成",
+            "enhance_pro": "深度增强完成",
         }.get(mode, "未处理")
 
     # -- search ------------------------------------------------------------
@@ -721,6 +722,7 @@ class GrokService:
         prompt: str,
         *,
         explicit_search: bool = False,
+        prompt_mode: str = "",
         skip_prompt_processing: bool = False,
     ) -> None:
         with task_deadline_scope(self._config.task_timeout_seconds):
@@ -759,9 +761,15 @@ class GrokService:
                     request_prompt = ""
                     request_params: dict[str, object] = {}
                     try:
+                        effective_prompt_mode = self._effective_prompt_mode(
+                            self._config,
+                            requested_prompt_mode=prompt_mode,
+                            skip_prompt_processing=skip_prompt_processing,
+                        )
                         request = await self._resolve_image_request(
                             prompt,
                             explicit_search=explicit_search,
+                            prompt_mode=prompt_mode,
                             skip=skip_prompt_processing,
                         )
                         request_prompt = request.prompt
@@ -778,13 +786,11 @@ class GrokService:
                             source_prompt=prompt,
                             request_prompt=request_prompt,
                             request_params=request_params,
-                            prompt_mode=self._effective_prompt_mode(
-                                self._config,
-                                has_reference_image=False,
-                                skip_prompt_processing=skip_prompt_processing,
-                            ),
+                            prompt_default_mode=self._config.prompt_processing_mode,
+                            prompt_mode_override=prompt_mode or "未指定",
+                            prompt_mode=effective_prompt_mode,
                             prompt_status=self._prompt_processing_status(
-                                has_reference_image=False,
+                                mode=effective_prompt_mode,
                                 skip_prompt_processing=skip_prompt_processing,
                             ),
                             reference_image="无",
@@ -852,9 +858,6 @@ class GrokService:
         self,
         event: Any,
         prompt: str,
-        *,
-        explicit_search: bool = False,
-        skip_prompt_processing: bool = False,
     ) -> None:
         with task_deadline_scope(self._config.task_timeout_seconds):
             operation = "image_edit"
@@ -893,13 +896,7 @@ class GrokService:
                     request_params: dict[str, object] = {}
                     try:
                         data_url = await self._find_input_image(event)
-                        stage = "prompt_processing"
-                        resolved_prompt = await self._resolve_image_edit_prompt(
-                            prompt,
-                            explicit_search=explicit_search,
-                            skip=skip_prompt_processing,
-                        )
-                        request_prompt = resolved_prompt
+                        request_prompt = prompt
                         request_params = {
                             "n": 1,
                             "response_format": self._config.image_response_format,
@@ -911,15 +908,8 @@ class GrokService:
                             source_prompt=prompt,
                             request_prompt=request_prompt,
                             request_params=request_params,
-                            prompt_mode=self._effective_prompt_mode(
-                                self._config,
-                                has_reference_image=True,
-                                skip_prompt_processing=skip_prompt_processing,
-                            ),
-                            prompt_status=self._prompt_processing_status(
-                                has_reference_image=True,
-                                skip_prompt_processing=skip_prompt_processing,
-                            ),
+                            prompt_mode="off",
+                            prompt_status="原文直传（改图不支持提示词处理）",
                             reference_image="有",
                             candidate_models=", ".join(self._config.image_edit_models),
                         )
@@ -930,7 +920,7 @@ class GrokService:
                         )
                         stage = "generate"
                         outcome = await self._edit_image_with_fallback(
-                            resolved_prompt,
+                            prompt,
                             data_url,
                             self._config.image_edit_models,
                             started_at,
@@ -1011,8 +1001,6 @@ class GrokService:
         prompt: str,
         *,
         reference_image_url: str = "",
-        explicit_search: bool = False,
-        skip_prompt_processing: bool = False,
     ) -> None:
         with task_deadline_scope(self._config.task_timeout_seconds):
             operation = "video_generate"
@@ -1054,13 +1042,9 @@ class GrokService:
                             image_data_url,
                             reference_aspect_ratio,
                         ) = await self._resolve_video_reference_image(event, reference_image_url)
-                        stage = "prompt_processing"
-                        request = await self._resolve_video_request(
-                            prompt,
-                            has_reference_image=bool(image_data_url),
-                            reference_aspect_ratio=reference_aspect_ratio,
-                            explicit_search=explicit_search,
-                            skip=skip_prompt_processing,
+                        request = VideoGenerationRequest(
+                            prompt=prompt,
+                            aspect_ratio=reference_aspect_ratio,
                         )
                         request_prompt = request.prompt
                         request_params = {
@@ -1076,15 +1060,8 @@ class GrokService:
                             source_prompt=prompt,
                             request_prompt=request_prompt,
                             request_params=request_params,
-                            prompt_mode=self._effective_prompt_mode(
-                                self._config,
-                                has_reference_image=bool(image_data_url),
-                                skip_prompt_processing=skip_prompt_processing,
-                            ),
-                            prompt_status=self._prompt_processing_status(
-                                has_reference_image=bool(image_data_url),
-                                skip_prompt_processing=skip_prompt_processing,
-                            ),
+                            prompt_mode="off",
+                            prompt_status="原文直传（视频不支持提示词处理）",
                             reference_image="有" if image_data_url else "无",
                             reference_aspect_ratio=reference_aspect_ratio,
                             candidate_models=", ".join(self._config.video_models),
@@ -1143,7 +1120,12 @@ class GrokService:
                     finally:
                         self._release_session_lock(event, lock)
 
-    async def _research_character_visuals(self, prompt: str) -> str:
+    async def _research_character_visuals(
+        self,
+        prompt: str,
+        *,
+        explicit_search: bool = False,
+    ) -> str:
         started_at = time.monotonic()
         budget = min(
             float(self._config.prompt_character_research_timeout_seconds),
@@ -1159,6 +1141,11 @@ class GrokService:
                 search_budget=self._search_budget_label(),
                 elapsed_ms=self._elapsed_ms(started_at),
             )
+            if explicit_search:
+                raise PluginError(
+                    "显式资料搜索无法开始：剩余任务时间不足",
+                    code="prompt_search_timeout",
+                )
             return ""
 
         async def run_search() -> _ModelFallbackOutcome:
@@ -1191,6 +1178,11 @@ class GrokService:
                     search_budget=self._search_budget_label(),
                     elapsed_ms=self._elapsed_ms(started_at),
                 )
+                if explicit_search:
+                    raise PluginError(
+                        "显式资料搜索未获得可用结果，本次未开始生成",
+                        code="prompt_search_no_reference",
+                    )
                 return ""
             reference = clean_and_truncate_reference(getattr(result, "text", "") or "")
             safe_task_log(
@@ -1206,6 +1198,11 @@ class GrokService:
                 search_budget=self._search_budget_label(),
                 elapsed_ms=self._elapsed_ms(started_at),
             )
+            if explicit_search and not reference:
+                raise PluginError(
+                    "未搜索到可用于生成的可靠视觉资料，本次未开始生成",
+                    code="prompt_search_no_reference",
+                )
             return reference
         except asyncio.CancelledError:
             raise
@@ -1215,50 +1212,76 @@ class GrokService:
                 logging.INFO,
                 "角色资料搜索",
                 operation="character_research",
-                result="搜索超时，继续普通增强",
+                result=("搜索超时，停止生成" if explicit_search else "搜索超时，继续提示词处理"),
                 error_code="character_research_timeout",
                 search_budget=self._search_budget_label(),
                 exception_type=type(exc).__name__,
                 elapsed_ms=self._elapsed_ms(started_at),
             )
+            if explicit_search:
+                raise PluginError(
+                    "显式资料搜索超时，本次未开始生成",
+                    code="prompt_search_timeout",
+                ) from exc
             return ""
         except PluginError as exc:
-            if exc.code == "task_timeout":
+            if exc.code == "task_timeout" or exc.code.startswith("prompt_search_"):
                 raise
             safe_task_log(
                 logging.INFO,
                 "角色资料搜索",
                 operation="character_research",
-                result="搜索失败，继续普通增强",
+                result=("搜索失败，停止生成" if explicit_search else "搜索失败，继续提示词处理"),
                 error_code=exc.code,
                 search_budget=self._search_budget_label(),
                 exception_type=type(exc).__name__,
                 elapsed_ms=self._elapsed_ms(started_at),
             )
+            if explicit_search:
+                raise PluginError(
+                    "显式资料搜索失败，本次未开始生成",
+                    code="prompt_search_failed",
+                ) from exc
             return ""
         except Exception as exc:  # noqa: BLE001
             safe_task_log(
                 logging.INFO,
                 "角色资料搜索",
                 operation="character_research",
-                result="搜索失败，继续普通增强",
+                result=("搜索失败，停止生成" if explicit_search else "搜索失败，继续提示词处理"),
                 error_code="character_research_failed",
                 search_budget=self._search_budget_label(),
                 exception_type=type(exc).__name__,
                 elapsed_ms=self._elapsed_ms(started_at),
             )
+            if explicit_search:
+                raise PluginError(
+                    "显式资料搜索失败，本次未开始生成",
+                    code="prompt_search_failed",
+                ) from exc
             return ""
 
     def _should_research_character(
         self,
         prompt: str,
         *,
-        has_reference_image: bool = False,
         explicit_search: bool = False,
+        prompt_mode: str = "",
     ) -> bool:
+        effective_mode = prompt_mode or self._config.prompt_processing_mode
         mode = self._config.prompt_character_research_mode
-        if self._config.prompt_processing_mode != "enhance":
-            reason = "prompt_mode_not_enhance"
+        if explicit_search and effective_mode not in _IMAGE_REWRITE_MODES:
+            raise PluginError(
+                "-s/--search 只能与 -st、-en 或 -enp 配合使用",
+                code="prompt_search_mode_invalid",
+            )
+        if explicit_search and mode == "off":
+            raise PluginError(
+                "资料搜索已在插件配置中关闭，无法使用 -s/--search",
+                code="prompt_search_disabled",
+            )
+        if effective_mode not in _IMAGE_REWRITE_MODES:
+            reason = "prompt_mode_not_rewrite"
         elif mode == "off":
             reason = "disabled"
         elif explicit_search:
@@ -1271,8 +1294,6 @@ class GrokService:
                 search_budget=self._search_budget_label(),
             )
             return True
-        elif has_reference_image:
-            reason = "reference_image_present"
         elif not should_research_character(prompt, mode):
             reason = "no_named_character"
         else:
@@ -1286,8 +1307,7 @@ class GrokService:
             )
             return True
         skip_result = {
-            "reference_image_present": "已有参考图（默认跳过）",
-            "prompt_mode_not_enhance": "提示词模式不是增强",
+            "prompt_mode_not_rewrite": "提示词模式不支持资料融合",
             "disabled": "资料搜索已关闭",
             "no_named_character": "未识别到特定实体",
         }.get(reason, "条件不满足")
@@ -1302,29 +1322,46 @@ class GrokService:
         return False
 
     async def _resolve_image_request(
-        self, prompt: str, *, explicit_search: bool = False, skip: bool = False
+        self,
+        prompt: str,
+        *,
+        explicit_search: bool = False,
+        prompt_mode: str = "",
+        skip: bool = False,
     ) -> ImageGenerationRequest:
-        if self._prompt_processor is None or skip:
+        effective_mode = self._effective_prompt_mode(
+            self._config,
+            requested_prompt_mode=prompt_mode,
+            skip_prompt_processing=skip,
+        )
+        if effective_mode == "off":
+            if explicit_search:
+                self._should_research_character(
+                    prompt,
+                    explicit_search=explicit_search,
+                    prompt_mode=effective_mode,
+                )
             return ImageGenerationRequest(prompt=prompt)
-        if self._should_research_character(prompt, explicit_search=explicit_search):
-            character_ref = await self._research_character_visuals(prompt)
-        else:
-            character_ref = ""
-        return await self._prompt_processor.resolve_image(prompt, character_reference=character_ref)
-
-    async def _resolve_image_edit_prompt(
-        self, prompt: str, *, explicit_search: bool = False, skip: bool = False
-    ) -> str:
-        if self._prompt_processor is None or skip:
-            return prompt
+        if self._prompt_processor is None:
+            raise PluginError(
+                "提示词处理器不可用",
+                code="prompt_processing_provider_missing",
+            )
         if self._should_research_character(
-            prompt, has_reference_image=True, explicit_search=explicit_search
+            prompt,
+            explicit_search=explicit_search,
+            prompt_mode=effective_mode,
         ):
-            character_ref = await self._research_character_visuals(prompt)
+            character_ref = await self._research_character_visuals(
+                prompt,
+                explicit_search=explicit_search,
+            )
         else:
             character_ref = ""
-        return await self._prompt_processor.resolve_image_edit(
-            prompt, has_reference_image=True, character_reference=character_ref
+        return await self._prompt_processor.resolve_image(
+            prompt,
+            mode=effective_mode,
+            character_reference=character_ref,
         )
 
     async def _resolve_video_reference_image(
@@ -1342,32 +1379,6 @@ class GrokService:
             image.width,
             image.height,
             self._config.video_aspect_ratios,
-        )
-
-    async def _resolve_video_request(
-        self,
-        prompt: str,
-        *,
-        has_reference_image: bool,
-        reference_aspect_ratio: str,
-        explicit_search: bool = False,
-        skip: bool = False,
-    ) -> VideoGenerationRequest:
-        if self._prompt_processor is None or skip:
-            return VideoGenerationRequest(prompt=prompt, aspect_ratio=reference_aspect_ratio)
-        if self._should_research_character(
-            prompt,
-            has_reference_image=has_reference_image,
-            explicit_search=explicit_search,
-        ):
-            character_ref = await self._research_character_visuals(prompt)
-        else:
-            character_ref = ""
-        return await self._prompt_processor.resolve_video(
-            prompt,
-            has_reference_image=has_reference_image,
-            reference_aspect_ratio=reference_aspect_ratio,
-            character_reference=character_ref,
         )
 
     def _media_progress_text(self, operation: str) -> str:
