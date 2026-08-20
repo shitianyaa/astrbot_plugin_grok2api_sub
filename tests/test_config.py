@@ -108,6 +108,7 @@ def test_legacy_layout_migrates_custom_values_into_new_groups():
         advanced_settings={
             "task_timeout_seconds": 900,
             "panel_period": "30d",
+            "model_retry_strategy": "sequential",
         },
     )
 
@@ -117,12 +118,14 @@ def test_legacy_layout_migrates_custom_values_into_new_groups():
     assert cfg.prompt_processing_mode == "standard"
     assert cfg.task_timeout_seconds == 900
     assert cfg.panel_period == "30d"
+    assert cfg.model_retry_strategy == "sequential"
     assert cfg.admin_username == "legacy-admin"
     assert cfg.admin_password == "legacy-pass"
     assert raw["connection_settings"]["config_layout_version"] == 3
     assert raw["search_settings"]["search_models"] == "legacy-search"
     assert raw["prompt_settings"]["mode"] == "standard"
     assert raw["performance_settings"]["timeouts"]["task_timeout_seconds"] == 900
+    assert raw["performance_settings"]["reliability"]["model_retry_strategy"] == "sequential"
     assert raw["panel_settings"]["admin_username"] == " legacy-admin "
 
 
@@ -786,3 +789,59 @@ def test_character_research_redacted_summary():
     summary = c.redacted_summary()
     assert summary["prompt_character_research_mode"] == "auto"
     assert summary["prompt_character_research_timeout_seconds"] == 25
+
+
+@pytest.mark.parametrize(
+    ("raw_val", "expected"),
+    [
+        ("轮询重试", "round_robin"),
+        ("依次重试", "sequential"),
+        ("round_robin", "round_robin"),
+        ("sequential", "sequential"),
+        ("  轮询重试  ", "round_robin"),
+        ("  依次重试  ", "sequential"),
+    ],
+)
+def test_model_retry_strategy_parsing(raw_val, expected):
+    raw = {
+        "connection_settings": {"api_key": "k", "config_layout_version": 3},
+        "performance_settings": {
+            "reliability": {"model_retry_strategy": raw_val},
+        },
+    }
+    cfg = PluginConfig.from_dict(raw)
+    assert cfg.model_retry_strategy == expected
+
+
+def test_model_retry_strategy_default():
+    raw = {
+        "connection_settings": {"api_key": "k", "config_layout_version": 3},
+    }
+    cfg = PluginConfig.from_dict(raw)
+    assert cfg.model_retry_strategy == "round_robin"
+
+
+def test_model_retry_strategy_rejects_invalid():
+    raw = {
+        "connection_settings": {"api_key": "k", "config_layout_version": 3},
+        "performance_settings": {
+            "reliability": {"model_retry_strategy": "invalid_mode"},
+        },
+    }
+    with pytest.raises(ConfigurationError) as ei:
+        PluginConfig.from_dict(raw)
+    assert ei.value.code == "invalid_config"
+    assert "选项只能为 轮询重试 或 依次重试" in str(ei.value)
+
+
+def test_model_retry_strategy_rejects_non_string():
+    raw = {
+        "connection_settings": {"api_key": "k", "config_layout_version": 3},
+        "performance_settings": {
+            "reliability": {"model_retry_strategy": 1},
+        },
+    }
+    with pytest.raises(ConfigurationError) as ei:
+        PluginConfig.from_dict(raw)
+    assert ei.value.code == "invalid_config"
+    assert "必须是字符串" in str(ei.value)

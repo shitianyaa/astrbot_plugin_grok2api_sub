@@ -263,6 +263,7 @@ def _prepare_config_layout(cmapping: Mapping[str, object]) -> tuple[int, bool]:
         ("max_concurrent_searches", 4),
         ("max_concurrent_media_jobs", 2),
         ("model_retry_count", 2),
+        ("model_retry_strategy", "轮询重试"),
         ("video_retry_count", 2),
         ("retry_base_delay_seconds", 0.5),
         ("model_switch_errors", DEFAULT_MODEL_SWITCH_ERRORS),
@@ -433,6 +434,27 @@ def parse_model_switch_errors(value: object) -> frozenset[str]:
     return frozenset(values)
 
 
+_MODEL_RETRY_STRATEGY_MAP = {
+    "轮询重试": "round_robin",
+    "依次重试": "sequential",
+    "round_robin": "round_robin",
+    "sequential": "sequential",
+}
+
+
+def parse_model_retry_strategy(value: object) -> str:
+    key = "performance_settings.reliability.model_retry_strategy"
+    if not isinstance(value, str):
+        _fail(key, "必须是字符串，选项只能为 轮询重试 或 依次重试")
+    val = value.strip()
+    if val in _MODEL_RETRY_STRATEGY_MAP:
+        return _MODEL_RETRY_STRATEGY_MAP[val]
+    lowered = val.lower()
+    if lowered in _MODEL_RETRY_STRATEGY_MAP:
+        return _MODEL_RETRY_STRATEGY_MAP[lowered]
+    _fail(key, "选项只能为 轮询重试 或 依次重试")
+
+
 def parse_prompt_presets(value: object) -> dict[str, str]:
     """Parse custom prompt presets mapping from WebUI config.
 
@@ -599,6 +621,7 @@ class PluginConfig:
     prompt_character_research_timeout_seconds: int
 
     model_retry_count: int
+    model_retry_strategy: str
     video_retry_count: int
     retry_base_delay_seconds: float
     model_switch_errors: frozenset[str]
@@ -1060,6 +1083,9 @@ class PluginConfig:
                 compat(reliability, "model_retry_count", legacy_adv, 2),
                 0,
                 5,
+            ),
+            model_retry_strategy=parse_model_retry_strategy(
+                compat(reliability, "model_retry_strategy", legacy_adv, "轮询重试"),
             ),
             video_retry_count=_to_int(
                 "performance_settings.reliability.video_retry_count",

@@ -38,6 +38,7 @@ _ERROR_HINTS: dict[str, str] = {
     "search_flag_duplicate": "搜索参数只能提供一次",
     "search_models_exhausted": "所有搜索模型都不可用，请确认搜索模型配置或稍后重试",
     "media_models_exhausted": "所有媒体模型都不可用，请确认模型配置或稍后重试",
+    "media_job_busy": "您已有媒体任务正在进行中，请等待完成",
     "task_timeout": "任务执行超时，请稍后重试或适当增加任务超时时间",
     "image_url_missing": "图片 URL 参数缺少地址",
     "image_url_duplicate": "图片 URL 参数只能提供一次",

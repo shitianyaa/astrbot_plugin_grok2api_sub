@@ -175,10 +175,13 @@ def test_performance_group_separates_timeouts_and_reliability(schema):
         "max_concurrent_searches",
         "max_concurrent_media_jobs",
         "model_retry_count",
+        "model_retry_strategy",
         "video_retry_count",
         "retry_base_delay_seconds",
         "model_switch_errors",
     }
+    assert reliability["items"]["model_retry_strategy"]["options"] == ["轮询重试", "依次重试"]
+    assert reliability["items"]["model_retry_strategy"]["default"] == "轮询重试"
 
 
 def test_storage_group_items(schema):

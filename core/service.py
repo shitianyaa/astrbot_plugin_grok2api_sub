@@ -7,6 +7,8 @@ import datetime as _dt
 import logging
 import time
 import uuid
+from collections.abc import Iterator
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, replace
 from functools import wraps
 from pathlib import Path
@@ -186,6 +188,27 @@ def _enforce_task_timeout(operation: str):
     return decorator
 
 
+def _iter_model_attempts(
+    models: tuple[str, ...],
+    retry_count: int,
+    strategy: str,
+) -> Iterator[tuple[int, int, str]]:
+    """Yield (round_num, model_index, model) according to configured strategy.
+
+    - round_robin (轮询重试): [A, B] -> [A, B] -> [A, B]
+    - sequential (依次重试): [A, A, A] -> [B, B, B]
+    """
+    max_rounds = 1 + retry_count
+    if strategy == "sequential":
+        for index, model in enumerate(models):
+            for round_idx in range(1, max_rounds + 1):
+                yield round_idx, index, model
+    else:  # round_robin (default)
+        for round_idx in range(1, max_rounds + 1):
+            for index, model in enumerate(models):
+                yield round_idx, index, model
+
+
 class GrokService:
     def __init__(
         self,
@@ -205,7 +228,7 @@ class GrokService:
         self._prompt_processor = prompt_processor
         self._search_sem = asyncio.Semaphore(config.max_concurrent_searches)
         self._media_sem = asyncio.Semaphore(config.max_concurrent_media_jobs)
-        self._session_locks: dict[str, asyncio.Lock] = {}
+        self._user_locks: dict[str, asyncio.Lock] = {}
         self._panel_cache: dict[tuple[Any, ...], PanelReport] = {}
         self._terminating = False
 
@@ -224,15 +247,88 @@ class GrokService:
         if missing is not None:
             raise PluginError(missing, code="capability_unavailable")
 
-    def _session_guard(self, event: Any) -> asyncio.Lock:
-        key = getattr(event, "unified_msg_origin", "") or "global"
-        lock = self._session_locks.get(key)
+    def _is_switch_error(self, error: Exception | str) -> bool:
+        if isinstance(error, str):
+            return error.strip().lower() in self._config.model_switch_errors
+        if isinstance(error, PluginError):
+            if error.code.strip().lower() in self._config.model_switch_errors:
+                return True
+            if (
+                isinstance(error, APIError)
+                and str(error.status) in self._config.model_switch_errors
+            ):
+                return True
+        return False
+
+    def _user_lock_key(self, event: Any) -> str:
+        platform_id = ""
+        platform_meta = getattr(event, "platform_meta", None)
+        if platform_meta is not None:
+            platform_id = str(
+                getattr(platform_meta, "id", "") or getattr(platform_meta, "name", "") or ""
+            ).strip()
+        if not platform_id and hasattr(event, "get_platform_name"):
+            try:
+                platform_id = str(event.get_platform_name() or "").strip()
+            except Exception:
+                platform_id = ""
+        sender_id = ""
+        if hasattr(event, "get_sender_id"):
+            try:
+                sender_id = str(event.get_sender_id() or "").strip()
+            except Exception:
+                sender_id = ""
+        if not sender_id:
+            sender_id = str(getattr(event, "sender_id", "") or "").strip()
+        umo = str(getattr(event, "unified_msg_origin", "") or "").strip()
+        if sender_id and platform_id:
+            return f"{platform_id}:user:{sender_id}"
+        if sender_id:
+            return f"user:{sender_id}"
+        if umo:
+            return f"session:{umo}"
+        return "global"
+
+    def _user_guard(self, event: Any) -> asyncio.Lock:
+        key = self._user_lock_key(event)
+        lock = self._user_locks.get(key)
         if lock is None:
             lock = asyncio.Lock()
-            self._session_locks[key] = lock
+            self._user_locks[key] = lock
         if lock.locked():
-            raise PluginError("当前会话已有媒体任务进行中", code="media_job_busy")
+            raise PluginError("您已有媒体任务正在进行中，请等待完成", code="media_job_busy")
         return lock
+
+    @asynccontextmanager
+    async def _user_media_slot(
+        self,
+        event: Any,
+        *,
+        operation: str,
+        started_at: float,
+        source_prompt: str,
+    ):
+        """Reserve a user's task before waiting for the global media slot."""
+        try:
+            lock = self._user_guard(event)
+        except Exception as exc:
+            self._log_media_failure(
+                operation,
+                started_at,
+                "user_lock",
+                exc,
+                source_prompt=source_prompt,
+            )
+            raise
+        acquired = False
+        try:
+            await lock.acquire()
+            acquired = True
+            async with self._media_sem:
+                yield
+        finally:
+            if acquired:
+                self._release_user_lock(event, lock)
 
     def _new_media_path(self, prefix: str) -> Path:
         return self._workspace.workspace / f"{prefix}_{uuid.uuid4().hex}.png"
@@ -468,44 +564,52 @@ class GrokService:
             else:
                 search_query = f"{system_prompt}\n\n{query}"
 
-        max_rounds = 1 + self._config.model_retry_count
-        for round_idx in range(1, max_rounds + 1):
-            for index, model in enumerate(visible_candidates):
-                enable_web_search, enable_x_search = search_tools_for_model(
-                    model,
-                    enable_web_search=self._config.enable_web_search,
-                    enable_x_search=self._config.enable_x_search,
+        poisoned: set[str] = set()
+        for round_idx, index, model in _iter_model_attempts(
+            visible_candidates,
+            self._config.model_retry_count,
+            self._config.model_retry_strategy,
+        ):
+            if model in poisoned:
+                continue
+            enable_web_search, enable_x_search = search_tools_for_model(
+                model,
+                enable_web_search=self._config.enable_web_search,
+                enable_x_search=self._config.enable_x_search,
+            )
+            if not enable_web_search and not enable_x_search:
+                poisoned.add(model)
+                self._log_model_skipped(
+                    model, index, "search_tool_unsupported", round_idx=round_idx
                 )
-                if not enable_web_search and not enable_x_search:
-                    self._log_model_skipped(
-                        model, index, "search_tool_unsupported", round_idx=round_idx
-                    )
-                    continue
-                try:
-                    check_task_deadline()
-                    record_task_model("search", model)
-                    result = await self._client.search(
-                        search_query,
-                        model=model,
-                        enable_web_search=enable_web_search,
-                        enable_x_search=enable_x_search,
-                        reasoning_effort=reasoning_effort_for_model(
-                            model,
-                            self._config.search_reasoning_effort,
-                        ),
-                        required=required,
-                    )
-                    self._log_model_selected(model, index, round_idx=round_idx)
-                    return _ModelFallbackOutcome(
-                        value=result,
-                        model=model,
-                        candidate_attempts=task_candidate_attempts("search"),
-                    )
-                except PluginError as exc:
-                    if not exc.retryable or exc.code == "task_timeout":
-                        raise
-                    self._log_model_skipped(model, index, exc.code, round_idx=round_idx)
-                    continue
+                continue
+            try:
+                check_task_deadline()
+                record_task_model("search", model)
+                result = await self._client.search(
+                    search_query,
+                    model=model,
+                    enable_web_search=enable_web_search,
+                    enable_x_search=enable_x_search,
+                    reasoning_effort=reasoning_effort_for_model(
+                        model,
+                        self._config.search_reasoning_effort,
+                    ),
+                    required=required,
+                )
+                self._log_model_selected(model, index, round_idx=round_idx)
+                return _ModelFallbackOutcome(
+                    value=result,
+                    model=model,
+                    candidate_attempts=task_candidate_attempts("search"),
+                )
+            except PluginError as exc:
+                if not exc.retryable or exc.code == "task_timeout":
+                    raise
+                if self._is_switch_error(exc):
+                    poisoned.add(model)
+                self._log_model_skipped(model, index, exc.code, round_idx=round_idx)
+                continue
 
         safe_log(
             logging.DEBUG,
@@ -572,48 +676,53 @@ class GrokService:
     ) -> _ModelFallbackOutcome:
         if not models:
             raise PluginError("未配置生图模型", code="capability_unavailable")
-        max_rounds = 1 + self._config.model_retry_count
-        for round_idx in range(1, max_rounds + 1):
-            for index, model in enumerate(models):
-                try:
-                    check_task_deadline()
-                    record_task_model("image_generate", model)
-                    safe_log(
-                        logging.DEBUG,
-                        "media_job_model_attempt",
-                        operation="image_generate",
-                        model=model,
-                        model_index=index,
-                        round=round_idx,
-                    )
-                    results = await self._client.generate_images(
-                        request.prompt,
-                        model=model,
-                        count=1,
-                        aspect_ratio=request.aspect_ratio,
-                        resolution=request.resolution,
-                        response_format=self._config.image_response_format,
-                        api_base_url=self._config.api_base_url,
-                        max_download_bytes=self._config.max_image_download_mb * 1024 * 1024,
-                    )
-                    return _ModelFallbackOutcome(
-                        value=results,
-                        model=model,
-                        candidate_attempts=task_candidate_attempts("image_generate"),
-                    )
-                except PluginError as exc:
-                    if not exc.retryable or exc.code == "task_timeout":
-                        raise
-                    safe_log(
-                        logging.DEBUG,
-                        "media_job_model_skipped",
-                        operation="image_generate",
-                        model=model,
-                        model_index=index,
-                        round=round_idx,
-                        error_code=exc.code,
-                    )
-                    continue
+        poisoned: set[str] = set()
+        for round_idx, index, model in _iter_model_attempts(
+            models, self._config.model_retry_count, self._config.model_retry_strategy
+        ):
+            if model in poisoned:
+                continue
+            try:
+                check_task_deadline()
+                record_task_model("image_generate", model)
+                safe_log(
+                    logging.DEBUG,
+                    "media_job_model_attempt",
+                    operation="image_generate",
+                    model=model,
+                    model_index=index,
+                    round=round_idx,
+                )
+                results = await self._client.generate_images(
+                    request.prompt,
+                    model=model,
+                    count=1,
+                    aspect_ratio=request.aspect_ratio,
+                    resolution=request.resolution,
+                    response_format=self._config.image_response_format,
+                    api_base_url=self._config.api_base_url,
+                    max_download_bytes=self._config.max_image_download_mb * 1024 * 1024,
+                )
+                return _ModelFallbackOutcome(
+                    value=results,
+                    model=model,
+                    candidate_attempts=task_candidate_attempts("image_generate"),
+                )
+            except PluginError as exc:
+                if not exc.retryable or exc.code == "task_timeout":
+                    raise
+                if self._is_switch_error(exc):
+                    poisoned.add(model)
+                safe_log(
+                    logging.DEBUG,
+                    "media_job_model_skipped",
+                    operation="image_generate",
+                    model=model,
+                    model_index=index,
+                    round=round_idx,
+                    error_code=exc.code,
+                )
+                continue
         raise PluginError("所有生图模型均不可用", code="media_models_exhausted")
 
     async def _edit_image_with_fallback(
@@ -625,46 +734,51 @@ class GrokService:
     ) -> _ModelFallbackOutcome:
         if not models:
             raise PluginError("未配置改图模型", code="capability_unavailable")
-        max_rounds = 1 + self._config.model_retry_count
-        for round_idx in range(1, max_rounds + 1):
-            for index, model in enumerate(models):
-                try:
-                    check_task_deadline()
-                    record_task_model("image_edit", model)
-                    safe_log(
-                        logging.DEBUG,
-                        "media_job_model_attempt",
-                        operation="image_edit",
-                        model=model,
-                        model_index=index,
-                        round=round_idx,
-                    )
-                    results = await self._client.edit_image(
-                        prompt,
-                        data_url,
-                        model=model,
-                        response_format=self._config.image_response_format,
-                        api_base_url=self._config.api_base_url,
-                        max_download_bytes=self._config.max_image_download_mb * 1024 * 1024,
-                    )
-                    return _ModelFallbackOutcome(
-                        value=results,
-                        model=model,
-                        candidate_attempts=task_candidate_attempts("image_edit"),
-                    )
-                except PluginError as exc:
-                    if not exc.retryable or exc.code == "task_timeout":
-                        raise
-                    safe_log(
-                        logging.DEBUG,
-                        "media_job_model_skipped",
-                        operation="image_edit",
-                        model=model,
-                        model_index=index,
-                        round=round_idx,
-                        error_code=exc.code,
-                    )
-                    continue
+        poisoned: set[str] = set()
+        for round_idx, index, model in _iter_model_attempts(
+            models, self._config.model_retry_count, self._config.model_retry_strategy
+        ):
+            if model in poisoned:
+                continue
+            try:
+                check_task_deadline()
+                record_task_model("image_edit", model)
+                safe_log(
+                    logging.DEBUG,
+                    "media_job_model_attempt",
+                    operation="image_edit",
+                    model=model,
+                    model_index=index,
+                    round=round_idx,
+                )
+                results = await self._client.edit_image(
+                    prompt,
+                    data_url,
+                    model=model,
+                    response_format=self._config.image_response_format,
+                    api_base_url=self._config.api_base_url,
+                    max_download_bytes=self._config.max_image_download_mb * 1024 * 1024,
+                )
+                return _ModelFallbackOutcome(
+                    value=results,
+                    model=model,
+                    candidate_attempts=task_candidate_attempts("image_edit"),
+                )
+            except PluginError as exc:
+                if not exc.retryable or exc.code == "task_timeout":
+                    raise
+                if self._is_switch_error(exc):
+                    poisoned.add(model)
+                safe_log(
+                    logging.DEBUG,
+                    "media_job_model_skipped",
+                    operation="image_edit",
+                    model=model,
+                    model_index=index,
+                    round=round_idx,
+                    error_code=exc.code,
+                )
+                continue
         raise PluginError("所有改图模型均不可用", code="media_models_exhausted")
 
     async def _create_video_with_fallback(
@@ -676,57 +790,49 @@ class GrokService:
     ) -> _ModelFallbackOutcome:
         if not models:
             raise PluginError("未配置视频模型", code="capability_unavailable")
-        max_rounds = 1 + self._config.video_retry_count
-        for round_idx in range(1, max_rounds + 1):
-            for index, model in enumerate(models):
-                check_task_deadline()
-                record_task_model("video_generate", model)
+        poisoned: set[str] = set()
+        for round_idx, index, model in _iter_model_attempts(
+            models, self._config.video_retry_count, self._config.model_retry_strategy
+        ):
+            if model in poisoned:
+                continue
+            check_task_deadline()
+            record_task_model("video_generate", model)
+            safe_log(
+                logging.DEBUG,
+                "media_job_model_attempt",
+                operation="video_generate",
+                model=model,
+                model_index=index,
+                round=round_idx,
+            )
+            try:
+                request_id = await self._client.create_video(
+                    request.prompt,
+                    model=model,
+                    duration=request.duration,
+                    aspect_ratio=request.aspect_ratio,
+                    resolution=request.resolution,
+                    image_data_url=image_data_url,
+                )
                 safe_log(
                     logging.DEBUG,
-                    "media_job_model_attempt",
+                    "video_created",
                     operation="video_generate",
-                    model=model,
-                    model_index=index,
+                    request_id=request_id,
                     round=round_idx,
                 )
-                try:
-                    request_id = await self._client.create_video(
-                        request.prompt,
+                job = await self._client.wait_for_video(request_id)
+                if job.status == "done":
+                    return _ModelFallbackOutcome(
+                        value=(request_id, job),
                         model=model,
-                        duration=request.duration,
-                        aspect_ratio=request.aspect_ratio,
-                        resolution=request.resolution,
-                        image_data_url=image_data_url,
+                        candidate_attempts=task_candidate_attempts("video_generate"),
                     )
-                    safe_log(
-                        logging.DEBUG,
-                        "video_created",
-                        operation="video_generate",
-                        request_id=request_id,
-                        round=round_idx,
-                    )
-                    job = await self._client.wait_for_video(request_id)
-                    if job.status == "done":
-                        return _ModelFallbackOutcome(
-                            value=(request_id, job),
-                            model=model,
-                            candidate_attempts=task_candidate_attempts("video_generate"),
-                        )
-                    if job.status == "failed":
-                        err_code = job.error_code or "video_failed"
-                        safe_log(
-                            logging.DEBUG,
-                            "media_job_model_skipped",
-                            operation="video_generate",
-                            model=model,
-                            model_index=index,
-                            round=round_idx,
-                            error_code=err_code,
-                        )
-                        continue
-                except PluginError as exc:
-                    if not exc.retryable or exc.code == "task_timeout":
-                        raise
+                if job.status == "failed":
+                    err_code = job.error_code or "video_failed"
+                    if self._is_switch_error(err_code):
+                        poisoned.add(model)
                     safe_log(
                         logging.DEBUG,
                         "media_job_model_skipped",
@@ -734,9 +840,24 @@ class GrokService:
                         model=model,
                         model_index=index,
                         round=round_idx,
-                        error_code=exc.code,
+                        error_code=err_code,
                     )
                     continue
+            except PluginError as exc:
+                if not exc.retryable or exc.code == "task_timeout":
+                    raise
+                if self._is_switch_error(exc):
+                    poisoned.add(model)
+                safe_log(
+                    logging.DEBUG,
+                    "media_job_model_skipped",
+                    operation="video_generate",
+                    model=model,
+                    model_index=index,
+                    round=round_idx,
+                    error_code=exc.code,
+                )
+                continue
         raise PluginError("所有视频模型均不可用", code="media_models_exhausted")
 
     # -- images ------------------------------------------------------------
@@ -768,19 +889,12 @@ class GrokService:
                         source_prompt=prompt,
                     )
                     raise
-                async with self._media_sem:
-                    try:
-                        lock = self._session_guard(event)
-                    except Exception as exc:
-                        self._log_media_failure(
-                            operation,
-                            preflight_started_at,
-                            "session_lock",
-                            exc,
-                            source_prompt=prompt,
-                        )
-                        raise
-                    await lock.acquire()
+                async with self._user_media_slot(
+                    event,
+                    operation=operation,
+                    started_at=preflight_started_at,
+                    source_prompt=prompt,
+                ):
                     paths: list[Path] = []
                     started_at = time.monotonic()
                     stage = "prompt_processing"
@@ -887,8 +1001,6 @@ class GrokService:
                             request_params=request_params,
                         )
                         raise
-                    finally:
-                        self._release_session_lock(event, lock)
 
     @_enforce_task_timeout("image_edit")
     async def deliver_edited_image(
@@ -913,19 +1025,12 @@ class GrokService:
                         source_prompt=prompt,
                     )
                     raise
-                async with self._media_sem:
-                    try:
-                        lock = self._session_guard(event)
-                    except Exception as exc:
-                        self._log_media_failure(
-                            operation,
-                            preflight_started_at,
-                            "session_lock",
-                            exc,
-                            source_prompt=prompt,
-                        )
-                        raise
-                    await lock.acquire()
+                async with self._user_media_slot(
+                    event,
+                    operation=operation,
+                    started_at=preflight_started_at,
+                    source_prompt=prompt,
+                ):
                     paths: list[Path] = []
                     started_at = time.monotonic()
                     stage = "input"
@@ -1005,8 +1110,6 @@ class GrokService:
                             request_params=request_params,
                         )
                         raise
-                    finally:
-                        self._release_session_lock(event, lock)
 
     def _find_input_image_component(self, event: Any) -> object:
         from astrbot.api.message_components import Image, Reply
@@ -1056,19 +1159,12 @@ class GrokService:
                         source_prompt=prompt,
                     )
                     raise
-                async with self._media_sem:
-                    try:
-                        lock = self._session_guard(event)
-                    except Exception as exc:
-                        self._log_media_failure(
-                            operation,
-                            preflight_started_at,
-                            "session_lock",
-                            exc,
-                            source_prompt=prompt,
-                        )
-                        raise
-                    await lock.acquire()
+                async with self._user_media_slot(
+                    event,
+                    operation=operation,
+                    started_at=preflight_started_at,
+                    source_prompt=prompt,
+                ):
                     paths: list[Path] = []
                     started_at = time.monotonic()
                     stage = "input"
@@ -1154,8 +1250,6 @@ class GrokService:
                             request_params=request_params,
                         )
                         raise
-                    finally:
-                        self._release_session_lock(event, lock)
 
     async def _research_character_visuals(
         self,
@@ -1431,12 +1525,17 @@ class GrokService:
     def _media_progress_text(self, operation: str) -> str:
         return "正在编辑图片，请稍候…" if operation == "image_edit" else "视频正在生成，请稍候…"
 
-    def _release_session_lock(self, event: Any, lock: asyncio.Lock) -> None:
-        """Release the session lock and clean up the dict entry if idle."""
-        key = getattr(event, "unified_msg_origin", "") or "global"
+    def _release_user_lock(self, event: Any, lock: asyncio.Lock) -> None:
+        """Release the user lock and clean up the dict entry if idle.
+
+        Note:
+            Safe to pop because _user_guard immediately raises PluginError (media_job_busy)
+            instead of enqueueing waiters, so lock._waiters is guaranteed empty when idle.
+        """
+        key = self._user_lock_key(event)
         lock.release()
-        if not lock.locked() and lock._waiters is not None and len(lock._waiters) == 0:
-            self._session_locks.pop(key, None)
+        if self._user_locks.get(key) is lock and not lock.locked():
+            self._user_locks.pop(key, None)
 
     # -- panel (admin management) ------------------------------------------
     # _panel_preflight deliberately separate from _preflight: it requires admin

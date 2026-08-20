@@ -518,6 +518,16 @@
             "slider": { "min": 0, "max": 5, "step": 1 },
             "hint": "用于搜索、生图、改图、模型目录和图片下载，不含首次请求。"
           },
+          "model_retry_strategy": {
+            "description": "多模型重试策略",
+            "type": "string",
+            "options": [
+              "轮询重试",
+              "依次重试"
+            ],
+            "default": "轮询重试",
+            "hint": "轮询重试：单次失败立即切换下个模型并在多轮间来回；依次重试：当前模型重试耗尽后再切换下个模型。"
+          },
           "video_retry_count": {
             "description": "视频任务额外重试次数",
             "type": "int",
@@ -764,6 +774,15 @@
         "type": "int",
         "default": 2,
         "slider": { "min": 0, "max": 5, "step": 1 }
+      },
+      "model_retry_strategy": {
+        "description": "多模型重试策略（轮询重试 / 依次重试）。",
+        "type": "string",
+        "options": [
+          "轮询重试",
+          "依次重试"
+        ],
+        "default": "轮询重试"
       },
       "video_retry_count": {
         "description": "视频创建、状态轮询和视频下载的最大额外重试次数；不含首次请求。",

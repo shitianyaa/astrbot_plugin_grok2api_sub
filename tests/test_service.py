@@ -318,29 +318,89 @@ async def test_search_semaphore_limits(tmp_path):
     assert len(s.calls) == 4
 
 
-async def test_session_lock_serializes_media(tmp_path):
+async def test_user_lock_serializes_media_and_allows_other_users(tmp_path):
     ws = MediaWorkspace(tmp_path)
-    s = FakeSession()
-    # image generation responses
-    import base64
-
-    png = _png_bytes()
-    b64 = base64.b64encode(png).decode()
-    body = json.dumps({"data": [{"b64_json": b64, "mime_type": "image/png"}]})
-    for _ in range(2):
-        s.push(FakeResponse(200, body=body))
-    svc, _ = _make_service(ws, session=s)
-    ev = FakeEvent()
-    # second media task in same session should be rejected immediately
-    # first acquires lock and runs; simulate by making first hold.
-    lock = svc._session_guard(ev)
+    svc, _ = _make_service(ws)
+    ev1 = FakeEvent(sender_id="u1")
+    ev2 = FakeEvent(sender_id="u2")
+    # A second task from the same user is rejected immediately; another user
+    # in the same session gets an independent lock.
+    lock = svc._user_guard(ev1)
     await lock.acquire()
     try:
         with pytest.raises(PluginError) as ei:
-            await svc.deliver_generated_images(ev, "cat")
+            await svc.deliver_generated_images(ev1, "cat")
         assert ei.value.code == "media_job_busy"
+
+        # different user in same group/session is NOT blocked by user 1's lock
+        lock2 = svc._user_guard(ev2)
+        assert not lock2.locked()
+        await lock2.acquire()
+        svc._release_user_lock(ev2, lock2)
     finally:
-        lock.release()
+        svc._release_user_lock(ev1, lock)
+
+
+async def test_same_user_media_lock_rejects_before_waiting_for_global_slot(tmp_path):
+    ws = MediaWorkspace(tmp_path)
+    svc, _ = _make_service(
+        ws,
+        cfg=_cfg(capability_settings={"send_media_progress": False}),
+    )
+    svc._media_sem = asyncio.Semaphore(1)
+    event = FakeEvent(group_id="group-1", sender_id="same-user")
+    await svc._media_sem.acquire()
+    first = asyncio.create_task(svc.deliver_generated_images(event, "cat"))
+    try:
+        await asyncio.sleep(0)
+        with pytest.raises(PluginError) as caught:
+            await svc.deliver_generated_images(event, "dog")
+        assert caught.value.code == "media_job_busy"
+        assert not first.done()
+    finally:
+        first.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await first
+        svc._media_sem.release()
+
+
+async def test_user_media_lock_is_shared_across_groups_but_not_between_users(tmp_path):
+    ws = MediaWorkspace(tmp_path)
+    svc, _ = _make_service(ws)
+    first_group = FakeEvent(group_id="group-1", sender_id="same-user")
+    second_group = FakeEvent(group_id="group-2", sender_id="same-user")
+    other_user = FakeEvent(group_id="group-1", sender_id="other-user")
+
+    lock = svc._user_guard(first_group)
+    await lock.acquire()
+    try:
+        with pytest.raises(PluginError) as caught:
+            svc._user_guard(second_group)
+        assert caught.value.code == "media_job_busy"
+        other_lock = svc._user_guard(other_user)
+        assert not other_lock.locked()
+        await other_lock.acquire()
+        svc._release_user_lock(other_user, other_lock)
+    finally:
+        svc._release_user_lock(first_group, lock)
+
+    assert svc._user_locks == {}
+
+
+async def test_user_media_lock_cleanup_does_not_depend_on_waiters_attribute(tmp_path):
+    ws = MediaWorkspace(tmp_path)
+    svc, _ = _make_service(ws)
+    event = FakeEvent(sender_id="cleanup-user")
+
+    async with svc._user_media_slot(
+        event,
+        operation="image_generate",
+        started_at=0.0,
+        source_prompt="cat",
+    ):
+        assert svc._user_locks
+
+    assert svc._user_locks == {}
 
 
 # -- image delivery --------------------------------------------------------
@@ -656,6 +716,36 @@ async def test_image_fallback_round_robin_across_candidates(tmp_path, monkeypatc
     assert session.calls[0]["json"]["model"] == "first"
     assert session.calls[1]["json"]["model"] == "second"
     assert session.calls[2]["json"]["model"] == "first"
+
+
+async def test_image_fallback_sequential_strategy_exhausts_model_before_next(tmp_path):
+    """验证依次重试策略：first (500) -> first (500) -> second (200 成功)。"""
+    ws = MediaWorkspace(tmp_path)
+    session = FakeSession()
+    image = base64.b64encode(_png_bytes()).decode()
+    session.push(
+        FakeResponse(500, body=json.dumps({"error": {"code": "internal_error"}})),
+        FakeResponse(500, body=json.dumps({"error": {"code": "internal_error"}})),
+        FakeResponse(200, body=json.dumps({"data": [{"b64_json": image}]})),
+    )
+    cfg = _cfg(
+        capability_settings={"image_models": "first\nsecond", "send_media_progress": False},
+        performance_settings={
+            "reliability": {
+                "model_retry_count": 1,
+                "model_retry_strategy": "依次重试",
+            }
+        },
+    )
+    svc, _ = _make_service(ws, cfg=cfg, session=session)
+
+    await svc.deliver_generated_images(FakeEvent(), "cat")
+
+    assert [call["json"]["model"] for call in session.calls] == [
+        "first",
+        "first",
+        "second",
+    ]
 
 
 async def test_image_fallback_exhausts_first_model_retries_before_second(tmp_path, monkeypatch):
@@ -1647,6 +1737,37 @@ async def test_search_fallback_round_robin_across_candidates(tmp_path):
     assert calls[2]["json"]["model"] == "first"
 
 
+async def test_search_fallback_sequential_strategy(tmp_path):
+    """验证搜索依次重试策略：first (500) -> first (500) -> second (200 成功)。"""
+    ws = MediaWorkspace(tmp_path)
+    session = FakeSession()
+    session.push(
+        FakeResponse(200, body=json.dumps({"data": [{"id": "first"}, {"id": "second"}]})),
+        FakeResponse(500, body=json.dumps({"error": {"code": "internal_error"}})),
+        FakeResponse(500, body=json.dumps({"error": {"code": "internal_error"}})),
+        FakeResponse(200, body=_search_response(model="second")),
+    )
+    cfg = _cfg(
+        capability_settings={"search_models": "first\nsecond", "max_search_requests_per_task": 5},
+        performance_settings={
+            "reliability": {
+                "model_retry_count": 1,
+                "model_retry_strategy": "依次重试",
+            }
+        },
+    )
+    service, _ = _make_service(ws, cfg=cfg, session=session)
+
+    result = await service.search(FakeEvent(), "question")
+
+    assert result.model == "second"
+    calls = [call for call in session.calls if call["url"].endswith("/v1/responses")]
+    assert len(calls) == 3
+    assert calls[0]["json"]["model"] == "first"
+    assert calls[1]["json"]["model"] == "first"
+    assert calls[2]["json"]["model"] == "second"
+
+
 async def test_search_single_candidate_retries_configured_rounds(tmp_path):
     """验证单搜索候选模型重试 1 + model_retry_count 次。"""
     ws = MediaWorkspace(tmp_path)
@@ -2537,3 +2658,153 @@ async def test_preset_with_explicit_search_triggers_character_research(tmp_path)
     assert len(processor.image_calls) == 1
     assert processor.image_calls[0]["preset_name"] == "二次元"
     assert "Roxy" in processor.image_calls[0]["character_reference"]
+
+
+async def test_sequential_strategy_skips_remaining_retries_on_switch_error_search(tmp_path):
+    ws = MediaWorkspace(tmp_path)
+    session = FakeSession()
+    session.push(
+        FakeResponse(200, body=json.dumps({"data": [{"id": "model_a"}, {"id": "model_b"}]})),
+        FakeResponse(404, body=_model_not_found_body()),
+        FakeResponse(200, body=_search_response(model="model_b")),
+    )
+    cfg = _cfg(
+        capability_settings={
+            "search_models": "model_a\nmodel_b",
+            "max_search_requests_per_task": 5,
+        },
+        performance_settings={
+            "reliability": {
+                "model_retry_count": 2,
+                "model_retry_strategy": "依次重试",
+            }
+        },
+    )
+    service, _ = _make_service(ws, cfg=cfg, session=session)
+
+    result = await service.search(FakeEvent(), "question")
+
+    assert result.model == "model_b"
+    calls = [call for call in session.calls if call["url"].endswith("/v1/responses")]
+    assert len(calls) == 2
+    assert calls[0]["json"]["model"] == "model_a"
+    assert calls[1]["json"]["model"] == "model_b"
+
+
+async def test_sequential_strategy_skips_remaining_retries_on_switch_error_image_generate(tmp_path):
+    ws = MediaWorkspace(tmp_path)
+    session = FakeSession()
+    image = base64.b64encode(_png_bytes()).decode()
+    session.push(
+        FakeResponse(404, body=_model_not_found_body()),
+        FakeResponse(200, body=json.dumps({"data": [{"b64_json": image}]})),
+    )
+    cfg = _cfg(
+        capability_settings={"image_models": "first\nsecond", "send_media_progress": False},
+        performance_settings={
+            "reliability": {
+                "model_retry_count": 2,
+                "model_retry_strategy": "依次重试",
+            }
+        },
+    )
+    svc, _ = _make_service(ws, cfg=cfg, session=session)
+
+    await svc.deliver_generated_images(FakeEvent(), "cat")
+
+    assert [call["json"]["model"] for call in session.calls] == [
+        "first",
+        "second",
+    ]
+
+
+async def test_sequential_strategy_skips_remaining_retries_on_switch_error_image_edit(tmp_path):
+    ws = MediaWorkspace(tmp_path)
+    session = FakeSession()
+    image = base64.b64encode(_png_bytes()).decode()
+    session.push(
+        FakeResponse(401, body=json.dumps({"error": {"code": "invalid_api_key"}})),
+        FakeResponse(200, body=json.dumps({"data": [{"b64_json": image}]})),
+    )
+    cfg = _cfg(
+        capability_settings={"image_edit_models": "edit_a\nedit_b", "send_media_progress": False},
+        performance_settings={
+            "reliability": {
+                "model_retry_count": 2,
+                "model_retry_strategy": "依次重试",
+            }
+        },
+    )
+    svc, _ = _make_service(ws, cfg=cfg, session=session)
+    svc._find_input_image = AsyncMock(return_value=f"data:image/png;base64,{image}")
+
+    await svc.deliver_edited_image(FakeEvent(), "cat")
+
+    assert [call["json"]["model"] for call in session.calls] == [
+        "edit_a",
+        "edit_b",
+    ]
+
+
+async def test_sequential_strategy_skips_remaining_retries_on_switch_error_video_create(tmp_path):
+    ws = MediaWorkspace(tmp_path)
+    session = FakeSession()
+    session.push(FakeResponse(200, body=json.dumps({"request_id": "video_1"})))
+    failed_body = json.dumps(
+        {"status": "failed", "error": {"code": "invalid_prompt", "message": "bad prompt"}}
+    )
+    session.push(FakeResponse(200, body=failed_body))
+    session.push(FakeResponse(200, body=json.dumps({"request_id": "video_2"})))
+    session.push(FakeResponse(200, body=json.dumps({"status": "done", "progress": 100})))
+    session.push(FakeResponse(200, body=b"fake_mp4_content"))
+
+    cfg = _cfg(
+        capability_settings={"video_models": "first\nsecond"},
+        performance_settings={
+            "reliability": {
+                "video_retry_count": 2,
+                "model_retry_strategy": "依次重试",
+            }
+        },
+        advanced_settings={"model_switch_errors": "invalid_prompt"},
+    )
+    svc, _ = _make_service(ws, cfg=cfg, session=session)
+    ev = FakeEvent()
+    await svc.deliver_video(ev, "cat")
+    assert len(ev.sent) == 2
+    post_calls = [call for call in session.calls if call["method"] == "POST"]
+    assert len(post_calls) == 2
+    assert post_calls[0]["json"]["model"] == "first"
+    assert post_calls[1]["json"]["model"] == "second"
+
+
+async def test_round_robin_strategy_skips_poisoned_model_in_later_rounds(tmp_path):
+    ws = MediaWorkspace(tmp_path)
+    session = FakeSession()
+    image = base64.b64encode(_png_bytes()).decode()
+    session.push(
+        # first in round 1 fails with switch error
+        FakeResponse(404, body=_model_not_found_body()),
+        # second in round 1 fails with transient 500
+        FakeResponse(500, body=json.dumps({"error": {"code": "internal_error"}})),
+        # Round 2: first must be skipped! Only second is attempted.
+        FakeResponse(200, body=json.dumps({"data": [{"b64_json": image}]})),
+    )
+    cfg = _cfg(
+        capability_settings={"image_models": "first\nsecond", "send_media_progress": False},
+        performance_settings={
+            "reliability": {
+                "model_retry_count": 2,
+                "model_retry_strategy": "轮询重试",
+            }
+        },
+    )
+    svc, _ = _make_service(ws, cfg=cfg, session=session)
+
+    await svc.deliver_generated_images(FakeEvent(), "cat")
+
+    assert [call["json"]["model"] for call in session.calls] == [
+        "first",
+        "second",
+        "second",
+    ]
