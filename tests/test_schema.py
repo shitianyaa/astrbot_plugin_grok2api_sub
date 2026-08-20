@@ -132,9 +132,11 @@ def test_prompt_processing_uses_astrbot_provider_selectors(schema):
     assert reference["default"] is False
     assert "参考图" in reference["hint"]
     assert items["fallback_to_original_on_error"]["default"] is True
-    assert items["presets"]["type"] == "object"
-    assert "二次元" in items["presets"]["default"]
-    assert "电影质感" in items["presets"]["default"]
+    assert items["presets"]["type"] == "template_list"
+    assert "preset" in items["presets"]["templates"]
+    preset_names = [p["name"] for p in items["presets"]["default"]]
+    assert "二次元" in preset_names
+    assert "电影质感" in preset_names
 
 
 def test_access_group_items(schema):

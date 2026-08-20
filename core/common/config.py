@@ -436,21 +436,35 @@ def parse_model_switch_errors(value: object) -> frozenset[str]:
 def parse_prompt_presets(value: object) -> dict[str, str]:
     """Parse custom prompt presets mapping from WebUI config.
 
-    Returns default presets if value is empty or not a dict.
-    Filters out non-string or empty keys/values.
+    Accepts:
+    1. A list of template dicts (AstrBot template_list format):
+       [{"name": "二次元", "prompt": "..."}, ...]
+    2. A Mapping/dict: {"二次元": "..."}
+    Returns default presets if value is empty or not matching.
     """
-    if not isinstance(value, Mapping):
+    if isinstance(value, list):
+        presets: dict[str, str] = {}
+        for item in value:
+            if isinstance(item, Mapping):
+                name = str(item.get("name", "")).strip()
+                prompt = str(item.get("prompt", "")).strip()
+                if name and prompt:
+                    presets[name] = prompt
+        if presets:
+            return presets
         return dict(_DEFAULT_PROMPT_PRESETS)
-    presets: dict[str, str] = {}
-    for k, v in value.items():
-        if isinstance(k, str) and isinstance(v, str):
-            name = k.strip()
-            instruction = v.strip()
-            if name and instruction:
-                presets[name] = instruction
-    if not presets:
+    if isinstance(value, Mapping):
+        presets = {}
+        for k, v in value.items():
+            if isinstance(k, str) and isinstance(v, str):
+                name = k.strip()
+                instruction = v.strip()
+                if name and instruction:
+                    presets[name] = instruction
+        if presets:
+            return presets
         return dict(_DEFAULT_PROMPT_PRESETS)
-    return presets
+    return dict(_DEFAULT_PROMPT_PRESETS)
 
 
 def _to_int(key: str, value: object, lo: int, hi: int) -> int:

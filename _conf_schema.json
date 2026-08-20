@@ -120,11 +120,36 @@
       },
       "presets": {
         "description": "自定义提示词预设",
-        "type": "object",
-        "default": {
-          "二次元": "Mode: anime illustration preset.\nRender the requested subject in high-aesthetic modern Japanese anime style.\nEmphasize crisp, expressive line art, luminous cel shading, vibrant clear colors,\nand dynamic atmospheric lighting consistent with the requested action.\nStrictly preserve all explicit characters, clothing, actions, and exclusions from source_prompt.",
-          "电影质感": "Mode: cinematic photograph preset.\nDirect atmospheric 35mm film cinematic lighting, layered composition with natural depth of field,\nrich tactile textures, and subtle analog color grading.\nMaintain clear visual hierarchy centered on the requested subject and action,\nstrictly preserving all explicit requirements without introducing unrequested storylines."
+        "type": "template_list",
+        "templates": {
+          "preset": {
+            "name": "风格预设",
+            "items": {
+              "name": {
+                "description": "预设名称（用于 -ys<名称> 调用）",
+                "type": "string",
+                "default": ""
+              },
+              "prompt": {
+                "description": "预设专属指令（英文 Prompt 建议 25~70 词）",
+                "type": "text",
+                "default": ""
+              }
+            }
+          }
         },
+        "default": [
+          {
+            "__template_key": "preset",
+            "name": "二次元",
+            "prompt": "Mode: anime illustration preset.\nRender the requested subject in high-aesthetic modern Japanese anime style.\nEmphasize crisp, expressive line art, luminous cel shading, vibrant clear colors,\nand dynamic atmospheric lighting consistent with the requested action.\nStrictly preserve all explicit characters, clothing, actions, and exclusions from source_prompt."
+          },
+          {
+            "__template_key": "preset",
+            "name": "电影质感",
+            "prompt": "Mode: cinematic photograph preset.\nDirect atmospheric 35mm film cinematic lighting, layered composition with natural depth of field,\nrich tactile textures, and subtle analog color grading.\nMaintain clear visual hierarchy centered on the requested subject and action,\nstrictly preserving all explicit requirements without introducing unrequested storylines."
+          }
+        ],
         "hint": "自定义生图风格预设，可通过 -ys<名称> 调用，例如：-ys二次元。"
       },
       "character_research_mode": {

@@ -378,6 +378,30 @@ def test_prompt_presets_custom_loaded():
     }
 
 
+def test_prompt_presets_template_list_loaded():
+    raw = _raw(
+        prompt_settings={
+            "presets": [
+                {
+                    "__template_key": "preset",
+                    "name": "赛博朋克",
+                    "prompt": "Mode: cyberpunk preset.",
+                },
+                {
+                    "__template_key": "preset",
+                    "name": "水墨",
+                    "prompt": "Mode: ink painting preset.",
+                },
+            ]
+        }
+    )
+    cfg = PluginConfig.from_astrbot(raw)
+    assert cfg.prompt_presets == {
+        "赛博朋克": "Mode: cyberpunk preset.",
+        "水墨": "Mode: ink painting preset.",
+    }
+
+
 def test_enhance_pro_migrates_to_enhance_in_v3():
     raw = {
         "connection_settings": {"api_key": "k", "config_layout_version": 3},
