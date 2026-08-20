@@ -42,17 +42,17 @@ Supported resolutions: 1k, 2k. Keep them in their JSON fields, not in prompt,
 and set them only from explicit user requirements. Verify every source
 requirement before returning the object."""
 
-IMAGE_STANDARD_SYSTEM_PROMPT = f"""{SHARED_LOSSLESS_RULES}
+_STANDARD_MODE_INSTRUCTION = (
+    "Mode: standard. Only translate, organize, clarify, and merge reliable reference facts.\n"
+    "Structure: [Subject & Core Attributes] + [Action/Pose] + "
+    "[Explicit Setting/Style (if requested)].\n"
+    "Do not add unspecified camera choices, lighting, mood, background, expression,\n"
+    "material, object, action, costume element, or style.\n\n"
+    "Length Constraint:\n"
+    "Keep the output prompt concise, direct, and strictly between 20 and 45 words."
+)
 
-Mode: standard. Only translate, organize, clarify, and merge reliable reference facts.
-Structure: [Subject & Core Attributes] + [Action/Pose] + [Explicit Setting/Style (if requested)].
-Do not add unspecified camera choices, lighting, mood, background, expression,
-material, object, action, costume element, or style.
-
-Length Constraint:
-Keep the output prompt concise, direct, and strictly between 20 and 45 words.
-
-{_JSON_OUTPUT_SCHEMA}
+_STANDARD_BOTTOM_SCHEMA = f"""{_JSON_OUTPUT_SCHEMA}
 
 Example:
 Input: {{"media_type":"image","source_prompt":"女孩吃草莓，穿白裙戴红兜帽，不要其他人"}}
@@ -60,23 +60,27 @@ Output:
 {{"prompt":"A girl eats a strawberry, wearing a white dress and red hood. No other people.",
  "aspect_ratio":null,"resolution":"1k"}}"""
 
-IMAGE_ENHANCEMENT_SYSTEM_PROMPT = f"""{SHARED_LOSSLESS_RULES}
+IMAGE_STANDARD_SYSTEM_PROMPT = f"""{SHARED_LOSSLESS_RULES}
 
-Mode: enhance. You may enrich the description using concrete visual terminology:
-1. Subject & Textures: Fine material weave, hair strands, surface tactile details.
-2. Action & Interaction: Keep exact requested action and natural dynamic posture.
-3. Layered Environment: Spatial depth between foreground, midground, and background.
-4. Plausible Lighting: Directional illumination, soft daylight, warm glow, or rim light.
-5. Framing & Optics: Restrained depth of field, soft bokeh, natural camera angle.
+{_STANDARD_MODE_INSTRUCTION}
 
-Negative Constraints:
-Do not add a new subject, object, action, costume element, location, story,
-written text, or artistic style.
+{_STANDARD_BOTTOM_SCHEMA}"""
 
-Length Constraint:
-Keep the output prompt balanced, descriptive, and strictly between 45 and 80 words.
+_ENHANCEMENT_MODE_INSTRUCTION = (
+    "Mode: enhance. You may enrich the description using concrete visual terminology:\n"
+    "1. Subject & Textures: Fine material weave, hair strands, surface tactile details.\n"
+    "2. Action & Interaction: Keep exact requested action and natural dynamic posture.\n"
+    "3. Layered Environment: Spatial depth between foreground, midground, and background.\n"
+    "4. Plausible Lighting: Directional illumination, soft daylight, warm glow, or rim light.\n"
+    "5. Framing & Optics: Restrained depth of field, soft bokeh, natural camera angle.\n\n"
+    "Negative Constraints:\n"
+    "Do not add a new subject, object, action, costume element, location, story,\n"
+    "written text, or artistic style.\n\n"
+    "Length Constraint:\n"
+    "Keep the output prompt balanced, descriptive, and strictly between 45 and 80 words."
+)
 
-{_JSON_OUTPUT_SCHEMA}
+_ENHANCEMENT_BOTTOM_SCHEMA = f"""{_JSON_OUTPUT_SCHEMA}
 
 Example:
 Input: {{"media_type":"image","source_prompt":"女孩吃草莓，穿白裙戴红兜帽，不要其他人"}}
@@ -84,6 +88,12 @@ Output:
 {{"prompt":"A girl eats a ripe strawberry in her white dress and red hood, with soft light, \
 restrained depth of field, and detailed existing fabrics. No other people.",
  "aspect_ratio":null,"resolution":"1k"}}"""
+
+IMAGE_ENHANCEMENT_SYSTEM_PROMPT = f"""{SHARED_LOSSLESS_RULES}
+
+{_ENHANCEMENT_MODE_INSTRUCTION}
+
+{_ENHANCEMENT_BOTTOM_SCHEMA}"""
 
 IMAGE_PARAMETER_SYSTEM_PROMPT = """Extract image parameters from source_prompt.
 Do not rewrite, translate, summarize, copy, or improve the prompt.
@@ -123,15 +133,18 @@ class PromptProcessor:
     ) -> ImageGenerationRequest:
         if preset_name:
             if preset_name not in self._config.prompt_presets:
-                available = "、".join(self._config.prompt_presets.keys())
+                available = "、".join(self._config.prompt_presets.keys()) or "（未配置任何预设）"
                 raise PluginError(
                     f'预设 "{preset_name}" 不存在。当前可用预设：{available}',
                     code="prompt_preset_not_found",
                 )
             preset_instruction = self._config.prompt_presets[preset_name]
-            system_prompt = (
-                f"{SHARED_LOSSLESS_RULES}\n\n{preset_instruction}\n\n{_JSON_OUTPUT_SCHEMA}"
+            middle = (
+                f"{preset_instruction}\n\n{REFERENCE_RULES}"
+                if character_reference
+                else preset_instruction
             )
+            system_prompt = f"{SHARED_LOSSLESS_RULES}\n\n{middle}\n\n{_JSON_OUTPUT_SCHEMA}"
             data = await self._run_model_raw(
                 source_prompt,
                 provider_id=self._config.prompt_enhance_provider_id,
@@ -204,7 +217,9 @@ class PromptProcessor:
         mode: str,
         character_reference: str,
     ) -> dict[str, object]:
-        provider_id, system_prompt, max_tokens = self._model_request(mode)
+        provider_id, system_prompt, max_tokens = self._model_request(
+            mode, character_reference=character_reference
+        )
         return await self._run_model_raw(
             source_prompt,
             provider_id=provider_id,
@@ -234,7 +249,6 @@ class PromptProcessor:
         }
         if character_reference:
             payload_dict["character_reference"] = character_reference
-            system_prompt = f"{system_prompt}\n\n{REFERENCE_RULES}"
 
         started_at = time.monotonic()
         safe_log(
@@ -301,17 +315,29 @@ class PromptProcessor:
         )
         return data
 
-    def _model_request(self, mode: str) -> tuple[str, str, int]:
+    def _model_request(
+        self,
+        mode: str,
+        *,
+        character_reference: str = "",
+    ) -> tuple[str, str, int]:
         if mode == "extract":
             return self._config.prompt_extract_provider_id, IMAGE_PARAMETER_SYSTEM_PROMPT, 256
-        prompts = {
-            "standard": IMAGE_STANDARD_SYSTEM_PROMPT,
-            "enhance": IMAGE_ENHANCEMENT_SYSTEM_PROMPT,
-        }
-        prompt = prompts.get(mode)
-        if prompt is None:
-            raise PluginError("提示词处理模式无效", code="prompt_processing_mode_invalid")
-        return self._config.prompt_enhance_provider_id, prompt, 1024
+        if mode == "standard":
+            if character_reference:
+                middle = f"{_STANDARD_MODE_INSTRUCTION}\n\n{REFERENCE_RULES}"
+                prompt = f"{SHARED_LOSSLESS_RULES}\n\n{middle}\n\n{_STANDARD_BOTTOM_SCHEMA}"
+            else:
+                prompt = IMAGE_STANDARD_SYSTEM_PROMPT
+            return self._config.prompt_enhance_provider_id, prompt, 1024
+        if mode == "enhance":
+            if character_reference:
+                middle = f"{_ENHANCEMENT_MODE_INSTRUCTION}\n\n{REFERENCE_RULES}"
+                prompt = f"{SHARED_LOSSLESS_RULES}\n\n{middle}\n\n{_ENHANCEMENT_BOTTOM_SCHEMA}"
+            else:
+                prompt = IMAGE_ENHANCEMENT_SYSTEM_PROMPT
+            return self._config.prompt_enhance_provider_id, prompt, 1024
+        raise PluginError("提示词处理模式无效", code="prompt_processing_mode_invalid")
 
     @staticmethod
     def _require_exact_keys(data: dict[str, object], expected: set[str]) -> None:

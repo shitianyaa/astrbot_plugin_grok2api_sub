@@ -151,13 +151,13 @@ python -m pip install -r requirements.txt
 | `show_search_sources` | `true` | 是否返回结构化来源 |
 | `max_search_sources` | `5` | 最多显示来源数，`0` 表示不显示 |
 | `max_search_output_chars` | `6000` | 搜索正文最大长度 |
-| `max_search_requests_per_task` | `3` | 单次任务最多发出的实际上游搜索请求数；重试、候选模型回退和角色资料搜索均计入 |
+| `max_search_requests_per_task` | `3` | 单次任务最多发出的实际上游搜索请求数；重试、候选模型回退和生图资料搜索均计入 |
 
 ### 5. 性能、文件与访问控制
 
 通常只需要调整 `performance_settings.timeouts.task_timeout_seconds`，它是单次任务从排队到发送完成的总预算。默认阶段超时为：普通搜索 300 秒、提示词处理 60 秒、角色资料搜索 120 秒；这些值仍可在 `performance_settings.timeouts` 的折叠专家项中调整。并发与重试位于 `performance_settings.reliability`。
 
-搜索预算只在当前 `/g2搜索`、当前媒体任务或当前 LLM agent 回合内生效，不跨用户、跨消息累计；读取 `/v1/models` 模型目录不占用搜索次数。
+搜索预算（`max_search_requests_per_task`）只在当前 `/g2搜索`、当前媒体任务或当前 LLM agent 回合内生效，不跨用户、跨消息累计；读取 `/v1/models` 模型目录不占用搜索次数。LLM Tool 会在当前 Agent 回合内缓存有界的成功搜索结果；最后一次可用请求完成或回退过程中耗尽配额时，立即返回本轮已有结果并要求主模型停止搜索、直接组织回答。会话级 Tool 调用还受 AstrBot 全局 `provider_settings.tool_call_timeout`（默认 120 秒）与单次任务总超时的取最小约束；要让默认 300 秒搜索上限完整生效，应把该全局值设置为略高于 300 秒。
 
 `storage_settings` 管理输入/下载媒体大小、发送后是否保留和临时文件清理；`access_settings` 管理用户与群聊黑白名单。
 

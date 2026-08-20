@@ -264,3 +264,11 @@ def test_search_request_budget_schema(schema):
     assert item["default"] == 3
     assert item["slider"] == {"min": 1, "max": 10, "step": 1}
     assert "重试" in item["hint"]
+    assert "引导主模型" in item["hint"]
+
+
+def test_search_timeout_seconds_schema_hint(schema):
+    item = schema["performance_settings"]["items"]["timeouts"]["items"]["search_timeout_seconds"]
+    assert item["type"] == "int"
+    assert item["default"] == 300
+    assert "tool_call_timeout" in item["hint"]

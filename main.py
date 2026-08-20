@@ -217,6 +217,9 @@ class Grok2APISubPlugin(HelpMixin, SearchMixin, MediaMixin, PanelMixin, Star):
             max_search_requests=(
                 self._plugin_config.max_search_requests_per_task if self._plugin_config else 3
             ),
+            max_output_chars=(
+                self._plugin_config.max_search_output_chars if self._plugin_config else 6000
+            ),
         )
         tool = build_search_tool(self._service, policy=policy)
         self.context.add_llm_tools(tool)

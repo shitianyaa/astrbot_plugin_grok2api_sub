@@ -75,6 +75,40 @@ def test_command_handlers_register_greedy_params(plugin_module):
         assert cmd.handler_params == want, f"{name}: {cmd.handler_params}"
 
 
+def test_register_search_tool_passes_search_limits(monkeypatch, plugin_module):
+    from types import SimpleNamespace
+
+    captured = {}
+
+    class Context:
+        def add_llm_tools(self, tool):
+            captured["tool"] = tool
+
+    cfg = SimpleNamespace(
+        enabled=True,
+        enable_llm_search_tool=True,
+        has_api_key=True,
+        show_search_sources=True,
+        max_search_sources=4,
+        max_search_requests_per_task=2,
+        max_search_output_chars=4321,
+        capability_enabled=lambda name: name == "search",
+    )
+    plugin = object.__new__(plugin_module.Grok2APISubPlugin)
+    plugin._tool_registered = False
+    plugin._service = object()
+    plugin._plugin_config = cfg
+    plugin.context = Context()
+    monkeypatch.setattr(plugin_module, "build_search_tool", lambda service, *, policy: policy)
+
+    plugin._register_search_tool()
+
+    policy = captured["tool"]
+    assert policy.max_search_requests == 2
+    assert policy.max_output_chars == 4321
+    assert policy.max_sources == 4
+
+
 @pytest.mark.asyncio
 async def test_send_reports_success(monkeypatch, plugin_module):
     events = []

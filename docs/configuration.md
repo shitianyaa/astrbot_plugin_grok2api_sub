@@ -78,7 +78,11 @@
 | `max_search_output_chars` | `6000` | 搜索正文 Unicode 字符上限，超出后截断 |
 | `max_search_requests_per_task` | `3` | 单次任务最多发出的实际上游搜索请求数；重试、候选模型回退和生图资料搜索均计入 |
 
-搜索开关和来源限制属于输出策略；搜索请求是否能完成还受下面的阶段超时和任务总超时影响。
+### 搜索配额与引导收敛机制
+
+- `max_search_requests_per_task` 限制单次任务（覆盖 `/g2搜索`、会话级 Tool `grok2api_web_search` 与 `/g2生图` 视觉事实资料搜索）实际向上游发出的最大搜索请求数；多候选模型回退与轮次重试均计入配额消耗。
+- 搜索配额按单次命令任务或单轮 LLM Agent 会话独立计算，不跨会话或跨用户累计，读取 `/v1/models` 模型目录不占用配额。
+- **Tool 配额耗尽收敛**：插件在当前 Agent 回合的 `AstrAgentContext.extra` 中缓存有界的成功搜索正文与来源。最后一次可用请求成功完成时会立即聚合返回；配额在下一次 Tool 调用前或单次搜索的候选回退期间耗尽时也走同一结果。返回值包含 `search_budget_exhausted`、`should_stop_search=true` 和已有结果，要求主模型停止搜索并直接组织回答；若此前没有成功结果，则明确返回搜索未完成说明。
 
 ## 性能与可靠性（`performance_settings`）
 
@@ -100,9 +104,13 @@
 | `prompt_processing_timeout_seconds` | `60` | 提示词整理/优化和参数提取模型上限 |
 | `character_research_timeout_seconds` | `120` | 单次生图视觉事实资料搜索上限，自动搜索超时后继续改写 |
 
-每次网络尝试都会同时受阶段上限和当前任务剩余预算裁剪；任务总预算到期后停止重试、轮询和
-候选模型切换。角色资料搜索的实际预算还会取 `character_research_timeout_seconds`、
-`search_timeout_seconds` 与任务剩余时间的最小值。
+### 超时层级约束与取最小关系
+
+所有网络尝试均遵循严格的层级预算裁剪机制：
+1. **任务总超时（`task_timeout_seconds`，默认 1800s）**：覆盖排队、提示词处理、网络请求、多轮重试、候选回退与媒体下载全流程。任何阶段的实际可用时间均受当前任务剩余时间 `task_remaining_seconds` 强制裁剪；总预算耗尽后立即终止重试与轮询。
+2. **单阶段超时（`search_timeout_seconds`、`image_timeout_seconds` 等）**：限制对应业务单次请求上限。例如手动指令 `/g2搜索` 的实际单次超时预算为 `min(search_timeout_seconds, task_remaining_seconds)`。
+3. **AstrBot 外层 Tool 超时约束（`provider_settings.tool_call_timeout`，默认 120s）**：当通过会话级 Tool（`grok2api_web_search`）被主模型调用时，除受插件自身的 `search_timeout_seconds` 与任务剩余时间约束外，还受 AstrBot 全局 `tool_call_timeout`（通常为 120 秒）的硬性包裹。因此会话级 Tool 单次调用的实际有效超时取三者最小值：`min(search_timeout_seconds, task_remaining_seconds, tool_call_timeout)`。若希望默认 300 秒搜索上限完整生效，应把全局 `tool_call_timeout` 调整到略高于 300 秒；若自定义了搜索上限，也应同步调整该全局值。
+4. **生图视觉事实检索**：`/g2生图` 阶段的角色/实体资料搜索实际预算取 `min(character_research_timeout_seconds, search_timeout_seconds, task_remaining_seconds)`。自动检索超时后不会中止任务，而是自动降级并继续执行提示词改写流程。
 
 ### 并发与重试（`performance_settings.reliability`）
 

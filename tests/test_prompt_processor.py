@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from dataclasses import replace
 from types import SimpleNamespace
 
 import pytest
@@ -33,9 +34,7 @@ def _config(
         "extract_provider_id": extract_provider,
         "enhance_provider_id": enhance_provider,
     }
-    if presets is not None:
-        prompt_settings["presets"] = presets
-    return PluginConfig.from_astrbot(
+    cfg = PluginConfig.from_astrbot(
         {
             "connection_settings": {
                 "config_layout_version": 3,
@@ -46,6 +45,9 @@ def _config(
             },
         }
     )
+    if presets is not None:
+        cfg = replace(cfg, prompt_presets=dict(presets))
+    return cfg
 
 
 class Context:
@@ -206,6 +208,12 @@ async def test_resolve_image_with_preset_and_character_reference_injects_referen
     sys_prompt = context.calls[0]["system_prompt"]
     assert "REFERENCE_RULES" not in sys_prompt
     assert REFERENCE_RULES in sys_prompt
+    pos_shared = sys_prompt.find(SHARED_LOSSLESS_RULES)
+    pos_preset = sys_prompt.find("Mode: anime illustration preset.")
+    pos_ref = sys_prompt.find(REFERENCE_RULES)
+    pos_json = sys_prompt.find("Return one JSON object only:")
+    assert pos_shared != -1 and pos_preset != -1 and pos_ref != -1 and pos_json != -1
+    assert pos_shared < pos_preset < pos_ref < pos_json
     payload = json.loads(context.calls[0]["prompt"])
     assert payload["character_reference"] == "Character: Roxy\nHair: White"
 
@@ -220,6 +228,18 @@ async def test_resolve_image_with_unknown_preset_raises_error():
     assert exc_info.value.code == "prompt_preset_not_found"
     assert '预设 "不存在的预设" 不存在' in str(exc_info.value)
     assert "当前可用预设" in str(exc_info.value)
+
+
+async def test_preset_not_found_with_empty_presets_shows_fallback_text():
+    context = Context()
+    processor = PromptProcessor(context, _config(mode="standard", presets={}))
+
+    with pytest.raises(PluginError) as exc_info:
+        await processor.resolve_image("画一只猫", preset_name="未知")
+
+    assert exc_info.value.code == "prompt_preset_not_found"
+    assert '预设 "未知" 不存在' in str(exc_info.value)
+    assert "当前可用预设：（未配置任何预设）" in str(exc_info.value)
 
 
 async def test_character_reference_injection_and_system_prompt_rules():
@@ -244,7 +264,42 @@ async def test_character_reference_injection_and_system_prompt_rules():
     assert payload["character_reference"] == "Character: Hatsune Miku\nHair: Teal twin tails"
     assert payload["source_prompt"] == "画初音未来"
     assert payload["reference_image_present"] is False
-    assert REFERENCE_RULES in context.calls[0]["system_prompt"]
+    sys_prompt = context.calls[0]["system_prompt"]
+    assert REFERENCE_RULES in sys_prompt
+    pos_shared = sys_prompt.find(SHARED_LOSSLESS_RULES)
+    pos_mode = sys_prompt.find("Mode: standard.")
+    pos_ref = sys_prompt.find(REFERENCE_RULES)
+    pos_json = sys_prompt.find("Return one JSON object only:")
+    assert pos_shared != -1 and pos_mode != -1 and pos_ref != -1 and pos_json != -1
+    assert pos_shared < pos_mode < pos_ref < pos_json
+
+
+async def test_enhance_mode_with_character_reference_injects_reference_rules_in_middle():
+    context = Context(
+        _assistant(
+            {
+                "prompt": "A girl eating a strawberry with soft light.",
+                "aspect_ratio": "1:1",
+                "resolution": "1k",
+            }
+        )
+    )
+    processor = PromptProcessor(context, _config(mode="enhance"))
+
+    await processor.resolve_image(
+        "女孩吃草莓",
+        character_reference="Character: Girl\nDress: White",
+    )
+
+    assert len(context.calls) == 1
+    sys_prompt = context.calls[0]["system_prompt"]
+    assert REFERENCE_RULES in sys_prompt
+    pos_shared = sys_prompt.find(SHARED_LOSSLESS_RULES)
+    pos_enhance = sys_prompt.find("Mode: enhance.")
+    pos_ref = sys_prompt.find(REFERENCE_RULES)
+    pos_json = sys_prompt.find("Return one JSON object only:")
+    assert pos_shared != -1 and pos_enhance != -1 and pos_ref != -1 and pos_json != -1
+    assert pos_shared < pos_enhance < pos_ref < pos_json
 
 
 async def test_without_character_reference_no_rules_appended():

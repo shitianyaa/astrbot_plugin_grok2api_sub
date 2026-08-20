@@ -237,7 +237,7 @@
         "default": 3,
         "slider": { "min": 1, "max": 10, "step": 1 },
         "collapsed": true,
-        "hint": "限制 /g2搜索、LLM 搜索 Tool 和角色资料搜索实际发出的上游搜索请求；重试与候选模型回退也计入。"
+        "hint": "限制 /g2搜索、LLM 搜索 Tool 和生图资料搜索实际发出的上游搜索请求（含重试与回退）；Tool 达上限后返回本轮已有结果并引导主模型回答。"
       }
     }
   },
@@ -320,7 +320,7 @@
         "type": "int",
         "default": 3,
         "slider": { "min": 1, "max": 10, "step": 1 },
-        "hint": "限制 /g2搜索、LLM 搜索 Tool 和角色资料搜索的实际上游请求数；重试与候选模型回退也计入。"
+        "hint": "限制 /g2搜索、LLM 搜索 Tool 和生图资料搜索实际上游请求数（含重试与回退）；Tool 达上限后返回本轮已有结果并引导主模型回答。"
       },
       "image_response_format": {
         "description": "生图/改图响应格式。",
@@ -432,13 +432,13 @@
             "collapsed": true,
             "hint": "只限制建立网络连接，不等同于整个请求超时。"
           },
-      "search_timeout_seconds": {
-        "description": "普通搜索请求超时（秒）",
-        "type": "int",
-        "default": 300,
-        "slider": { "min": 10, "max": 900, "step": 10 },
+          "search_timeout_seconds": {
+            "description": "普通搜索请求超时（秒）",
+            "type": "int",
+            "default": 300,
+            "slider": { "min": 10, "max": 900, "step": 10 },
             "collapsed": true,
-            "hint": "用于 /g2搜索 和会话级搜索 Tool；角色资料搜索还会受自己的阶段预算限制。"
+            "hint": "用于 /g2搜索 与搜索 Tool；会话级 LLM 自动搜索 Tool 还受 AstrBot 全局 provider_settings.tool_call_timeout（默认 120 秒）约束。"
           },
           "image_timeout_seconds": {
             "description": "生图/改图请求超时（秒）",
@@ -691,7 +691,8 @@
         "description": "搜索请求整体超时（秒）。",
         "type": "int",
         "default": 300,
-        "slider": { "min": 10, "max": 900, "step": 10 }
+        "slider": { "min": 10, "max": 900, "step": 10 },
+        "hint": "用于 /g2搜索 与搜索 Tool；会话级 LLM 自动搜索 Tool 还受 AstrBot 全局 provider_settings.tool_call_timeout（默认 120 秒）约束。"
       },
       "image_timeout_seconds": {
         "description": "生图/改图请求整体超时（秒）。",

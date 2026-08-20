@@ -42,14 +42,30 @@ class _FakeService:
         return self._result
 
 
-def _service_result(*, sources=None):
+class _BudgetSequenceService:
+    def __init__(self, results):
+        self._results = list(results)
+        self.calls = 0
+
+    async def search(self, event, query, *, required=True):
+        assert required is True
+        consume_search_request()
+        index = self.calls
+        self.calls += 1
+        result = self._results[index]
+        if isinstance(result, Exception):
+            raise result
+        return result
+
+
+def _service_result(*, text="answer", sources=None):
     from core.models import SearchResult, SearchSource
 
     return SearchResult(
         response_id="r1",
         model="m",
         status="completed",
-        text="answer",
+        text=text,
         sources=sources or (SearchSource(url="https://e.com/1", title="T"),),
         search_performed=True,
     )
@@ -81,6 +97,7 @@ async def test_tool_extracts_event_and_returns_json():
     assert out["sources"][0]["url"] == "https://e.com/1"
     assert out["incomplete"] is False
     assert out["error_code"] == ""
+    assert out["should_stop_search"] is False
 
 
 async def test_tool_does_not_call_event_send():
@@ -234,17 +251,127 @@ async def test_tool_calls_service_once_with_tuple_models():
 
 
 async def test_tool_shares_actual_search_budget_across_one_agent_turn():
-    svc = _FakeService(result=_service_result(), consume_request=True)
+    svc = _BudgetSequenceService(
+        [
+            _service_result(text="first answer"),
+            _service_result(text="second answer"),
+        ]
+    )
+    tool, ctx = _tool(policy=_policy(max_search_requests=2), service=svc)
+
+    first = _parse(await tool.call(ctx, query="one"))
+    exhausted = _parse(await tool.call(ctx, query="two"))
+    repeated = _parse(await tool.call(ctx, query="three"))
+
+    assert first["should_stop_search"] is False
+    assert exhausted["ok"] is True
+    assert exhausted["error_code"] == "search_budget_exhausted"
+    assert exhausted["incomplete"] is True
+    assert exhausted["should_stop_search"] is True
+    assert "已达到单次任务最大搜索配额上限（2次）" in exhausted["answer"]
+    assert "请停止调用搜索工具" in exhausted["answer"]
+    assert "first answer" in exhausted["answer"]
+    assert "second answer" in exhausted["answer"]
+    assert exhausted["sources"] == [{"url": "https://e.com/1", "title": "T"}]
+    assert repeated == exhausted
+    assert svc.calls == 2
+    assert ctx.context.extra["grok2api_search_requests"] == "2"
+
+
+async def test_tool_returns_cached_result_when_budget_exhausts_inside_service_call():
+    class _ExhaustingService:
+        def __init__(self):
+            self.calls = 0
+
+        async def search(self, event, query, *, required=True):
+            assert required is True
+            self.calls += 1
+            consume_search_request()
+            if self.calls == 1:
+                return _service_result(text="usable first result")
+            consume_search_request()
+            raise AssertionError("unreachable")
+
+    svc = _ExhaustingService()
     tool, ctx = _tool(policy=_policy(max_search_requests=2), service=svc)
 
     assert _parse(await tool.call(ctx, query="one"))["ok"] is True
-    assert _parse(await tool.call(ctx, query="two"))["ok"] is True
-    exhausted = _parse(await tool.call(ctx, query="three"))
+    exhausted = _parse(await tool.call(ctx, query="two"))
+
+    assert exhausted["ok"] is True
+    assert exhausted["error_code"] == "search_budget_exhausted"
+    assert exhausted["should_stop_search"] is True
+    assert "usable first result" in exhausted["answer"]
+    assert ctx.context.extra["grok2api_search_requests"] == "2"
+
+
+async def test_tool_returns_cached_result_when_last_allowed_request_fails():
+    svc = _BudgetSequenceService(
+        [
+            _service_result(text="usable first result"),
+            SearchNotPerformedError(),
+        ]
+    )
+    tool, ctx = _tool(policy=_policy(max_search_requests=2), service=svc)
+
+    assert _parse(await tool.call(ctx, query="one"))["ok"] is True
+    exhausted = _parse(await tool.call(ctx, query="two"))
+
+    assert exhausted["ok"] is True
+    assert exhausted["error_code"] == "search_budget_exhausted"
+    assert exhausted["should_stop_search"] is True
+    assert "usable first result" in exhausted["answer"]
+    assert ctx.context.extra["grok2api_search_requests"] == "2"
+
+
+async def test_tool_budget_exhaustion_without_cached_result_returns_nonempty_guidance():
+    class _AlwaysExhaustingService:
+        async def search(self, event, query, *, required=True):
+            assert required is True
+            consume_search_request()
+            consume_search_request()
+
+    tool, ctx = _tool(
+        policy=_policy(max_search_requests=1),
+        service=_AlwaysExhaustingService(),
+    )
+
+    exhausted = _parse(await tool.call(ctx, query="one"))
 
     assert exhausted["ok"] is False
     assert exhausted["error_code"] == "search_budget_exhausted"
-    assert svc.calls == 2
-    assert ctx.context.extra["grok2api_search_requests"] == "2"
+    assert exhausted["should_stop_search"] is True
+    assert exhausted["answer"]
+    assert "当前没有可用的成功搜索结果" in exhausted["answer"]
+    assert exhausted["sources"] == []
+
+
+async def test_tool_cached_exhaustion_respects_output_and_source_limits():
+    from core.models import SearchSource
+
+    svc = _BudgetSequenceService(
+        [
+            _service_result(
+                text="a" * 600,
+                sources=(SearchSource(url="https://e.com/1", title="One"),),
+            ),
+            _service_result(
+                text="b" * 600,
+                sources=(SearchSource(url="https://e.com/2", title="Two"),),
+            ),
+        ]
+    )
+    tool, ctx = _tool(
+        policy=_policy(max_search_requests=2, max_sources=1, max_output_chars=500),
+        service=svc,
+    )
+
+    await tool.call(ctx, query="one")
+    exhausted = _parse(await tool.call(ctx, query="two"))
+
+    assert len(exhausted["answer"]) <= 500
+    assert exhausted["answer"].endswith("[缓存结果已截断]")
+    assert exhausted["sources"] == [{"url": "https://e.com/1", "title": "One"}]
 
 
 async def test_tool_logs_lengths_and_outcome_without_logging_query(monkeypatch):
