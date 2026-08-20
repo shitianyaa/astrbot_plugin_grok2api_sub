@@ -28,7 +28,7 @@ assets/ (静态资源)
   - `off`：直接保留原提示词，不调用提示词模型与资料搜索。
   - `extract`：调用 `extract_provider_id`，仅提取图片比例（`1:1`、`16:9`、`9:16`、`4:3`、`3:4`、`3:2`、`2:3`）与分辨率（`1k`/`2k`），保留原始提示词。
   - `standard`、`enhance`：共用 `enhance_provider_id`，按模式对应的 System Prompt 执行忠实整理（20~45 词）或受控增强（45~80 词），输出适配底模的地道英文 Prompt。
-  - `preset:<名称>`：调用在 WebUI 配置或 Pages（`pages/presets/`）中定义的专属 System Prompt 指令（通过 `-ys<名称>` 触发）。
+  - `preset:<名称>`：调用在 WebUI 配置（`prompt_settings.presets`）中定义的专属 System Prompt 指令（通过 `-ys<名称>` 触发）。
 - **三段式 System Prompt 架构**：提示词由「公共保真底座 `SHARED_LOSSLESS_RULES`（顶部） + 当前模式/预设专属指令（中间） + JSON 输出规范与标准示例 `_JSON_OUTPUT_SCHEMA`（底部）」组成；用户输入以结构化 JSON 数据体（`{"media_type":"image","source_prompt":...}`）传给 `Context.llm_generate()`，绝不与 System Prompt 混淆。有视觉资料时追加 `REFERENCE_RULES` 与 `character_reference` 字段。
 - **严格 JSON 响应与白名单校验**：模型输出必须是无多余字段的合法 JSON，比例与分辨率经枚举白名单校验。
 - **显式控制硬报错与默认模式自愈**：
