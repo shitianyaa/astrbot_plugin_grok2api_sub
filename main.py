@@ -248,7 +248,7 @@ class Grok2APISubPlugin(HelpMixin, SearchMixin, MediaMixin, PanelMixin, Star):
 
     @filter.command("g2生图", alias={"grok2生图"})
     async def g2_generate_image(self, event: AstrMessageEvent, arguments: GreedyStr):
-        """生成图片：/g2生图 [-off|-ex|-st|-eh|-ehp] [-s] <提示词>。"""
+        """生成图片：/g2生图 [-off|-ex|-st|-eh] [-ys<名称>] [-s] <提示词>。"""
         await self._handle_generate_image(event, arguments)
 
     @filter.command("g2改图", alias={"grok2改图"})

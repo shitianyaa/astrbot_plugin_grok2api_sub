@@ -6,6 +6,7 @@ import pytest
 
 from core.config import PluginConfig
 from core.errors import PluginError
+from core.handlers.help import HelpMixin
 from core.handlers.media import MediaMixin
 
 
@@ -316,3 +317,29 @@ async def test_generate_image_keeps_hyphenated_prompt_text():
 
     assert calls == ["画一只穿 T-shirt 的猫 -5 度雪景"]
     assert mixin.sent == []
+
+
+async def test_help_command_returns_updated_syntax_and_modes():
+    class HelpTarget(HelpMixin):
+        pass
+
+    target = HelpTarget()
+    target._plugin_config = _fallback_cfg()
+    target.sent = []
+
+    async def _send(_event, text: str) -> None:
+        target.sent.append(text)
+
+    target._send = _send
+
+    event = StubEvent()
+    await target._handle_help(event)
+
+    assert event.stopped is True
+    assert len(target.sent) == 1
+    help_text = target.sent[0]
+
+    assert "/g2生图 [-off|-ex|-st|-eh] [-ys<名称>] [-s] <提示词>" in help_text
+    assert "-ehp" not in help_text
+    assert "深度增强" not in help_text
+    assert "风格预设(-ys<名称>)" in help_text
