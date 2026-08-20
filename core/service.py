@@ -31,7 +31,6 @@ from .common.models import (
 from .common.observability import (
     operation_scope,
     record_task_model,
-    record_task_retry,
     safe_log,
     safe_task_log,
     task_candidate_attempts,
@@ -99,7 +98,7 @@ VISUAL_RESEARCH_SYSTEM_PROMPT = (
     "</USER_PROMPT>"
 )
 CHARACTER_RESEARCH_SYSTEM_PROMPT = VISUAL_RESEARCH_SYSTEM_PROMPT
-_IMAGE_REWRITE_MODES = frozenset({"standard", "enhance", "enhance_pro"})
+_IMAGE_REWRITE_MODES = frozenset({"standard", "enhance"})
 _IMAGE_PROMPT_MODES = frozenset({"off", "extract", *_IMAGE_REWRITE_MODES})
 
 _PANEL_CACHE_TTL = 60.0
@@ -326,10 +325,13 @@ class GrokService:
         self,
         *,
         mode: str,
+        preset_name: str = "",
         skip_prompt_processing: bool,
     ) -> str:
         if skip_prompt_processing:
             return "回退原文（跳过处理）"
+        if preset_name:
+            return f"预设增强完成（{preset_name}）"
         if mode == "off":
             return "原文直传"
         if self._prompt_processor is None:
@@ -338,7 +340,6 @@ class GrokService:
             "extract": "参数提取完成",
             "standard": "精准整理完成",
             "enhance": "受控增强完成",
-            "enhance_pro": "深度增强完成",
         }.get(mode, "未处理")
 
     # -- search ------------------------------------------------------------
@@ -467,40 +468,44 @@ class GrokService:
             else:
                 search_query = f"{system_prompt}\n\n{query}"
 
-        for index, model in enumerate(visible_candidates):
-            enable_web_search, enable_x_search = search_tools_for_model(
-                model,
-                enable_web_search=self._config.enable_web_search,
-                enable_x_search=self._config.enable_x_search,
-            )
-            if not enable_web_search and not enable_x_search:
-                self._log_model_skipped(model, index, "search_tool_unsupported")
-                continue
-            try:
-                check_task_deadline()
-                record_task_model("search", model)
-                result = await self._client.search(
-                    search_query,
-                    model=model,
-                    enable_web_search=enable_web_search,
-                    enable_x_search=enable_x_search,
-                    reasoning_effort=reasoning_effort_for_model(
-                        model,
-                        self._config.search_reasoning_effort,
-                    ),
-                    required=required,
+        max_rounds = 1 + self._config.model_retry_count
+        for round_idx in range(1, max_rounds + 1):
+            for index, model in enumerate(visible_candidates):
+                enable_web_search, enable_x_search = search_tools_for_model(
+                    model,
+                    enable_web_search=self._config.enable_web_search,
+                    enable_x_search=self._config.enable_x_search,
                 )
-                self._log_model_selected(model, index)
-                return _ModelFallbackOutcome(
-                    value=result,
-                    model=model,
-                    candidate_attempts=task_candidate_attempts("search"),
-                )
-            except PluginError as exc:
-                if not exc.retryable or exc.code == "task_timeout":
-                    raise
-                self._log_model_skipped(model, index, exc.code)
-                continue
+                if not enable_web_search and not enable_x_search:
+                    self._log_model_skipped(
+                        model, index, "search_tool_unsupported", round_idx=round_idx
+                    )
+                    continue
+                try:
+                    check_task_deadline()
+                    record_task_model("search", model)
+                    result = await self._client.search(
+                        search_query,
+                        model=model,
+                        enable_web_search=enable_web_search,
+                        enable_x_search=enable_x_search,
+                        reasoning_effort=reasoning_effort_for_model(
+                            model,
+                            self._config.search_reasoning_effort,
+                        ),
+                        required=required,
+                    )
+                    self._log_model_selected(model, index, round_idx=round_idx)
+                    return _ModelFallbackOutcome(
+                        value=result,
+                        model=model,
+                        candidate_attempts=task_candidate_attempts("search"),
+                    )
+                except PluginError as exc:
+                    if not exc.retryable or exc.code == "task_timeout":
+                        raise
+                    self._log_model_skipped(model, index, exc.code, round_idx=round_idx)
+                    continue
 
         safe_log(
             logging.DEBUG,
@@ -519,23 +524,35 @@ class GrokService:
         tail = f"等 {total} 个模型" if total > 4 else ""
         return f"所有搜索模型均不可用（{shown}{tail}）"
 
-    def _log_model_skipped(self, model: str, index: int, reason: str) -> None:
+    def _log_model_skipped(
+        self, model: str, index: int, reason: str, round_idx: int | None = None
+    ) -> None:
+        fields: dict[str, object] = {
+            "model": model,
+            "model_index": index,
+            "reason": reason,
+            "operation": "search",
+        }
+        if round_idx is not None:
+            fields["round"] = round_idx
         safe_log(
             logging.DEBUG,
             "search_model_skipped",
-            model=model,
-            model_index=index,
-            reason=reason,
-            operation="search",
+            **fields,
         )
 
-    def _log_model_selected(self, model: str, index: int) -> None:
+    def _log_model_selected(self, model: str, index: int, round_idx: int | None = None) -> None:
+        fields: dict[str, object] = {
+            "model": model,
+            "model_index": index,
+            "operation": "search",
+        }
+        if round_idx is not None:
+            fields["round"] = round_idx
         safe_log(
             logging.DEBUG,
             "search_model_selected",
-            model=model,
-            model_index=index,
-            operation="search",
+            **fields,
         )
 
     def format_search(self, result: SearchResult) -> str:
@@ -555,44 +572,48 @@ class GrokService:
     ) -> _ModelFallbackOutcome:
         if not models:
             raise PluginError("未配置生图模型", code="capability_unavailable")
-        for index, model in enumerate(models):
-            try:
-                check_task_deadline()
-                record_task_model("image_generate", model)
-                safe_log(
-                    logging.DEBUG,
-                    "media_job_model_attempt",
-                    operation="image_generate",
-                    model=model,
-                    model_index=index,
-                )
-                results = await self._client.generate_images(
-                    request.prompt,
-                    model=model,
-                    count=1,
-                    aspect_ratio=request.aspect_ratio,
-                    resolution=request.resolution,
-                    response_format=self._config.image_response_format,
-                    api_base_url=self._config.api_base_url,
-                    max_download_bytes=self._config.max_image_download_mb * 1024 * 1024,
-                )
-                return _ModelFallbackOutcome(
-                    value=results,
-                    model=model,
-                    candidate_attempts=task_candidate_attempts("image_generate"),
-                )
-            except PluginError as exc:
-                if not exc.retryable or exc.code == "task_timeout":
-                    raise
-                safe_log(
-                    logging.DEBUG,
-                    "media_job_model_skipped",
-                    operation="image_generate",
-                    model=model,
-                    model_index=index,
-                    error_code=exc.code,
-                )
-                continue
+        max_rounds = 1 + self._config.model_retry_count
+        for round_idx in range(1, max_rounds + 1):
+            for index, model in enumerate(models):
+                try:
+                    check_task_deadline()
+                    record_task_model("image_generate", model)
+                    safe_log(
+                        logging.DEBUG,
+                        "media_job_model_attempt",
+                        operation="image_generate",
+                        model=model,
+                        model_index=index,
+                        round=round_idx,
+                    )
+                    results = await self._client.generate_images(
+                        request.prompt,
+                        model=model,
+                        count=1,
+                        aspect_ratio=request.aspect_ratio,
+                        resolution=request.resolution,
+                        response_format=self._config.image_response_format,
+                        api_base_url=self._config.api_base_url,
+                        max_download_bytes=self._config.max_image_download_mb * 1024 * 1024,
+                    )
+                    return _ModelFallbackOutcome(
+                        value=results,
+                        model=model,
+                        candidate_attempts=task_candidate_attempts("image_generate"),
+                    )
+                except PluginError as exc:
+                    if not exc.retryable or exc.code == "task_timeout":
+                        raise
+                    safe_log(
+                        logging.DEBUG,
+                        "media_job_model_skipped",
+                        operation="image_generate",
+                        model=model,
+                        model_index=index,
+                        round=round_idx,
+                        error_code=exc.code,
+                    )
+                    continue
         raise PluginError("所有生图模型均不可用", code="media_models_exhausted")
 
     async def _edit_image_with_fallback(
@@ -604,42 +625,46 @@ class GrokService:
     ) -> _ModelFallbackOutcome:
         if not models:
             raise PluginError("未配置改图模型", code="capability_unavailable")
-        for index, model in enumerate(models):
-            try:
-                check_task_deadline()
-                record_task_model("image_edit", model)
-                safe_log(
-                    logging.DEBUG,
-                    "media_job_model_attempt",
-                    operation="image_edit",
-                    model=model,
-                    model_index=index,
-                )
-                results = await self._client.edit_image(
-                    prompt,
-                    data_url,
-                    model=model,
-                    response_format=self._config.image_response_format,
-                    api_base_url=self._config.api_base_url,
-                    max_download_bytes=self._config.max_image_download_mb * 1024 * 1024,
-                )
-                return _ModelFallbackOutcome(
-                    value=results,
-                    model=model,
-                    candidate_attempts=task_candidate_attempts("image_edit"),
-                )
-            except PluginError as exc:
-                if not exc.retryable or exc.code == "task_timeout":
-                    raise
-                safe_log(
-                    logging.DEBUG,
-                    "media_job_model_skipped",
-                    operation="image_edit",
-                    model=model,
-                    model_index=index,
-                    error_code=exc.code,
-                )
-                continue
+        max_rounds = 1 + self._config.model_retry_count
+        for round_idx in range(1, max_rounds + 1):
+            for index, model in enumerate(models):
+                try:
+                    check_task_deadline()
+                    record_task_model("image_edit", model)
+                    safe_log(
+                        logging.DEBUG,
+                        "media_job_model_attempt",
+                        operation="image_edit",
+                        model=model,
+                        model_index=index,
+                        round=round_idx,
+                    )
+                    results = await self._client.edit_image(
+                        prompt,
+                        data_url,
+                        model=model,
+                        response_format=self._config.image_response_format,
+                        api_base_url=self._config.api_base_url,
+                        max_download_bytes=self._config.max_image_download_mb * 1024 * 1024,
+                    )
+                    return _ModelFallbackOutcome(
+                        value=results,
+                        model=model,
+                        candidate_attempts=task_candidate_attempts("image_edit"),
+                    )
+                except PluginError as exc:
+                    if not exc.retryable or exc.code == "task_timeout":
+                        raise
+                    safe_log(
+                        logging.DEBUG,
+                        "media_job_model_skipped",
+                        operation="image_edit",
+                        model=model,
+                        model_index=index,
+                        round=round_idx,
+                        error_code=exc.code,
+                    )
+                    continue
         raise PluginError("所有改图模型均不可用", code="media_models_exhausted")
 
     async def _create_video_with_fallback(
@@ -651,21 +676,19 @@ class GrokService:
     ) -> _ModelFallbackOutcome:
         if not models:
             raise PluginError("未配置视频模型", code="capability_unavailable")
-        attempts_per_model = self._config.video_retry_count + 1
-        for index, model in enumerate(models):
-            record_task_model("video_generate", model)
-            safe_log(
-                logging.DEBUG,
-                "media_job_model_attempt",
-                operation="video_generate",
-                model=model,
-                model_index=index,
-            )
-            model_failed_code: str | None = None
-            for attempt in range(1, attempts_per_model + 1):
+        max_rounds = 1 + self._config.video_retry_count
+        for round_idx in range(1, max_rounds + 1):
+            for index, model in enumerate(models):
                 check_task_deadline()
-                if attempt > 1:
-                    record_task_retry()
+                record_task_model("video_generate", model)
+                safe_log(
+                    logging.DEBUG,
+                    "media_job_model_attempt",
+                    operation="video_generate",
+                    model=model,
+                    model_index=index,
+                    round=round_idx,
+                )
                 try:
                     request_id = await self._client.create_video(
                         request.prompt,
@@ -680,7 +703,7 @@ class GrokService:
                         "video_created",
                         operation="video_generate",
                         request_id=request_id,
-                        attempt=attempt,
+                        round=round_idx,
                     )
                     job = await self._client.wait_for_video(request_id)
                     if job.status == "done":
@@ -691,27 +714,29 @@ class GrokService:
                         )
                     if job.status == "failed":
                         err_code = job.error_code or "video_failed"
-                        model_failed_code = err_code
-                        should_switch = err_code in self._config.model_switch_errors
-                        if should_switch or attempt >= attempts_per_model:
-                            break
-                        await self._client.retry_backoff(attempt)
+                        safe_log(
+                            logging.DEBUG,
+                            "media_job_model_skipped",
+                            operation="video_generate",
+                            model=model,
+                            model_index=index,
+                            round=round_idx,
+                            error_code=err_code,
+                        )
                         continue
                 except PluginError as exc:
                     if not exc.retryable or exc.code == "task_timeout":
                         raise
-                    model_failed_code = exc.code
-                    break
-
-            safe_log(
-                logging.DEBUG,
-                "media_job_model_skipped",
-                operation="video_generate",
-                model=model,
-                model_index=index,
-                error_code=model_failed_code or "unknown",
-            )
-            continue
+                    safe_log(
+                        logging.DEBUG,
+                        "media_job_model_skipped",
+                        operation="video_generate",
+                        model=model,
+                        model_index=index,
+                        round=round_idx,
+                        error_code=exc.code,
+                    )
+                    continue
         raise PluginError("所有视频模型均不可用", code="media_models_exhausted")
 
     # -- images ------------------------------------------------------------
@@ -723,6 +748,7 @@ class GrokService:
         *,
         explicit_search: bool = False,
         prompt_mode: str = "",
+        preset_name: str = "",
         skip_prompt_processing: bool = False,
     ) -> None:
         with task_deadline_scope(self._config.task_timeout_seconds):
@@ -761,15 +787,24 @@ class GrokService:
                     request_prompt = ""
                     request_params: dict[str, object] = {}
                     try:
-                        effective_prompt_mode = self._effective_prompt_mode(
-                            self._config,
-                            requested_prompt_mode=prompt_mode,
-                            skip_prompt_processing=skip_prompt_processing,
+                        effective_prompt_mode = (
+                            "off"
+                            if skip_prompt_processing
+                            else (
+                                f"preset:{preset_name}"
+                                if preset_name
+                                else self._effective_prompt_mode(
+                                    self._config,
+                                    requested_prompt_mode=prompt_mode,
+                                    skip_prompt_processing=skip_prompt_processing,
+                                )
+                            )
                         )
                         request = await self._resolve_image_request(
                             prompt,
                             explicit_search=explicit_search,
                             prompt_mode=prompt_mode,
+                            preset_name=preset_name,
                             skip=skip_prompt_processing,
                         )
                         request_prompt = request.prompt
@@ -788,9 +823,11 @@ class GrokService:
                             request_params=request_params,
                             prompt_default_mode=self._config.prompt_processing_mode,
                             prompt_mode_override=prompt_mode or "未指定",
+                            prompt_preset=preset_name or "未指定",
                             prompt_mode=effective_prompt_mode,
                             prompt_status=self._prompt_processing_status(
                                 mode=effective_prompt_mode,
+                                preset_name=preset_name,
                                 skip_prompt_processing=skip_prompt_processing,
                             ),
                             reference_image="无",
@@ -1267,12 +1304,13 @@ class GrokService:
         *,
         explicit_search: bool = False,
         prompt_mode: str = "",
+        preset_name: str = "",
     ) -> bool:
         effective_mode = prompt_mode or self._config.prompt_processing_mode
         mode = self._config.prompt_character_research_mode
-        if explicit_search and effective_mode not in _IMAGE_REWRITE_MODES:
+        if explicit_search and not (effective_mode in _IMAGE_REWRITE_MODES or preset_name):
             raise PluginError(
-                "-s/--search 只能与 -st、-en 或 -enp 配合使用",
+                "-s/--search 只能与 -st、-eh 或 -ys 预设配合使用",
                 code="prompt_search_mode_invalid",
             )
         if explicit_search and mode == "off":
@@ -1280,7 +1318,7 @@ class GrokService:
                 "资料搜索已在插件配置中关闭，无法使用 -s/--search",
                 code="prompt_search_disabled",
             )
-        if effective_mode not in _IMAGE_REWRITE_MODES:
+        if not (effective_mode in _IMAGE_REWRITE_MODES or preset_name):
             reason = "prompt_mode_not_rewrite"
         elif mode == "off":
             reason = "disabled"
@@ -1327,21 +1365,28 @@ class GrokService:
         *,
         explicit_search: bool = False,
         prompt_mode: str = "",
+        preset_name: str = "",
         skip: bool = False,
     ) -> ImageGenerationRequest:
-        effective_mode = self._effective_prompt_mode(
-            self._config,
-            requested_prompt_mode=prompt_mode,
-            skip_prompt_processing=skip,
-        )
-        if effective_mode == "off":
-            if explicit_search:
-                self._should_research_character(
-                    prompt,
-                    explicit_search=explicit_search,
-                    prompt_mode=effective_mode,
-                )
+        if skip:
             return ImageGenerationRequest(prompt=prompt)
+        if not preset_name:
+            effective_mode = self._effective_prompt_mode(
+                self._config,
+                requested_prompt_mode=prompt_mode,
+                skip_prompt_processing=skip,
+            )
+            if effective_mode == "off":
+                if explicit_search:
+                    self._should_research_character(
+                        prompt,
+                        explicit_search=explicit_search,
+                        prompt_mode=effective_mode,
+                    )
+                return ImageGenerationRequest(prompt=prompt)
+        else:
+            effective_mode = ""
+
         if self._prompt_processor is None:
             raise PluginError(
                 "提示词处理器不可用",
@@ -1351,6 +1396,7 @@ class GrokService:
             prompt,
             explicit_search=explicit_search,
             prompt_mode=effective_mode,
+            preset_name=preset_name,
         ):
             character_ref = await self._research_character_visuals(
                 prompt,
@@ -1361,6 +1407,7 @@ class GrokService:
         return await self._prompt_processor.resolve_image(
             prompt,
             mode=effective_mode,
+            preset_name=preset_name,
             character_reference=character_ref,
         )
 

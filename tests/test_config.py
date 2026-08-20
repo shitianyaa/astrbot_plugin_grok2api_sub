@@ -348,7 +348,47 @@ def test_reject_non_http_scheme():
     _raises(connection_settings={"client_proxy_url": "socks5://h.com"})
 
 
-@pytest.mark.parametrize("mode", ["off", "extract", "standard", "enhance", "enhance_pro"])
+def test_prompt_processing_modes_are_four_tiers():
+    from core.common.config import _PROMPT_PROCESSING_MODES
+
+    assert _PROMPT_PROCESSING_MODES == ("off", "extract", "standard", "enhance")
+
+
+def test_prompt_presets_load_defaults_when_empty():
+    cfg = PluginConfig.from_dict({"connection_settings": {"api_key": "k"}})
+    assert "二次元" in cfg.prompt_presets
+    assert "电影质感" in cfg.prompt_presets
+    assert "Mode: anime illustration preset." in cfg.prompt_presets["二次元"]
+    assert "Mode: cinematic photograph preset." in cfg.prompt_presets["电影质感"]
+
+
+def test_prompt_presets_custom_loaded():
+    raw = _raw(
+        prompt_settings={
+            "presets": {
+                "赛博朋克": "Mode: cyberpunk preset.",
+                "水墨": "Mode: ink painting preset.",
+            }
+        }
+    )
+    cfg = PluginConfig.from_astrbot(raw)
+    assert cfg.prompt_presets == {
+        "赛博朋克": "Mode: cyberpunk preset.",
+        "水墨": "Mode: ink painting preset.",
+    }
+
+
+def test_enhance_pro_migrates_to_enhance_in_v3():
+    raw = {
+        "connection_settings": {"api_key": "k", "config_layout_version": 3},
+        "prompt_settings": {"mode": "enhance_pro"},
+    }
+    cfg = PluginConfig.from_dict(raw)
+    assert cfg.prompt_processing_mode == "enhance"
+    assert raw["prompt_settings"]["mode"] == "enhance"
+
+
+@pytest.mark.parametrize("mode", ["off", "extract", "standard", "enhance"])
 def test_prompt_processing_config_accepts_independent_providers(mode):
     raw = {
         "connection_settings": {
@@ -403,7 +443,7 @@ def test_v3_migration_preserves_other_modes(mode, initial_version):
     assert raw["prompt_settings"]["mode"] == mode
 
 
-@pytest.mark.parametrize("mode", ["off", "extract", "standard", "enhance", "enhance_pro"])
+@pytest.mark.parametrize("mode", ["off", "extract", "standard", "enhance"])
 def test_v3_layout_preserves_all_modes_without_modification(mode):
     raw = _raw(
         connection_settings={"config_layout_version": 3},

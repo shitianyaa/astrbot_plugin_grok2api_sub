@@ -162,7 +162,7 @@ class Grok2APIClient:
             timeout_seconds=self._search_timeout,
             retry_policy=_retry(
                 "search",
-                self._model_retry_count,
+                0,
                 self._retry_base_delay,
                 self._model_switch_errors,
             ),
@@ -202,7 +202,7 @@ class Grok2APIClient:
             timeout_seconds=self._image_timeout,
             retry_policy=_retry(
                 "image",
-                self._model_retry_count,
+                0,
                 self._retry_base_delay,
                 self._model_switch_errors,
             ),
@@ -240,7 +240,7 @@ class Grok2APIClient:
             timeout_seconds=self._image_timeout,
             retry_policy=_retry(
                 "image_edit",
-                self._model_retry_count,
+                0,
                 self._retry_base_delay,
                 self._model_switch_errors,
             ),
@@ -280,7 +280,7 @@ class Grok2APIClient:
             timeout_seconds=self._video_create_timeout,
             retry_policy=_retry(
                 "video_create",
-                self._video_retry_count,
+                0,
                 self._retry_base_delay,
                 self._model_switch_errors,
             ),

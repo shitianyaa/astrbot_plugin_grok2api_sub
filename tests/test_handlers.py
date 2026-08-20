@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from core.config import PluginConfig
 from core.errors import PluginError
 from core.handlers.media import MediaMixin
@@ -125,7 +127,7 @@ async def test_explicit_prompt_mode_failure_does_not_fallback():
     mixin = _mixin(_fallback_cfg(fallback_enabled=True, mode="standard"))
     mixin._service = Svc()
 
-    await mixin._handle_generate_image(StubEvent(), "-en 猫")
+    await mixin._handle_generate_image(StubEvent(), "-eh 猫")
 
     assert calls == [False]  # 显式模式失败直接报错，不触发 skip 重试
     assert mixin.sent == ["智能改写提示词失败，请检查提示词改写模型的配置"]
@@ -159,19 +161,36 @@ async def test_generate_image_rejects_search_flag_with_off_or_extract_mode():
     mixin = _mixin(_fallback_cfg(mode="standard"))
     mixin._service = Svc()
     await mixin._handle_generate_image(StubEvent(), "-s -off 猫")
-    assert any("-s/--search 只能与 -st、-en 或 -enp 配合使用" in msg for msg in mixin.sent)
+    assert any("-s/--search 只能与 -st、-eh 或 -ys 预设配合使用" in msg for msg in mixin.sent)
 
     # 2. explicit -s with -ex
     mixin.sent.clear()
     await mixin._handle_generate_image(StubEvent(), "-s -ex 猫")
-    assert any("-s/--search 只能与 -st、-en 或 -enp 配合使用" in msg for msg in mixin.sent)
+    assert any("-s/--search 只能与 -st、-eh 或 -ys 预设配合使用" in msg for msg in mixin.sent)
 
     # 3. explicit -s with config mode "off" and no override
     mixin = _mixin(_fallback_cfg(mode="off"))
     mixin._service = Svc()
     mixin.sent.clear()
     await mixin._handle_generate_image(StubEvent(), "-s 猫")
-    assert any("-s/--search 只能与 -st、-en 或 -enp 配合使用" in msg for msg in mixin.sent)
+    assert any("-s/--search 只能与 -st、-eh 或 -ys 预设配合使用" in msg for msg in mixin.sent)
+
+
+async def test_generate_image_accepts_preset_flag_and_passes_to_service():
+    calls: list[dict] = []
+
+    class Svc:
+        async def deliver_generated_images(self, event, prompt, **kwargs):
+            calls.append({"prompt": prompt, **kwargs})
+
+    mixin = _mixin(_fallback_cfg(mode="standard"))
+    mixin._service = Svc()
+    await mixin._handle_generate_image(StubEvent(), "画一只猫 -ys二次元 -s")
+
+    assert len(calls) == 1
+    assert calls[0]["prompt"] == "画一只猫"
+    assert calls[0]["preset_name"] == "二次元"
+    assert calls[0]["explicit_search"] is True
 
 
 async def test_generate_image_rejects_search_flag_when_search_disabled_in_config():
@@ -192,7 +211,7 @@ async def test_edit_image_disallows_prompt_processing_flags():
 
     mixin = _mixin(_fallback_cfg())
     mixin._service = Svc()
-    await mixin._handle_edit_image(StubEvent(), "-en 变红")
+    await mixin._handle_edit_image(StubEvent(), "-eh 变红")
     assert any("提示词处理和资料搜索参数仅支持 /g2生图" in msg for msg in mixin.sent)
 
 
@@ -231,3 +250,69 @@ async def test_generate_video_calls_service_with_verbatim_prompt_and_image_url()
     mixin._service = Svc()
     await mixin._handle_generate_video(StubEvent(), "纸飞机 --image-url=https://e.com/i.png")
     assert calls == [("纸飞机", "https://e.com/i.png")]
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    ["-x 猫", "-xx 猫", "--ar 16:9 猫", "-en 猫", "-enp 猫", "-eh -zz 猫", "猫 -zz"],
+)
+async def test_generate_image_rejects_unrecognized_flags_without_calling_service(arguments):
+    calls: list[str] = []
+
+    class Svc:
+        async def deliver_generated_images(self, event, prompt, **_kwargs):
+            calls.append(prompt)
+
+    mixin = _mixin(_fallback_cfg(mode="standard"))
+    mixin._service = Svc()
+    await mixin._handle_generate_image(StubEvent(), arguments)
+
+    assert calls == []  # 未识别参数在任何远端请求前拦截
+    assert len(mixin.sent) == 1
+    assert "未识别的参数" in mixin.sent[0]
+    assert "/g2生图 可用参数：-off、-ex、-st、-eh、-ys[预设名]、-s" in mixin.sent[0]
+
+
+async def test_edit_image_rejects_unrecognized_flags_without_calling_service():
+    calls: list[str] = []
+
+    class Svc:
+        async def deliver_edited_image(self, event, prompt):
+            calls.append(prompt)
+
+    mixin = _mixin(_fallback_cfg())
+    mixin._service = Svc()
+    await mixin._handle_edit_image(StubEvent(), "-zz 变红")
+
+    assert calls == []
+    assert any("/g2改图 不支持任何参数" in msg for msg in mixin.sent)
+
+
+async def test_generate_video_rejects_unrecognized_flags_without_calling_service():
+    calls: list[str] = []
+
+    class Svc:
+        async def deliver_video(self, event, prompt, *, reference_image_url=""):
+            calls.append(prompt)
+
+    mixin = _mixin(_fallback_cfg())
+    mixin._service = Svc()
+    await mixin._handle_generate_video(StubEvent(), "--ar 16:9 纸飞机")
+
+    assert calls == []
+    assert any("/g2视频 可用参数：--image-url" in msg for msg in mixin.sent)
+
+
+async def test_generate_image_keeps_hyphenated_prompt_text():
+    calls: list[str] = []
+
+    class Svc:
+        async def deliver_generated_images(self, event, prompt, **_kwargs):
+            calls.append(prompt)
+
+    mixin = _mixin(_fallback_cfg(mode="standard"))
+    mixin._service = Svc()
+    await mixin._handle_generate_image(StubEvent(), "画一只穿 T-shirt 的猫 -5 度雪景")
+
+    assert calls == ["画一只穿 T-shirt 的猫 -5 度雪景"]
+    assert mixin.sent == []

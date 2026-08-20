@@ -94,15 +94,15 @@
     }
   },
   "prompt_settings": {
-    "description": "生图提示词处理：参数提取、精准整理、受控增强与深度增强。",
+    "description": "生图提示词处理：参数提取、精准整理、受控增强与自定义预设。",
     "type": "object",
     "items": {
       "mode": {
         "description": "生图提示词处理模式",
         "type": "string",
         "default": "off",
-        "options": ["off", "extract", "standard", "enhance", "enhance_pro"],
-        "hint": "关闭=原文直传；提取=只读取比例/分辨率；standard=精准整理；enhance=受控增强；enhance_pro=深度增强。仅 /g2生图 生效。"
+        "options": ["off", "extract", "standard", "enhance"],
+        "hint": "关闭=原文直传；提取=只读取比例/分辨率；standard=精准整理；enhance=受控增强。仅 /g2生图 生效。"
       },
       "extract_provider_id": {
         "description": "生图参数提取模型",
@@ -116,7 +116,16 @@
         "type": "string",
         "default": "",
         "_special": "select_provider",
-        "hint": "在 standard、enhance、enhance_pro 模式使用。"
+        "hint": "在 standard、enhance 模式及预设使用。"
+      },
+      "presets": {
+        "description": "自定义提示词预设",
+        "type": "object",
+        "default": {
+          "二次元": "Mode: anime illustration preset.\nRender the requested subject in high-aesthetic modern Japanese anime style.\nEmphasize crisp, expressive line art, luminous cel shading, vibrant clear colors,\nand dynamic atmospheric lighting consistent with the requested action.\nStrictly preserve all explicit characters, clothing, actions, and exclusions from source_prompt.",
+          "电影质感": "Mode: cinematic photograph preset.\nDirect atmospheric 35mm film cinematic lighting, layered composition with natural depth of field,\nrich tactile textures, and subtle analog color grading.\nMaintain clear visual hierarchy centered on the requested subject and action,\nstrictly preserving all explicit requirements without introducing unrequested storylines."
+        },
+        "hint": "自定义生图风格预设，可通过 -ys<名称> 调用，例如：-ys二次元。"
       },
       "character_research_mode": {
         "description": "生图视觉资料搜索",
@@ -135,7 +144,7 @@
         "description": "默认模式失败时使用原文",
         "type": "bool",
         "default": true,
-        "hint": "仅未显式指定模式时生效；命令使用 -off/-ex/-st/-en/-enp 后，处理失败会直接拒绝生成。"
+        "hint": "仅未显式指定模式时生效；命令使用 -off/-ex/-st/-eh/-ys 后，处理失败会直接拒绝生成。"
       }
     }
   },

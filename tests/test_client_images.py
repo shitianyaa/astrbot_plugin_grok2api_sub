@@ -8,7 +8,7 @@ import json
 import pytest
 
 from core.client import Grok2APIClient
-from core.errors import MediaLimitError, ProtocolError
+from core.errors import APIError, MediaLimitError, ProtocolError
 from core.transport import HTTPTransport
 from tests.fakes import FakeResponse, FakeSession
 
@@ -243,34 +243,34 @@ async def test_upstream_error_maps_to_api_error():
     c, s = _client()
     s.push(
         FakeResponse(200, body=json.dumps({"error": {"code": "quota", "message": "no quota"}})),
-        FakeResponse(200, body=_image_json()),
     )
-    results = await c.generate_images(
-        "x",
-        model="m",
-        count=1,
-        response_format="b64_json",
-        api_base_url="https://grok.example.com",
-        max_download_bytes=10_000_000,
-    )
-    assert len(results) == 1
-    assert len(s.calls) == 2
+    with pytest.raises(APIError) as ei:
+        await c.generate_images(
+            "x",
+            model="m",
+            count=1,
+            response_format="b64_json",
+            api_base_url="https://grok.example.com",
+            max_download_bytes=10_000_000,
+        )
+    assert ei.value.code == "quota"
+    assert len(s.calls) == 1
 
 
 # -- retry failures --------------------------------------------------------
-async def test_image_post_503_retries_then_succeeds():
+async def test_image_post_503_raises_api_error_for_service_fallback():
     c, s = _client()
-    s.push(FakeResponse(503, body="{}"), FakeResponse(200, body=_image_json()))
-    results = await c.generate_images(
-        "x",
-        model="m",
-        count=1,
-        response_format="b64_json",
-        api_base_url="https://grok.example.com",
-        max_download_bytes=10_000_000,
-    )
-    assert len(results) == 1
-    assert len(s.calls) == 2
+    s.push(FakeResponse(503, body="{}"))
+    with pytest.raises(APIError):
+        await c.generate_images(
+            "x",
+            model="m",
+            count=1,
+            response_format="b64_json",
+            api_base_url="https://grok.example.com",
+            max_download_bytes=10_000_000,
+        )
+    assert len(s.calls) == 1
 
 
 async def test_image_post_timeout_honors_model_switch_network_error():

@@ -87,15 +87,14 @@ class MediaMixin(BaseHandler):
                 str(arguments),
                 allow_reference_image_url=False,
                 allow_prompt_processing=True,
+                command_name="/g2生图",
             )
             effective_mode = parsed.prompt_mode or self._cfg.prompt_processing_mode
-            if parsed.explicit_search and effective_mode not in {
-                "standard",
-                "enhance",
-                "enhance_pro",
-            }:
+            if parsed.explicit_search and not (
+                effective_mode in {"standard", "enhance"} or parsed.preset_name
+            ):
                 raise PluginError(
-                    "-s/--search 只能与 -st、-en 或 -enp 配合使用",
+                    "-s/--search 只能与 -st、-eh 或 -ys 预设配合使用",
                     code="prompt_search_mode_invalid",
                 )
             if parsed.explicit_search and self._cfg.prompt_character_research_mode == "off":
@@ -115,6 +114,7 @@ class MediaMixin(BaseHandler):
                 parsed.prompt,
                 explicit_search=parsed.explicit_search,
                 prompt_mode=parsed.prompt_mode,
+                preset_name=parsed.preset_name,
                 skip_prompt_processing=skip,
             )
 
@@ -123,7 +123,9 @@ class MediaMixin(BaseHandler):
             "image_generate",
             lambda: _call(False),
             lambda: _call(True),
-            explicit_prompt_mode=bool(parsed.prompt_mode or parsed.explicit_search),
+            explicit_prompt_mode=bool(
+                parsed.prompt_mode or parsed.preset_name or parsed.explicit_search
+            ),
         )
 
     async def _handle_edit_image(self, event: AstrMessageEvent, prompt: object) -> None:
@@ -132,6 +134,7 @@ class MediaMixin(BaseHandler):
                 str(prompt),
                 allow_reference_image_url=False,
                 allow_prompt_processing=False,
+                command_name="/g2改图",
             )
         except Exception as exc:  # noqa: BLE001
             event.stop_event()
@@ -150,6 +153,7 @@ class MediaMixin(BaseHandler):
                 str(arguments),
                 allow_reference_image_url=True,
                 allow_prompt_processing=False,
+                command_name="/g2视频",
             )
         except Exception as exc:  # noqa: BLE001
             event.stop_event()

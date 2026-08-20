@@ -59,7 +59,25 @@ PANEL_RESOLUTIONS = ("720p", "1080p", "1440p")
 DEFAULT_PANEL_RESOLUTION = "1080p"
 _IMAGE_FORMATS = ("b64_json", "url")
 _SEARCH_REASONING_EFFORTS = ("auto", "none", "low", "medium", "high", "xhigh")
-_PROMPT_PROCESSING_MODES = ("off", "extract", "standard", "enhance", "enhance_pro")
+_PROMPT_PROCESSING_MODES = ("off", "extract", "standard", "enhance")
+_DEFAULT_PROMPT_PRESETS: dict[str, str] = {
+    "二次元": (
+        "Mode: anime illustration preset.\n"
+        "Render the requested subject in high-aesthetic modern Japanese anime style.\n"
+        "Emphasize crisp, expressive line art, luminous cel shading, vibrant clear colors,\n"
+        "and dynamic atmospheric lighting consistent with the requested action.\n"
+        "Strictly preserve all explicit characters, clothing, actions, and "
+        "exclusions from source_prompt."
+    ),
+    "电影质感": (
+        "Mode: cinematic photograph preset.\n"
+        "Direct atmospheric 35mm film cinematic lighting, layered composition "
+        "with natural depth of field,\n"
+        "rich tactile textures, and subtle analog color grading.\n"
+        "Maintain clear visual hierarchy centered on the requested subject and action,\n"
+        "strictly preserving all explicit requirements without introducing unrequested storylines."
+    ),
+}
 _CHARACTER_RESEARCH_MODES = ("off", "auto", "always")
 _CONFIG_LAYOUT_VERSION = 3
 
@@ -130,6 +148,11 @@ def _prepare_config_layout(cmapping: Mapping[str, object]) -> tuple[int, bool]:
         raw_version if isinstance(raw_version, int) and not isinstance(raw_version, bool) else 0
     )
     if version >= _CONFIG_LAYOUT_VERSION:
+        if isinstance(cmapping, MutableMapping):
+            prompt_sec = cmapping.get("prompt_settings")
+            if isinstance(prompt_sec, MutableMapping) and prompt_sec.get("mode") == "enhance_pro":
+                prompt_sec["mode"] = "enhance"
+                return version, True
         return version, False
     if not isinstance(cmapping, MutableMapping) or not isinstance(conn_value, MutableMapping):
         return version, False
@@ -191,6 +214,9 @@ def _prepare_config_layout(cmapping: Mapping[str, object]) -> tuple[int, bool]:
         # v2 ``enhance`` was the old lossless rewrite behavior. Preserve that
         # behavior under the new explicit ``standard`` name after migration.
         prompt["mode"] = "standard"
+
+    if prompt.get("mode") == "enhance_pro":
+        prompt["mode"] = "enhance"
 
     search = mutable_section(cmapping, "search_settings")
     for key, default in (
@@ -407,6 +433,26 @@ def parse_model_switch_errors(value: object) -> frozenset[str]:
     return frozenset(values)
 
 
+def parse_prompt_presets(value: object) -> dict[str, str]:
+    """Parse custom prompt presets mapping from WebUI config.
+
+    Returns default presets if value is empty or not a dict.
+    Filters out non-string or empty keys/values.
+    """
+    if not isinstance(value, Mapping):
+        return dict(_DEFAULT_PROMPT_PRESETS)
+    presets: dict[str, str] = {}
+    for k, v in value.items():
+        if isinstance(k, str) and isinstance(v, str):
+            name = k.strip()
+            instruction = v.strip()
+            if name and instruction:
+                presets[name] = instruction
+    if not presets:
+        return dict(_DEFAULT_PROMPT_PRESETS)
+    return presets
+
+
 def _to_int(key: str, value: object, lo: int, hi: int) -> int:
     if isinstance(value, bool) or not isinstance(value, int):
         _fail(key, f"应为 {lo} 到 {hi} 的整数")
@@ -563,6 +609,7 @@ class PluginConfig:
     panel_cron_expression: str = field(default="0 9 * * *")
     panel_interval_enabled: bool = field(default=False)
     panel_interval_minutes: int = field(default=30)
+    prompt_presets: dict[str, str] = field(default_factory=lambda: dict(_DEFAULT_PROMPT_PRESETS))
 
     # -- protocol constants (not configurable via WebUI) --------------------
     prompt_max_chars: int = PROMPT_MAX_CHARS
@@ -667,6 +714,7 @@ class PluginConfig:
             ),
             "prompt_extract_provider_configured": bool(self.prompt_extract_provider_id),
             "prompt_enhance_provider_configured": bool(self.prompt_enhance_provider_id),
+            "prompt_presets": list(self.prompt_presets.keys()),
             "admin_configured": self.has_admin_credentials,
             "panel_period": self.panel_period,
             "panel_sections": self.panel_sections,
@@ -741,6 +789,8 @@ class PluginConfig:
         raw_prompt_mode = compat(prompt, "mode", legacy_prompt, "off")
         if layout_version < 3 and raw_prompt_mode == "enhance":
             raw_prompt_mode = "standard"
+        if raw_prompt_mode == "enhance_pro":
+            raw_prompt_mode = "enhance"
 
         cfg = cls(
             enabled=_bool_flag("connection_settings.enabled", g(conn, "enabled"), True),
@@ -987,6 +1037,9 @@ class PluginConfig:
                 compat(timeouts, "character_research_timeout_seconds", legacy_adv, 120),
                 5,
                 600,
+            ),
+            prompt_presets=parse_prompt_presets(
+                compat(prompt, "presets", legacy_prompt, {}),
             ),
             model_retry_count=_to_int(
                 "performance_settings.reliability.model_retry_count",

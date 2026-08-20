@@ -30,7 +30,7 @@ _ERROR_HINTS: dict[str, str] = {
     "prompt_processing_provider_missing": "请先配置提示词改写模型，或关闭智能改写",
     "prompt_mode_conflict": "提示词处理模式只能指定一个，请移除多余的模式参数",
     "prompt_options_unsupported": "提示词处理和资料搜索参数仅支持 /g2生图",
-    "prompt_search_mode_invalid": "-s/--search 只能与 -st、-en 或 -enp 配合使用",
+    "prompt_search_mode_invalid": "-s/--search 只能与 -st、-eh 或 -ys 预设配合使用",
     "prompt_search_disabled": "资料搜索已在插件配置中关闭，无法使用 -s/--search",
     "prompt_search_failed": "显式资料搜索失败，本次未开始生成",
     "prompt_search_no_reference": "未搜索到可用于生成的可靠视觉资料，本次未开始生成",

@@ -41,6 +41,7 @@ ALLOWED_FIELDS = {
     "exception_type",
     "model",
     "model_index",
+    "round",
     "reason",
     "candidate_count",
     "catalog_count",

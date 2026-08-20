@@ -22,16 +22,17 @@ assets/ (静态资源)
 
 ## 媒体提示词处理
 
-提示词处理与视觉事实检索**严格仅服务于 `/g2生图`**。`/g2改图` 与 `/g2视频` 彻底绕过 `PromptProcessor`，将用户提示词与编辑要求原文直传至上游端点，若检测到提示词控制标记（`-off`、`-ex`、`-st`、`-en`、`-enp`、`-s`、`--search`）会在远端调用前直接拦截拒绝。
+提示词处理与视觉事实检索**严格仅服务于 `/g2生图`**。`/g2改图` 与 `/g2视频` 彻底绕过 `PromptProcessor`，将用户提示词与编辑要求原文直传至上游端点，若检测到提示词控制标记（`-off`、`-ex`、`-st`、`-eh`、`-ys`、`-s`、`--search`）会在远端调用前直接拦截拒绝。
 
-- **文生图五档模式与供应商调度**：`PromptProcessor` 在发起生图请求前解析最终有效模式：
+- **文生图四档模式与自定义预设**：`PromptProcessor` 在发起生图请求前解析最终有效模式：
   - `off`：直接保留原提示词，不调用提示词模型与资料搜索。
   - `extract`：调用 `extract_provider_id`，仅提取图片比例（`1:1`、`16:9`、`9:16`、`4:3`、`3:4`、`3:2`、`2:3`）与分辨率（`1k`/`2k`），保留原始提示词。
-  - `standard`、`enhance`、`enhance_pro`：共用 `enhance_provider_id`，按模式对应的 System Prompt 执行忠实整理、受控增强或深度增强，输出适配底模的地道英文 Prompt。
-- **纯净 System Prompt 架构**：提示词由 `SHARED_LOSSLESS_RULES` + 当前模式专属规则组成；用户输入以结构化 JSON 数据体（`{"media_type":"image","source_prompt":...}`）传给 `Context.llm_generate()`，绝不与 System Prompt 混淆。有视觉资料时追加 `REFERENCE_RULES` 与 `character_reference` 字段。
+  - `standard`、`enhance`：共用 `enhance_provider_id`，按模式对应的 System Prompt 执行忠实整理（20~45 词）或受控增强（45~80 词），输出适配底模的地道英文 Prompt。
+  - `preset:<名称>`：调用在 WebUI 配置或 Pages（`pages/presets/`）中定义的专属 System Prompt 指令（通过 `-ys<名称>` 触发）。
+- **三段式 System Prompt 架构**：提示词由「公共保真底座 `SHARED_LOSSLESS_RULES`（顶部） + 当前模式/预设专属指令（中间） + JSON 输出规范与标准示例 `_JSON_OUTPUT_SCHEMA`（底部）」组成；用户输入以结构化 JSON 数据体（`{"media_type":"image","source_prompt":...}`）传给 `Context.llm_generate()`，绝不与 System Prompt 混淆。有视觉资料时追加 `REFERENCE_RULES` 与 `character_reference` 字段。
 - **严格 JSON 响应与白名单校验**：模型输出必须是无多余字段的合法 JSON，比例与分辨率经枚举白名单校验。
 - **显式控制硬报错与默认模式自愈**：
-  - 显式指定模式参数（如 `-en`）或显式搜索（`-s`）时，若改写模型超时/异常或搜索无资料，直接报错中止本次命令，绝不静默回退原文。
+  - 显式指定模式参数（如 `-eh`、`-ys二次元`）或显式搜索（`-s`）时，若改写模型超时/异常或搜索无资料，直接报错中止本次命令，绝不静默回退原文。
   - 仅在未指定命令标记、使用 WebUI 默认配置模式时，若改写模型异常且 `fallback_to_original_on_error=true`，才降级为原提示词直传继续生图。
 - **改图与视频原文直传**：
   - `/g2改图`：直接将消息/回复图片与原始编辑文本发往 `/v1/images/edits`。
@@ -103,16 +104,15 @@ Provider；无论选哪个 Provider，插件都以完成态 `web_search_call` �
 | 失败类型 | 典型错误码 / 场景 | 行为 |
 |---|---|---|
 | 模型不在目录 | `not_visible` | 跳过，不发 POST |
-| 远端稳定错误 | `model_not_found`、`model_not_allowed`、`unsupported_model`、`search_not_performed` | 当前候选重试耗尽后切换到下一候选；命中 `model_switch_errors` 立即切换 |
-| 远端暂时/业务失败 | HTTP 4xx/5xx、网络中断、请求超时、JSON 无效、业务 error 块 | 当前候选重试耗尽后切换到下一候选；命中 `model_switch_errors` 立即切换 |
-| 视频任务终态失败 | `status=failed` | 按 `video_retry_count` 重新创建新任务重试，耗尽后切换下一候选 |
+| 远端稳定错误 | `model_not_found`、`model_not_allowed`、`unsupported_model`、`search_not_performed` | 单次尝试失败立即切换至下一候选模型；遍历完候选进入下一轮 |
+| 远端暂时/业务失败 | HTTP 4xx/5xx、网络中断、请求超时、JSON 无效、业务 error 块 | 单次尝试失败立即切换至下一候选模型；遍历完候选进入下一轮 |
+| 视频任务终态失败 | `status=failed` | 按 `video_retry_count` 轮次重新创建新任务重试，单次失败切换下一候选 |
 | 本地不可重试错误 | 输入校验失败、媒体大小超限、SSRF / 越界路径、未初始化、权限拒绝 | 立即终止本次任务，不切换下一候选 |
 | 用户任务超时 | `task_timeout`（超过 `task_timeout_seconds`） | 立即终止重试与候选切换，清理工作区并安全退出 |
 
-远端 HTTP、网络、JSON、远端结构错误和 `search_not_performed` 都会先在当前候选上按
-`model_retry_count` 重试。重试耗尽后，所有远端错误均允许继续下一候选；本地错误与任务超时立即
-向上抛出。`model_switch_errors` 只会跳过当前候选的重试并立即进入下一候选。全部候选耗尽时
-抛 `*_models_exhausted`。
+模型重试按轮次（来回）计算：单次请求失败时立即切换至下一个候选模型，遍历完所有候选后进入下一轮，
+总轮次数对齐 `1 + model_retry_count`（视频对齐 `1 + video_retry_count`）。本地不可重试错误与任务超时立即
+向上抛出。所有候选在全部轮次均失败时抛 `*_models_exhausted`。
 
 注意事项：
 
@@ -144,10 +144,10 @@ Provider；无论选哪个 Provider，插件都以完成态 `web_search_call` �
 ## 远端重试与任务超时边界
 
 - `task_timeout_seconds` 覆盖搜索、生图、改图和视频整个用户任务（默认 1800 秒）。服务入口使用 `asyncio.wait_for` 主动取消超时协程，并通过 ContextVar-backed `task_deadline_scope` 向传输层传递剩余预算；每次 HTTP 尝试与等待间隔都会按剩余时间裁剪。超时到达后统一抛出 `task_timeout` 终止。
-- `model_retry_count` 管理搜索、生图、改图、模型目录和图片下载；`video_retry_count` 管理视频任务重建重试、
-  视频状态轮询和视频下载。两项均表示首次调用以外的额外次数，默认 `2`。
-- 未命中 `model_switch_errors` 时，远端 HTTP、网络、JSON 解析和远端响应结构错误均允许重试；
-  命中配置的 HTTP 状态码或稳定错误码时跳过当前模型重试。`Retry-After` 仍优先于指数退避。
+- `model_retry_count` 管理搜索、生图、改图候选模型多轮轮询（来回重试）轮数，以及模型目录和图片下载的额外重试；`video_retry_count` 管理视频创建候选多轮轮询轮数、
+  视频状态轮询和视频下载。两项均表示首次尝试以外的额外轮数/重试次数，默认 `2`。
+- 未命中 `model_switch_errors` 时，远端 HTTP、网络、JSON 解析和远端响应结构错误均允许进入下一候选/下一轮重试；
+  命中配置的 HTTP 状态码或稳定错误码时跳过重试。`Retry-After` 仍优先于指数退避。
 - 数字秒和 HTTP-date 两种 `Retry-After` 均受支持；HTTP-date 固定按 UTC 解释，最终退避上限为 30 秒。
 - 生成 POST 也遵循此策略，因此可能产生重复生成或重复扣费。平台发送、访问控制、用户输入、媒体大小
   与路径安全错误均位于传输层之外，绝不自动重放。
