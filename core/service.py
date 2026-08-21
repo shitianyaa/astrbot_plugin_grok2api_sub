@@ -485,7 +485,6 @@ class GrokService:
                 except asyncio.CancelledError:
                     raise
                 except Exception as exc:  # noqa: BLE001
-                    search_requests_used, search_request_limit = search_budget_usage()
                     fields: dict[str, object] = {
                         "operation": "search",
                         "source_prompt": query,
@@ -497,11 +496,7 @@ class GrokService:
                         "stage": "search",
                         "elapsed_ms": self._elapsed_ms(started_at),
                         "error_code": exc.code if isinstance(exc, PluginError) else "unknown",
-                        "search_budget": (
-                            f"{search_requests_used}/{search_request_limit}"
-                            if search_request_limit
-                            else ""
-                        ),
+                        "search_budget": self._search_budget_label(),
                     }
                     if isinstance(exc, APIError):
                         fields["status"] = exc.status
@@ -512,7 +507,6 @@ class GrokService:
                     )
                     raise
                 result = outcome.value
-                search_requests_used, search_request_limit = search_budget_usage()
                 safe_task_log(
                     logging.INFO,
                     "请求完成",
@@ -527,7 +521,7 @@ class GrokService:
                     retry_count=task_retry_count(),
                     elapsed_ms=self._elapsed_ms(started_at),
                     source_count=len(result.sources),
-                    search_budget=f"{search_requests_used}/{search_request_limit}",
+                    search_budget=self._search_budget_label(),
                 )
                 return result
 
