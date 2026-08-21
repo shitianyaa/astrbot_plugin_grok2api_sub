@@ -221,8 +221,10 @@ class GrokService:
         *,
         admin_client: AdminClient | None = None,
         prompt_processor: PromptProcessor | None = None,
+        sleep=asyncio.sleep,
     ) -> None:
         self._config = config
+        self._sleep = sleep
         self._client = client
         self._workspace = workspace
         self._sender = sender
@@ -233,6 +235,15 @@ class GrokService:
         self._user_locks: dict[str, asyncio.Lock] = {}
         self._panel_cache: dict[tuple[Any, ...], PanelReport] = {}
         self._terminating = False
+
+    async def _backoff_before_retry(self, round_idx: int) -> None:
+        """在多轮模型重试（round_idx > 1）真正发起请求前应用退避延迟。
+
+        首轮不发退避；后续轮次等待 ``retry_base_delay_seconds``，避免模型连续快速
+        失败时对上游连番请求。使用注入的 ``self._sleep`` 便于测试短路真实等待。
+        """
+        if round_idx > 1:
+            await self._sleep(self._config.retry_base_delay_seconds)
 
     def _preflight(self, event: Any, capability: str) -> None:
         if self._terminating:
@@ -586,6 +597,7 @@ class GrokService:
                     model, index, "search_tool_unsupported", round_idx=round_idx
                 )
                 continue
+            await self._backoff_before_retry(round_idx)
             try:
                 check_task_deadline()
                 record_task_model("search", model)
@@ -777,6 +789,7 @@ class GrokService:
         ):
             if model in poisoned:
                 continue
+            await self._backoff_before_retry(round_idx)
             try:
                 check_task_deadline()
                 record_task_model("image_generate", model)
@@ -835,6 +848,7 @@ class GrokService:
         ):
             if model in poisoned:
                 continue
+            await self._backoff_before_retry(round_idx)
             try:
                 check_task_deadline()
                 record_task_model("image_edit", model)
@@ -891,6 +905,7 @@ class GrokService:
         ):
             if model in poisoned:
                 continue
+            await self._backoff_before_retry(round_idx)
             check_task_deadline()
             record_task_model("video_generate", model)
             safe_log(

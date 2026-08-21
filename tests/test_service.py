@@ -104,7 +104,17 @@ def _make_service(ws, cfg=None, session=None, prompt_processor=None):
         model_switch_errors=cfg.model_switch_errors,
     )
     sender = DeliveryAdapter(ws)
-    return GrokService(cfg, client, ws, sender, prompt_processor=prompt_processor), session
+    return (
+        GrokService(
+            cfg,
+            client,
+            ws,
+            sender,
+            prompt_processor=prompt_processor,
+            sleep=_no_retry_sleep,
+        ),
+        session,
+    )
 
 
 # -- preflight -------------------------------------------------------------
@@ -729,6 +739,46 @@ async def test_image_fallback_round_robin_across_candidates(tmp_path, monkeypatc
     assert session.calls[0]["json"]["model"] == "first"
     assert session.calls[1]["json"]["model"] == "second"
     assert session.calls[2]["json"]["model"] == "first"
+
+
+async def test_image_fallback_waits_between_retry_rounds(tmp_path):
+    """验证重试轮之间应用 retry_base_delay_seconds 退避，且仅在首轮之后。"""
+    sleeps: list[float] = []
+
+    async def fake_sleep(delay: float) -> None:
+        sleeps.append(delay)
+
+    ws = MediaWorkspace(tmp_path)
+    image = base64.b64encode(_png_bytes()).decode()
+    session = FakeSession()
+    session.push(
+        FakeResponse(500, body=json.dumps({"error": {"code": "internal_error"}})),
+        FakeResponse(200, body=json.dumps({"data": [{"b64_json": image}]})),
+    )
+    cfg = _cfg(
+        capability_settings={"image_models": "first", "send_media_progress": False},
+        performance_settings={
+            "reliability": {"model_retry_count": 1, "retry_base_delay_seconds": 0.5}
+        },
+    )
+    t = HTTPTransport(
+        cfg.api_base_url,
+        cfg.api_key,
+        sleep=_no_retry_sleep,
+        session_factory=lambda: session,
+    )
+    client = Grok2APIClient(
+        t,
+        model_retry_count=cfg.model_retry_count,
+        video_retry_count=cfg.video_retry_count,
+        retry_base_delay=cfg.retry_base_delay_seconds,
+        model_switch_errors=cfg.model_switch_errors,
+    )
+    sender = DeliveryAdapter(ws)
+    svc = GrokService(cfg, client, ws, sender, sleep=fake_sleep)
+    await svc.deliver_generated_images(FakeEvent(), "cat")
+    # 首次尝试不 sleep；仅第二轮（round_idx > 1）前 sleep 一次，值为配置的退避。
+    assert sleeps == [0.5]
 
 
 async def test_image_fallback_sequential_strategy_exhausts_model_before_next(tmp_path):
