@@ -473,7 +473,11 @@ def _count_markers(text: str) -> tuple[int, ...]:
 
 
 def _number_preserved(number: int, enhanced: str) -> bool:
-    return any(_contains_alias(enhanced, alias) for alias in _NUMBER_ALIASES[number])
+    aliases = _NUMBER_ALIASES.get(number)
+    if aliases is None:
+        # 超过别名表上限（如 “25 个人”）的数字，退化为检查其十进制字面量。
+        return _contains_alias(enhanced, str(number))
+    return any(_contains_alias(enhanced, alias) for alias in aliases)
 
 
 def _latin_word_preserved(word: str, enhanced: str) -> bool:

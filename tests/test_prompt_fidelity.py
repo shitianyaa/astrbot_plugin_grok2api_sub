@@ -256,6 +256,12 @@ class TestFidelityCheck:
         assert fidelity_check(count_source, "Two girls, no three cats.", "image")
         assert not fidelity_check(count_source, "A girl, no cats.", "image")
 
+    def test_count_marker_above_ten_does_not_crash(self):
+        # 25 不在 _NUMBER_ALIASES (0-10)，不能抛 KeyError。
+        assert fidelity_check("画25个人", "画25个人, 详细光照")
+        # 原文 25 被改写消失 -> 不保真，仍应正常返回 False 而非崩溃。
+        assert not fidelity_check("画25个人", "画一群人")
+
     def test_video_action_order_must_be_preserved(self):
         source = "机器人先奔跑，然后停止，最后举起右手"
         valid = "The robot runs, then stops, and finally raises its right hand."
