@@ -23,6 +23,35 @@ def test_media_model_log_fields_are_allowlisted_without_dead_alias():
     assert "model_models" not in ALLOWED_FIELDS
 
 
+def test_every_task_log_kwarg_in_runtime_is_allowlisted():
+    """运行时传给 safe_task_log 的字段必须全部在 TASK_FIELDS 中。
+
+    ``safe_task_log`` 对未登记的字段静默 ``continue``，因此漏登记不会报错，只会让
+    日志无声地少一列诊断信息。这条守卫静态扫描全部调用点，堵住该类回归。
+    """
+    import ast
+    import pathlib
+
+    from core.common.observability import _TASK_LABELS, TASK_FIELDS
+
+    root = pathlib.Path(__file__).resolve().parent.parent
+    missing: list[str] = []
+    for path in [root / "main.py", *(root / "core").rglob("*.py")]:
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Name)
+                and node.func.id == "safe_task_log"
+            ):
+                for keyword in node.keywords:
+                    if keyword.arg and keyword.arg not in TASK_FIELDS:
+                        missing.append(f"{path.name}:{node.lineno} {keyword.arg}")
+    assert not missing, f"safe_task_log fields dropped silently: {missing}"
+    # 反向：TASK_FIELDS 里的每个字段都必须有标签，否则渲染时 KeyError。
+    assert TASK_FIELDS == set(_TASK_LABELS)
+
+
 def test_sanitize_strips_secrets():
     secret = "g2a_prefix_supersecret"
     proxy = "http://alice:password@127.0.0.1:8080"
@@ -181,3 +210,43 @@ def test_safe_task_log_renders_plugin_startup_summary():
     assert "LLM 搜索 Tool: 已注册" in joined
     assert "搜索预算: 3 次/任务" in joined
     assert "面板任务数: 1" in joined
+
+
+def test_safe_task_log_renders_character_research_diagnostics():
+    """角色资料搜索日志实际传入的诊断字段必须落到输出，而不是被白名单静默丢弃。"""
+    from astrbot.api import logger as astrbot_logger
+
+    records: list[str] = []
+
+    class _Sink:
+        def write(self, msg: str) -> None:
+            records.append(msg)
+
+    old_handlers = list(astrbot_logger.handlers)
+    try:
+        astrbot_logger.handlers.clear()
+        astrbot_logger.addHandler(logging.StreamHandler(_Sink()))
+        astrbot_logger.setLevel(logging.DEBUG)
+        safe_task_log(
+            logging.INFO,
+            "角色资料搜索",
+            operation="character_research",
+            result="搜索失败，继续提示词处理",
+            error_code="search_models_exhausted",
+            exception_type="PluginError",
+            text_chars=1200,
+        )
+        safe_task_log(
+            logging.INFO,
+            "请求开始",
+            operation="image_generate",
+            prompt_preset="二次元",
+        )
+    finally:
+        astrbot_logger.handlers = old_handlers
+
+    joined = "".join(records)
+    assert "操作: 角色资料搜索" in joined
+    assert "异常类型: PluginError" in joined
+    assert "文本长度: 1200" in joined
+    assert "风格预设: 二次元" in joined

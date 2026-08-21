@@ -84,6 +84,7 @@ TASK_FIELDS = {
     "prompt_mode",
     "prompt_default_mode",
     "prompt_mode_override",
+    "prompt_preset",
     "prompt_status",
     "reference_image",
     "reference_aspect_ratio",
@@ -113,6 +114,8 @@ TASK_FIELDS = {
     "cleanup_count",
     "tool_status",
     "search_budget",
+    "text_chars",
+    "exception_type",
 }
 
 _TASK_LABELS = {
@@ -123,6 +126,7 @@ _TASK_LABELS = {
     "prompt_mode": "提示词优化",
     "prompt_default_mode": "配置默认模式",
     "prompt_mode_override": "请求指定模式",
+    "prompt_preset": "风格预设",
     "prompt_status": "提示词处理状态",
     "reference_image": "参考图",
     "reference_aspect_ratio": "参考图比例",
@@ -152,6 +156,8 @@ _TASK_LABELS = {
     "cleanup_count": "清理文件数",
     "tool_status": "LLM 搜索 Tool",
     "search_budget": "搜索预算",
+    "text_chars": "文本长度",
+    "exception_type": "异常类型",
 }
 
 _OPERATION_LABELS = {
