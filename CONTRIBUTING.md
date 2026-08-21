@@ -31,16 +31,7 @@ Pull Request 至少应说明：
 
 ## 本地验证
 
-在提交前按改动范围运行检查。常用命令如下：
-
-```powershell
-python -m json.tool _conf_schema.json > $null
-python -m compileall main.py core tests
-python -m pytest -q
-ruff check .
-ruff format --check .
-git diff --check
-```
+本仓库没有 PR/main 的 CI 检查，本地门禁是唯一的质量关卡。完整命令清单见 `AGENTS.md` 的「自动化验证门禁」一节——那里是唯一权威定义，请直接照它执行，不要依赖本文的副本。
 
 只修改文档或模板时，也要确认 Markdown 链接、YAML 结构和隐藏的 `release-note` JSON 没有语法错误。不要为了让检查通过而关闭类型、lint、安全校验或吞掉异常。
 

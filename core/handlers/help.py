@@ -39,7 +39,7 @@ class HelpMixin(BaseHandler):
         return (
             "Grok2API Sub 助手命令：\n"
             "/g2搜索 <问题> — 联网搜索并返回正文与来源\n"
-            "/g2生图 [数量] <提示词> — 生成图片\n"
+            "/g2生图 [-off|-ex|-st|-eh] [-ys<名称>] [-s] <提示词> — 生成图片\n"
             "/g2改图 <编辑要求> — 编辑当前或回复图片\n"
             "/g2视频 [--image-url HTTPS_URL] <提示词> — 生成视频\n"
             "/g2面板 — 发送所选管理数据块（管理员）\n"
@@ -47,6 +47,8 @@ class HelpMixin(BaseHandler):
             "/g2面板退订 — 退订当前会话的定时面板推送（管理员）\n"
             "/g2面板订阅列表 — 查看订阅数量（管理员）\n"
             "/g2帮助 — 本帮助\n"
+            "生图模式：关闭(-off)、参数提取(-ex)、精准整理(-st)、"
+            "受控增强(-eh)、风格预设(-ys<名称>)；-s 显式搜索资料\n"
             "别名：/grok2搜索、/grok2生图、/grok2改图、/grok2视频、/grok2面板、/grok2帮助"
             + ("\n" + "\n".join(status_lines) if status_lines else "")
         )

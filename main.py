@@ -20,7 +20,7 @@ from astrbot.core.star.filter.command import GreedyStr
 
 from .core.client import Grok2APIClient
 from .core.common.config import PluginConfig
-from .core.common.observability import safe_log
+from .core.common.observability import safe_log, safe_task_log
 from .core.common.prompt_processor import PromptProcessor
 from .core.common.sender import DeliveryAdapter
 from .core.common.transport import HTTPTransport
@@ -118,9 +118,39 @@ class Grok2APISubPlugin(HelpMixin, SearchMixin, MediaMixin, PanelMixin, Star):
             if cfg.enable_llm_search_tool and cfg.capability_enabled("search"):
                 self._register_search_tool()
             await self._register_panel_jobs()
-            safe_log(logging.INFO, "plugin_initialized", capability="all")
+            capabilities = [
+                label
+                for capability, label in (
+                    ("search", "搜索"),
+                    ("image", "生图"),
+                    ("image_edit", "改图"),
+                    ("video", "视频"),
+                )
+                if cfg.capability_enabled(capability)
+            ]
+            if self._tool_registered:
+                tool_status = "已注册"
+            elif not cfg.enable_llm_search_tool:
+                tool_status = "已关闭"
+            else:
+                tool_status = "未注册（搜索能力不可用）"
+            safe_task_log(
+                logging.INFO,
+                "插件加载完成",
+                operation="plugin_initialize",
+                result="初始化成功",
+                capability="、".join(capabilities) or "无可用能力",
+                tool_status=tool_status,
+                job_count=len(self._panel_job_ids),
+            )
             if removed:
-                safe_log(logging.INFO, "startup_cleanup", cleanup_count=removed)
+                safe_task_log(
+                    logging.INFO,
+                    "启动清理完成",
+                    operation="plugin_initialize",
+                    result="已清理过期临时文件",
+                    cleanup_count=removed,
+                )
         except Exception as exc:  # noqa: BLE001
             safe_log(
                 logging.ERROR,
@@ -183,6 +213,9 @@ class Grok2APISubPlugin(HelpMixin, SearchMixin, MediaMixin, PanelMixin, Star):
             ),
             show_sources=self._plugin_config.show_search_sources if self._plugin_config else True,
             max_sources=self._plugin_config.max_search_sources if self._plugin_config else 5,
+            max_output_chars=(
+                self._plugin_config.max_search_output_chars if self._plugin_config else 6000
+            ),
         )
         tool = build_search_tool(self._service, policy=policy)
         self.context.add_llm_tools(tool)
@@ -214,7 +247,7 @@ class Grok2APISubPlugin(HelpMixin, SearchMixin, MediaMixin, PanelMixin, Star):
 
     @filter.command("g2生图", alias={"grok2生图"})
     async def g2_generate_image(self, event: AstrMessageEvent, arguments: GreedyStr):
-        """生成图片：/g2生图 <提示词>。"""
+        """生成图片：/g2生图 [-off|-ex|-st|-eh] [-ys<名称>] [-s] <提示词>。"""
         await self._handle_generate_image(event, arguments)
 
     @filter.command("g2改图", alias={"grok2改图"})
@@ -224,7 +257,7 @@ class Grok2APISubPlugin(HelpMixin, SearchMixin, MediaMixin, PanelMixin, Star):
 
     @filter.command("g2视频", alias={"grok2视频"})
     async def g2_generate_video(self, event: AstrMessageEvent, arguments: GreedyStr):
-        """生成视频：/g2视频 [--image-url HTTPS_URL] <提示词>，可附带首帧图片。"""
+        """生成视频：/g2视频 [--image-url HTTPS_URL] <提示词>，原文直传。"""
         await self._handle_generate_video(event, arguments)
 
     @filter.permission_type(PermissionType.ADMIN)

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "astrbot_plugin_grok2api_sub"
-version = "0.2.1"
+version = "0.3.0"
 description = "Grok2API Sub 助手：联网搜索、生图、改图、生视频，双平台发送"
 readme = "README.md"
 requires-python = ">=3.10"

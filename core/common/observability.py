@@ -41,6 +41,7 @@ ALLOWED_FIELDS = {
     "exception_type",
     "model",
     "model_index",
+    "round",
     "reason",
     "candidate_count",
     "catalog_count",
@@ -58,10 +59,15 @@ ALLOWED_FIELDS = {
     "background_provider",
     "background_image_name",
     "prompt_mode",
+    "prompt_default_mode",
+    "prompt_mode_override",
+    "prompt_status",
     "prompt_json",
     "resource",
     "section_count",
     "job_count",
+    "tool_status",
+    "search_budget",
     "stage",
     "attempted_count",
     "delivered_count",
@@ -76,6 +82,10 @@ TASK_FIELDS = {
     "request_prompt",
     "request_params",
     "prompt_mode",
+    "prompt_default_mode",
+    "prompt_mode_override",
+    "prompt_preset",
+    "prompt_status",
     "reference_image",
     "reference_aspect_ratio",
     "candidate_models",
@@ -99,14 +109,25 @@ TASK_FIELDS = {
     "result_status",
     "search_performed",
     "incomplete",
+    "capability",
+    "job_count",
+    "cleanup_count",
+    "tool_status",
+    "search_budget",
+    "text_chars",
+    "exception_type",
 }
 
 _TASK_LABELS = {
     "operation": "操作",
     "source_prompt": "原始提示词",
-    "request_prompt": "实际提示词",
+    "request_prompt": "实际发送提示词",
     "request_params": "请求参数",
     "prompt_mode": "提示词优化",
+    "prompt_default_mode": "配置默认模式",
+    "prompt_mode_override": "请求指定模式",
+    "prompt_preset": "风格预设",
+    "prompt_status": "提示词处理状态",
     "reference_image": "参考图",
     "reference_aspect_ratio": "参考图比例",
     "candidate_models": "候选模型",
@@ -130,6 +151,13 @@ _TASK_LABELS = {
     "result_status": "结果状态",
     "search_performed": "已执行搜索",
     "incomplete": "结果不完整",
+    "capability": "能力状态",
+    "job_count": "面板任务数",
+    "cleanup_count": "清理文件数",
+    "tool_status": "LLM 搜索 Tool",
+    "search_budget": "搜索预算",
+    "text_chars": "文本长度",
+    "exception_type": "异常类型",
 }
 
 _OPERATION_LABELS = {
@@ -137,8 +165,12 @@ _OPERATION_LABELS = {
     "image_generate": "图片生成",
     "image_edit": "图片编辑",
     "video_generate": "视频生成",
+    "character_research": "角色资料搜索",
     "panel_build": "构建管理面板",
     "panel_push": "推送管理面板",
+    "panel_schedule": "面板定时任务",
+    "plugin_initialize": "插件初始化",
+    "plugin_terminate": "插件停止",
 }
 
 _KEY_RE = re.compile(r"g2a_[A-Za-z0-9_]+")
@@ -186,14 +218,25 @@ def _sanitize_sensitive_text(text: str) -> str:
     return _SENSITIVE_ASSIGNMENT_RE.sub(r"\1\2***", text)
 
 
+def _sanitize_value(value: object) -> object:
+    """Recursively redact sensitive fragments in strings, lists, and dicts."""
+    if isinstance(value, str):
+        return _sanitize_sensitive_text(value)
+    if isinstance(value, list):
+        return [_sanitize_value(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_sanitize_value(item) for item in value)
+    if isinstance(value, dict):
+        return {str(key): _sanitize_value(item) for key, item in value.items()}
+    return value
+
+
 def sanitize_prompt_json(value: object) -> str:
     """Serialize the approved prompt payload while retaining readable text."""
     if not isinstance(value, Mapping):
         return json.dumps({"prompt": "<invalid_payload>"}, ensure_ascii=False)
 
-    payload: dict[str, object] = {}
-    for key, item in value.items():
-        payload[str(key)] = _sanitize_sensitive_text(item) if isinstance(item, str) else item
+    payload: dict[str, object] = {str(key): _sanitize_value(item) for key, item in value.items()}
     encoded = json.dumps(payload, ensure_ascii=False, separators=(",", ":"), default=str)
     if len(encoded) <= _MAX_PROMPT_LOG_CHARS:
         return encoded

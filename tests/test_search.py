@@ -149,10 +149,33 @@ def test_parse_annotation_title_priority():
 
 
 # -- status handling -------------------------------------------------------
-def test_no_completed_search_call_raises():
-    p = _payload(output=[_message_output("just text")])
+def test_no_completed_search_call_and_empty_text_raises():
+    p = _payload(output=[_message_output("")])
     with pytest.raises(SearchNotPerformedError):
         parse_search_response(p)
+
+
+def test_non_empty_text_without_search_call_succeeds():
+    p = _payload(output=[_message_output("just text")])
+    r = parse_search_response(p)
+    assert r.status == "completed"
+    assert r.text == "just text"
+    # 无实际 web_search_call 时，不得标记为“已执行搜索”，避免被当作角色研究资料。
+    assert r.search_performed is False
+
+
+def test_non_empty_text_with_completed_search_marks_performed():
+    p = _payload(
+        output=[
+            _web_call(sources=[{"url": "https://ok.com/a"}], status="completed"),
+            _message_output("research text"),
+        ]
+    )
+    r = parse_search_response(p)
+    assert r.status == "completed"
+    assert r.text == "research text"
+    assert r.search_performed is True
+    assert r.sources[0].url == "https://ok.com/a"
 
 
 def test_failed_maps_to_api_error():

@@ -3,24 +3,24 @@
 Only one tool is registered: ``grok2api_web_search``. The AstrBot main model
 decides whether to call it based on the description. Once called, the internal
 search always fixes ``required=True`` (no second auto layer). The tool never
-calls ``event.send`` — it returns a structured JSON string for the model.
+calls ``event.send`` — it returns a formatted search string for the model.
 """
 
 from __future__ import annotations
 
-import json
 import logging
 from dataclasses import dataclass
 from typing import Any
 
 from astrbot.core.agent.run_context import ContextWrapper
-from astrbot.core.agent.tool import FunctionTool, ToolExecResult
+from astrbot.core.agent.tool import FunctionTool
 from astrbot.core.astr_agent_context import AstrAgentContext
 from pydantic import ConfigDict, Field
 from pydantic.dataclasses import dataclass as pydataclass
 
 from ..common.errors import PluginError
 from ..common.observability import operation_scope, safe_log
+from .parsers import format_search_for_llm
 
 
 @dataclass(frozen=True, slots=True)
@@ -31,12 +31,13 @@ class SearchToolPolicy:
     has_model: bool
     show_sources: bool = True
     max_sources: int = 5
+    max_output_chars: int = 6000
 
     def allow(self) -> bool:
         return self.enabled and self.enable_tool and self.has_key and self.has_model
 
 
-def tool_allowed_for_event(event: Any, policy: SearchToolPolicy, config) -> bool:
+def tool_allowed_for_event(event: Any, policy: SearchToolPolicy, config: Any) -> bool:
     """Second-stage check identical to the command preflight."""
     if not policy.allow():
         return False
@@ -71,11 +72,7 @@ class Grok2APISearchTool(FunctionTool[AstrAgentContext]):
     service: Any = None
     policy: Any = None
 
-    async def call(
-        self,
-        context: ContextWrapper[AstrAgentContext],
-        **kwargs: Any,
-    ) -> ToolExecResult:
+    async def call(self, context: ContextWrapper[AstrAgentContext], **kwargs: Any) -> str:
         query = str(kwargs.get("query") or "").strip()
         event = self._extract_event(context)
         with operation_scope("search_tool"):
@@ -86,29 +83,11 @@ class Grok2APISearchTool(FunctionTool[AstrAgentContext]):
                 query_chars=len(query),
             )
             if not self.policy.allow():
-                safe_log(
-                    logging.DEBUG,
-                    "search_tool_rejected",
-                    operation="search_tool",
-                    error_code="capability_unavailable",
-                )
-                return self._result(False, "", [], False, "搜索能力不可用")
+                return "搜索失败: 搜索能力不可用"
             if not query:
-                safe_log(
-                    logging.DEBUG,
-                    "search_tool_rejected",
-                    operation="search_tool",
-                    error_code="query_empty",
-                )
-                return self._result(False, "", [], False, "query_empty")
+                return "搜索失败: 查询内容不能为空"
             if event is None:
-                safe_log(
-                    logging.DEBUG,
-                    "search_tool_rejected",
-                    operation="search_tool",
-                    error_code="no_event_context",
-                )
-                return self._result(False, "", [], False, "no_event_context")
+                return "搜索失败: 缺少会话上下文事件"
             try:
                 result = await self.service.search(event, query, required=True)
             except PluginError as exc:
@@ -119,8 +98,8 @@ class Grok2APISearchTool(FunctionTool[AstrAgentContext]):
                     error_code=exc.code,
                     exception_type=type(exc).__name__,
                 )
-                return self._result(False, "", [], False, exc.code)
-            except Exception as exc:  # noqa: BLE001
+                return f"搜索失败: {exc.user_message}"
+            except Exception as exc:
                 safe_log(
                     logging.DEBUG,
                     "search_tool_failed",
@@ -128,40 +107,28 @@ class Grok2APISearchTool(FunctionTool[AstrAgentContext]):
                     error_code="search_error",
                     exception_type=type(exc).__name__,
                 )
-                return self._result(False, "", [], False, "search_error")
-            sources = []
-            if self.policy.show_sources and self.policy.max_sources > 0:
-                sources = [
-                    {"url": source.url, "title": source.title}
-                    for source in result.sources[: self.policy.max_sources]
-                ]
+                return "搜索失败: 上游服务请求异常"
+
+            formatted = format_search_for_llm(
+                result,
+                max_chars=self.policy.max_output_chars,
+                max_sources=self.policy.max_sources,
+                show_sources=self.policy.show_sources,
+            )
             safe_log(
                 logging.DEBUG,
                 "search_tool_completed",
                 operation="search_tool",
-                source_count=len(sources),
+                source_count=len(result.sources),
                 text_chars=len(result.text),
-                result_status="incomplete" if result.incomplete else "complete",
             )
-            return self._result(True, result.text, sources, result.incomplete, "")
+            return formatted
 
-    def _extract_event(self, context) -> Any:
+    def _extract_event(self, context: Any) -> Any:
         inner = getattr(context, "context", None)
         if inner is None:
             inner = context
         return getattr(inner, "event", None)
-
-    def _result(self, ok, answer, sources, incomplete, error_code):
-        return json.dumps(
-            {
-                "ok": ok,
-                "answer": answer,
-                "sources": sources,
-                "incomplete": incomplete,
-                "error_code": error_code,
-            },
-            ensure_ascii=False,
-        )
 
 
 def build_search_tool(service: Any, *, policy: SearchToolPolicy) -> Grok2APISearchTool:

@@ -24,6 +24,8 @@ from ..common.models import ImageResult, SearchResult, SearchSource, VideoJob
 
 _REQUEST_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,128}\Z")
 _URL_RE = re.compile(r"^https?://[^\s]+\Z")
+_EXTRACT_URL_RE = re.compile(r"https?://[^\s)\]}>\"']+")
+_TRAILING_PUNCTUATION = ".,;:!?，。！？）】”’'\""
 
 
 # ---------------------------------------------------------------------------
@@ -130,6 +132,24 @@ def _message_text_and_annotations(
     return "".join(text_parts), sources
 
 
+def _extract_urls_from_text(text: str) -> list[SearchSource]:
+    if not text:
+        return []
+    sources: list[SearchSource] = []
+    seen: set[str] = set()
+    for raw_url in _EXTRACT_URL_RE.findall(text):
+        url = raw_url.rstrip(_TRAILING_PUNCTUATION)
+        if not url:
+            continue
+        if not (url.startswith("http://") or url.startswith("https://")):
+            continue
+        if url in seen:
+            continue
+        seen.add(url)
+        sources.append(SearchSource(url=url))
+    return sources
+
+
 def parse_search_response(payload: Mapping[str, Any]) -> SearchResult:
     response_id = str(payload.get("id") or "")
     model = str(payload.get("model") or "")
@@ -159,6 +179,8 @@ def parse_search_response(payload: Mapping[str, Any]) -> SearchResult:
         merged.append(src)
 
     text = "".join(text_parts)
+    if not merged and text:
+        merged = _extract_urls_from_text(text)
 
     if status in ("failed", "error"):
         err = payload.get("error") or {}
@@ -184,7 +206,7 @@ def parse_search_response(payload: Mapping[str, Any]) -> SearchResult:
             retryable=True,
         )
 
-    if not search_done:
+    if not search_done and not text:
         raise SearchNotPerformedError()
 
     return SearchResult(
@@ -193,7 +215,9 @@ def parse_search_response(payload: Mapping[str, Any]) -> SearchResult:
         status=status,
         text=text,
         sources=tuple(merged),
-        search_performed=True,
+        # 只有真正观察到完成的 web_search_call 才标记为“已执行搜索”。
+        # 纯文本回答可直出（通用搜索），但不能作为字符研究的视觉资料。
+        search_performed=search_done,
     )
 
 
@@ -217,6 +241,58 @@ def format_search_result(
             label = f"{src.title} - {src.url}" if src.title else src.url
             lines.append(f"- {label}")
     return "\n".join(lines)
+
+
+def format_search_for_llm(
+    result: SearchResult,
+    *,
+    max_chars: int = 6000,
+    max_sources: int = 5,
+    show_sources: bool = True,
+) -> str:
+    text = result.text
+    if len(text) > max_chars:
+        text = text[:max_chars] + "\n[内容已截断]"
+
+    if not show_sources or max_sources <= 0 or not result.sources:
+        return text
+
+    remaining = max_chars - len(text)
+    if remaining <= 0:
+        return text
+    source_lines: list[str] = []
+    truncated = False
+    for idx, src in enumerate(result.sources[:max_sources], start=1):
+        if remaining <= 0:
+            truncated = True
+            break
+        title = src.title.strip() if src.title else ""
+        url = src.url.strip() if src.url else ""
+        snippet = src.snippet.strip() if src.snippet else ""
+        if title:
+            entry = f"  {idx}. {title}"
+            if url:
+                entry += f"\n     {url}"
+        else:
+            entry = f"  {idx}. {url}"
+        if snippet:
+            entry += f"\n     {snippet}"
+        if len(entry) > remaining:
+            entry = entry[:remaining]
+            truncated = True
+        source_lines.append(entry)
+        remaining -= len(entry)
+
+    header = "参考来源:\n"
+    if text:
+        body = text + "\n" + header + "\n".join(source_lines)
+    else:
+        body = header + "\n".join(source_lines)
+    marker = "\n[内容已截断]"
+    if truncated or len(body) > max_chars:
+        # 截断时给截断标记预留空间，保证总长不超过 max_chars。
+        body = body[: max(0, max_chars - len(marker))] + marker
+    return body
 
 
 # ---------------------------------------------------------------------------

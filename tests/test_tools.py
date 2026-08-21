@@ -1,12 +1,10 @@
-"""Grok2API search FunctionTool tests: policy, JSON output, no direct send."""
+"""Grok2API search FunctionTool tests: policy, formatted string output, no direct send."""
 
 from __future__ import annotations
 
-import json
-
 import pytest
 
-from core.errors import SearchNotPerformedError
+from core.errors import PluginError, SearchNotPerformedError
 from core.platform import PlatformKind
 from core.service import GrokService
 from core.tools import Grok2APISearchTool, SearchToolPolicy
@@ -21,7 +19,7 @@ def _policy(**over) -> SearchToolPolicy:
 
 class _Ctx:
     def __init__(self, event):
-        self.context = type("C", (), {"event": event})()
+        self.context = type("C", (), {"event": event, "extra": {}})()
 
 
 class _FakeService:
@@ -38,14 +36,14 @@ class _FakeService:
         return self._result
 
 
-def _service_result(*, sources=None):
+def _service_result(*, text="answer", sources=None):
     from core.models import SearchResult, SearchSource
 
     return SearchResult(
         response_id="r1",
         model="m",
         status="completed",
-        text="answer",
+        text=text,
         sources=sources or (SearchSource(url="https://e.com/1", title="T"),),
         search_performed=True,
     )
@@ -63,20 +61,14 @@ def _tool(policy=None, service=None, event=_MISSING):
     return tool, _Ctx(event)
 
 
-def _parse(value):
-    return json.loads(value)
-
-
 # -- extraction / contract -------------------------------------------------
-async def test_tool_extracts_event_and_returns_json():
+async def test_tool_extracts_event_and_returns_formatted_string():
     ev = FakeEvent()
     tool, ctx = _tool(event=ev)
-    out = _parse(await tool.call(ctx, query="q"))
-    assert out["ok"] is True
-    assert out["answer"] == "answer"
-    assert out["sources"][0]["url"] == "https://e.com/1"
-    assert out["incomplete"] is False
-    assert out["error_code"] == ""
+    out = await tool.call(ctx, query="q")
+    assert "answer" in out
+    assert "参考来源:" in out
+    assert "https://e.com/1" in out
 
 
 async def test_tool_does_not_call_event_send():
@@ -87,10 +79,10 @@ async def test_tool_does_not_call_event_send():
 
 
 @pytest.mark.parametrize(
-    ("show_sources", "max_sources", "expected_count"),
-    [(False, 5, 0), (True, 0, 0), (True, 1, 1)],
+    ("show_sources", "max_sources", "expect_sources"),
+    [(False, 5, False), (True, 0, False), (True, 1, True)],
 )
-async def test_tool_sources_follow_display_configuration(show_sources, max_sources, expected_count):
+async def test_tool_sources_follow_display_configuration(show_sources, max_sources, expect_sources):
     from core.models import SearchSource
 
     result = _service_result(
@@ -103,8 +95,13 @@ async def test_tool_sources_follow_display_configuration(show_sources, max_sourc
         policy=_policy(show_sources=show_sources, max_sources=max_sources),
         service=_FakeService(result=result),
     )
-    out = _parse(await tool.call(ctx, query="q"))
-    assert len(out["sources"]) == expected_count
+    out = await tool.call(ctx, query="q")
+    if expect_sources:
+        assert "参考来源:" in out
+        assert "https://e.com/1" in out
+        assert "https://e.com/2" not in out
+    else:
+        assert "参考来源" not in out
 
 
 async def test_tool_name_and_description():
@@ -117,52 +114,57 @@ async def test_tool_name_and_description():
 async def test_disabled_policy_no_client_call():
     svc = _FakeService(result=_service_result())
     tool, ctx = _tool(policy=_policy(enabled=False), service=svc)
-    out = _parse(await tool.call(ctx, query="q"))
-    assert out["ok"] is False
+    out = await tool.call(ctx, query="q")
+    assert out == "搜索失败: 搜索能力不可用"
     assert svc.calls == 0
 
 
 async def test_empty_query_no_client_call():
     svc = _FakeService(result=_service_result())
     tool, ctx = _tool(service=svc)
-    out = _parse(await tool.call(ctx))
-    assert out["ok"] is False
+    out = await tool.call(ctx)
+    assert out == "搜索失败: 查询内容不能为空"
     assert svc.calls == 0
 
 
 async def test_no_key_no_client_call():
     svc = _FakeService(result=_service_result())
     tool, ctx = _tool(policy=_policy(has_key=False), service=svc)
-    out = _parse(await tool.call(ctx, query="q"))
-    assert out["ok"] is False
+    out = await tool.call(ctx, query="q")
+    assert out == "搜索失败: 搜索能力不可用"
     assert svc.calls == 0
 
 
 async def test_no_model_no_client_call():
     svc = _FakeService(result=_service_result())
     tool, ctx = _tool(policy=_policy(has_model=False), service=svc)
-    out = _parse(await tool.call(ctx, query="q"))
-    assert out["ok"] is False
+    out = await tool.call(ctx, query="q")
+    assert out == "搜索失败: 搜索能力不可用"
     assert svc.calls == 0
 
 
-async def test_missing_event_returns_structured_failure():
+async def test_missing_event_returns_failure():
     tool, ctx = _tool(event=None)
-    out = _parse(await tool.call(ctx, query="q"))
-    assert out["ok"] is False
-    assert out["error_code"] == "no_event_context"
+    out = await tool.call(ctx, query="q")
+    assert out == "搜索失败: 缺少会话上下文事件"
 
 
-async def test_plugin_error_maps_to_error_code():
-    svc = _FakeService(error=SearchNotPerformedError())
+async def test_plugin_error_maps_to_user_message():
+    err = SearchNotPerformedError()
+    svc = _FakeService(error=err)
     tool, ctx = _tool(service=svc)
-    out = _parse(await tool.call(ctx, query="q"))
-    assert out["ok"] is False
-    assert out["error_code"] == "search_not_performed"
+    out = await tool.call(ctx, query="q")
+    assert out == f"搜索失败: {err.user_message}"
+
+
+async def test_generic_exception_maps_to_upstream_error():
+    svc = _FakeService(error=RuntimeError("something bad"))
+    tool, ctx = _tool(service=svc)
+    out = await tool.call(ctx, query="q")
+    assert out == "搜索失败: 上游服务请求异常"
 
 
 async def test_unsupported_platform_blocked_via_service():
-    # Unsupported platform: the tool's service preflight rejects before HTTP.
     from core.platform import resolve_platform
 
     kind = resolve_platform(FakeEvent(kind=PlatformKind.UNSUPPORTED))
@@ -171,17 +173,15 @@ async def test_unsupported_platform_blocked_via_service():
 
 
 async def test_blacklisted_user_blocked_via_service():
-    from core.errors import PluginError as PE
     from tests.test_service import _cfg
 
     cfg = _cfg(access_settings={"user_blacklist": ["u1"]})
     svc = GrokService(config=cfg, client=None, workspace=None, sender=None)
-    with pytest.raises(PE) as ei:
+    with pytest.raises(PluginError) as ei:
         await svc.search(FakeEvent(sender_id="u1"), "q")
     assert ei.value.code == "user_blacklisted"
 
 
-# -- Task 5: has_model derives from search_models tuple ---------------------
 def test_policy_has_model_from_empty_search_models_disables():
     from tests.test_service import _cfg
 
@@ -222,7 +222,6 @@ def test_policy_disables_when_all_remote_search_tools_are_off():
 
 
 async def test_tool_calls_service_once_with_tuple_models():
-    # the tool must delegate a single search call; it never loops models itself
     svc = _FakeService(result=_service_result())
     tool, ctx = _tool(service=svc)
     await tool.call(ctx, query="q")
@@ -232,11 +231,13 @@ async def test_tool_calls_service_once_with_tuple_models():
 async def test_tool_logs_lengths_and_outcome_without_logging_query(monkeypatch):
     events = []
     monkeypatch.setattr(
-        "core.tools.safe_log", lambda _level, name, **fields: events.append((name, fields))
+        "core.search.tools.safe_log", lambda _level, name, **fields: events.append((name, fields))
     )
     tool, ctx = _tool()
     await tool.call(ctx, query="private search phrase")
 
     assert [name for name, _fields in events] == ["search_tool_started", "search_tool_completed"]
     assert events[0][1]["query_chars"] == len("private search phrase")
+    assert events[1][1]["source_count"] == 1
+    assert events[1][1]["text_chars"] == len("answer")
     assert "private search phrase" not in str(events)

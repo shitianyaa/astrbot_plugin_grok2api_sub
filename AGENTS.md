@@ -4,11 +4,20 @@
 
 本仓库是为 AstrBot 提供的 Grok2API 插件，支持联网搜索、文生图、改图、视频生成以及管理面板功能。改动应严格聚焦于请求的目标行为，并保护用户其他不相关的修改。
 
+## 平台 API 查证
+
+- 改动插件运行时代码（`main.py`、`core/`、`_conf_schema.json`）前必须先调用 `skill-astrbot-dev` skill，按其 Mandatory workflow 从单一入口进入，查证 AstrBot 的钩子与装饰器、事件流、消息链转换、生命周期、配置 Schema 与 Agent/Tool 签名。严禁凭记忆写平台 API。
+- 遵循该 skill 的「避免宽泛加载」要求：只打开与当前任务相关的那一个主题目录，不要通读全部参考文档。
+- 文档与代码冲突时以 AstrBot 实际安装版本的代码为准。当前 `metadata.yaml` 声明 `astrbot_version: ">=4.26.0,<5"`；跨版本行为差异需实际核对已安装版本。
+- 纯文档、`Progress/` 记录、CI 配置类改动不需要走这一步。
+
 ## 安全规范
 
 - 严禁读取、打印、提交或硬编码 `.env` 配置、API Key、Token、密码、Cookie、JWT 或私有 URL。
 - 禁止在日志中输出凭据、Bearer/JWT 值、Base64 媒体数据、签名 URL、用户信息、媒体 URL、请求 ID 或上游原始响应正文。
 - 远端 API 响应与图片 URL 必须视为不可信输入。使用前必须对协议（scheme）、重定向、图片字节合法性、体积、解码、尺寸及宽高比进行校验。
+- **两个 API 面必须保持隔离**：业务请求由 `core/common/transport.py` 的 `_validate_relative_path` 锁死在 `/v1/` 前缀；管理面板走独立的 `core/panel/client.py::AdminClient`，使用管理员凭据登录并受 `_READ_ONLY_PATHS` 白名单约束的 `/api/admin/v1` 只读端点。新增管理端点必须扩充该白名单，**严禁**为此放宽 `_validate_relative_path`。
+
 
 ## 开发与协作规范
 
@@ -16,7 +25,17 @@
 - 手动修改时优先使用精确替换。切勿使用破坏性 Git 命令或丢弃不相关的用户改动。
 - 若存在 `.codegraph/` 目录，在搜索或读取源文件前应优先运行 `codegraph explore`。
 - 事实性任务记录保存在 `Progress/YYYY-MM-DD*.md`；严禁将 `Progress/` 提交到 Git。
+- `Progress/`、`docs/superpowers/plans/`、`docs/superpowers/specs/` 均已被 `.gitignore` 忽略，是**历史记录**：可新增，但不要为了迎合当前改动而改写或删除既有记录。
 - 未经确认现有依赖技术栈并记录充分理由前，切勿随意引入新依赖。
+
+## 模块路径约定
+
+`core/` 下有 20 个形如 `"""Backward-compatibility bridge: re-exports from X."""` 的桥接模块（`core/errors.py`、`core/config.py`、`core/transport.py`、`core/panel_*.py` 等），它们把旧的平铺路径重定向到重构后的子包。
+
+- 真实实现位于子包：`core/common/`（config、errors、models、transport、observability、sender、platform、deadline、access、prompt_processor）、`core/media/`、`core/search/`、`core/panel/`、`core/handlers/`。
+- **新增代码一律 import 真实子包路径**（如 `from ..common.errors import PluginError`）。桥接模块只为兼容存量调用，不得新增，也不要在新文件里引用。
+- 存量测试仍有相当数量走桥接路径，这不是待修的缺陷；除任务明确要求批量迁移，不要顺手改动。
+
 
 ## 本地测试与调试隔离
 
@@ -32,9 +51,17 @@
 
 - 遵循既有的 Python、aiohttp、AstrBot 和 pytest 设计模式。
 - INFO 级别日志仅保留简洁的任务块；网络传输、轮询、单次模型尝试、面板子请求以及平台发送细节均置于 DEBUG 级别。
-- 严格遵循重试契约：单个候选模型在重试次数耗尽后才允许回退到下一个候选模型；仅当发生稳定的模型不可用/无权限错误时才触发候选切换。
+- 严格遵循重试契约：模型重试按轮次（来回）计算；单次尝试失败立即切换至下一个候选模型，遍历完所有候选后进入下一轮，总轮次数对齐 `model_retry_count`（视频对齐 `video_retry_count`）。候选遍历顺序由 `model_retry_strategy` 选择：默认「轮询重试」`round_robin`（每轮遍历全部候选）；「依次重试」`sequential` 时先对单个候选模型耗尽所有重试轮次，再切换到下一个候选模型，行为以 `core/service.py` 的 `_iter_model_attempts` 为准。非首轮重试（round > 1）在发起请求前等待 `retry_base_delay_seconds` 退避，避免对故障上游连番请求。
 - 多模态处理具备自愈能力：图片宽高比按对数距离自动对齐到支持的合法集合（`closest_aspect_ratio`）；默认模型候选必须与远端各端点实际能力精确匹配。
 - 保持媒体背景的轮询降级顺序以及本地缓存/CSS 默认样式的回退行为，除非任务明确要求修改。
+- 能力收敛：提示词处理与视觉资料检索仅服务 `/g2生图`；`/g2改图` 与 `/g2视频` 始终原文直传，检测到生图专用参数时在任何远端请求前拒绝。
+
+## 用户可见错误消息契约
+
+- `PluginError`（含子类）会把消息脱敏并在 **200 字符**处静默截断（`core/common/errors.py` 的 `_MAX_USER_MSG`）。动态拼接的消息必须自行控长，例如列举 token 时限定条数与单条长度。
+- `core/handlers/base.py` 的 `_send_error` 取 `_ERROR_HINTS.get(exc.code, exc.user_message)`：给某个 error code 添加 `_ERROR_HINTS` 条目会**覆盖**该异常携带的动态消息。需要在消息中回显具体参数、字段或数值时，**不要**为其添加 `_ERROR_HINTS` 条目。
+- 错误消息只允许包含用户自己的输入与固定文案，严禁回显上游正文、URL、请求 ID 或凭据。
+
 
 ## 测试套件维护
 
@@ -52,15 +79,20 @@
 
 ## 自动化验证门禁
 
+本仓库**没有 PR/main 的 CI 检查**（`.github/workflows/` 只有发布用的 `release-plugin.yml`）。下列本地门禁是唯一的质量关卡，不跑就没有任何东西兜底。本节是门禁的唯一权威定义，其他文档只应引用它。
+
 先运行相关的定向测试，然后执行全套验证：
 
-```powershell
+```bash
 python -m json.tool _conf_schema.json
 python -m compileall main.py core tests scripts
 python -m pytest -q
 ruff check .
 ruff format --check .
 git diff --check
+python scripts/check_repository.py --tag v0.3.0   # tag 用当前 metadata.yaml 的版本
 ```
 
-执行完毕后，明确报告所有警告、跳过的检查项、外部服务限制以及潜在风险。
+`check_repository.py` 校验运行时版本、`pyproject.toml`、`metadata.yaml`、README 徽标与 CHANGELOG 的一致性，是「版本必须严格一致」这条规则的可执行形式。
+
+执行完毕后，明确报告所有警告、跳过的检查项、外部服务限制以及潜在风险。`git diff --check` 在 Windows 上会输出 CRLF 提示，属正常现象。

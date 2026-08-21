@@ -23,6 +23,8 @@ goal-1/
 Progress/
 docs/superpowers/plans/
 docs/superpowers/specs/
+GEMINI.md
+gemini.md
 # AstrBot runtime data dir (created by StarTools.get_data_dir)
 data/
 # implementation plan document (not part of the published plugin)

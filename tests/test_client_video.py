@@ -101,17 +101,16 @@ async def test_create_rejects_bad_request_id(bad):
 
 
 @pytest.mark.parametrize("status", [503])
-async def test_create_post_503_retries_then_succeeds(status):
+async def test_create_post_503_raises_api_error_for_service_fallback(status):
+    from core.errors import APIError
+
     c, s = _client()
     s.push(
         FakeResponse(status, body="{}"),
-        FakeResponse(200, body=json.dumps({"request_id": "video_abc"})),
     )
-    assert (
+    with pytest.raises(APIError):
         await c.create_video("cat", model="m", duration=6, aspect_ratio="", resolution="")
-        == "video_abc"
-    )
-    assert len(s.calls) == 2
+    assert len(s.calls) == 1
 
 
 async def test_create_missing_request_id_raises():

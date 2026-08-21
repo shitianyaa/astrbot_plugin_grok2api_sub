@@ -2,7 +2,7 @@
 
 <div align="center">
 
-<a href="https://github.com/shitianyaa/astrbot_plugin_grok2api_sub/releases"><img alt="Version" src="https://img.shields.io/badge/version-0.2.1-22c55e?style=for-the-badge" /></a>
+<a href="https://github.com/shitianyaa/astrbot_plugin_grok2api_sub/releases"><img alt="Version" src="https://img.shields.io/badge/version-0.3.0-22c55e?style=for-the-badge" /></a>
 <a href="https://github.com/Soulter/AstrBot"><img alt="AstrBot" src="https://img.shields.io/badge/AstrBot-plugin-5865f2?style=for-the-badge" /></a>
 <img alt="Python" src="https://img.shields.io/badge/Python-3.10+-3776ab?style=for-the-badge&logo=python&logoColor=white" />
 <img alt="Platform" src="https://img.shields.io/badge/platform-OneBot%20%2F%20QQ%20Official-f97316?style=for-the-badge" />
@@ -54,8 +54,8 @@
 | 场景 | 能力与行为 |
 |---|---|
 | 实时搜索 | 手动指令 `/g2搜索` 强制联网检索；大模型 Tool（`grok2api_web_search`）会话级自动调用；默认 Web/X 双引擎检索，由会话模型整理正文并追加引用来源 |
-| 生图与改图 | 单/多张文生图；基于附图或回复链消息的局部改图；支持原文直传、参数提取与 LLM 提示词优化 |
-| 视频生成 | 文生短视频与参考图引导生视频；自动将输入图片尺寸对齐到最近的合法比例（`16:9`、`9:16`、`4:3` 等） |
+| 文生图 | 单/多张文生图；支持原文直传、参数提取、2 档大模型地道英文 Prompt 改写（`standard`/`enhance`）、自定义风格预设（`-ys<名称>`）与联网视觉事实检索（`-s`） |
+| 改图与视频 | 基于附图或回复消息的局部改图；文生短视频与首帧/参考图引导生视频；提示词与编辑要求始终原文直传上游，自动将参考图尺寸对齐到合法比例 |
 | 监控看板 | `/g2面板` 聚合账号池、媒体库与审计趋势；经 AstrBot T2I 渲染输出 1080p 磨砂玻璃卡片；支持会话定时订阅与 Cron 推送 |
 | 平台适配 | 原生适配 **OneBot / aiocqhttp / NapCat** 与 **QQ Official** 双平台 |
 | 访问与安全 | API Key 与敏感日志脱敏、用户/群聊黑白名单、模型错误退避重试、临时媒体文件生命周期清理 |
@@ -88,9 +88,9 @@ python -m pip install -r requirements.txt
 | 指令 | 别名 | 权限 | 说明 |
 |---|---|:---:|---|
 | `/g2搜索 <问题>` | `/grok2搜索` | 访问规则 | 强制执行联网搜索并整理输出（附带来源引用） |
-| `/g2生图 <提示词>` | `/grok2生图` | 访问规则 | 文本生成图片，每次 1 张（默认 1K 分辨率） |
-| `/g2改图 <要求>` | `/grok2改图` | 访问规则 | 编辑当前消息或回复消息中的第一张图片 |
-| `/g2视频 [参数] <提示词>` | `/grok2视频` | 访问规则 | 生成短视频；支持附图/回复图或 `--image-url=<URL>` 参考图 |
+| `/g2生图 [模式\|预设] [-s] <提示词>` | `/grok2生图` | 访问规则 | 文本生成图片；支持请求级提示词模式（`-off`/`-ex`/`-st`/`-eh`）、自定义预设（`-ys<名称>`）和显式资料搜索（`-s`） |
+| `/g2改图 <要求>` | `/grok2改图` | 访问规则 | 编辑当前消息或回复消息中的第一张图片，编辑要求原文直传 |
+| `/g2视频 [参数] <提示词>` | `/grok2视频` | 访问规则 | 生成短视频；支持附图/回复图或 `--image-url` 参考图，提示词原文直传 |
 | `/g2面板` | `/grok2面板` | ADMIN | 渲染输出管理面板可视化卡片（需自部署管理端） |
 | `/g2面板订阅` | `/grok2面板订阅` | ADMIN | 为当前会话订阅定时面板大盘推送 |
 | `/g2面板退订` | `/grok2面板退订` | ADMIN | 退订当前会话的定时面板推送 |
@@ -104,7 +104,7 @@ python -m pip install -r requirements.txt
 
 ## 配置说明
 
-在 AstrBot 管理面板的插件配置页中，按如下模块灵活调整：
+在 AstrBot 管理面板的插件配置页中，配置按职责拆分为基础连接、图片与视频、提示词处理、联网搜索、访问控制、性能与可靠性、文件与缓存、管理面板八个分组。旧版 `capability_settings` 与 `advanced_settings` 会隐藏保留，仅用于自动迁移，不需要继续填写。
 
 ### 1. 连接设置（`connection_settings`）
 
@@ -113,11 +113,33 @@ python -m pip install -r requirements.txt
 | `enabled` | `true` | 插件全局总开关 |
 | `api_base_url` | `""` | 远端 grok2api 根地址（如 `https://grok.example.com`，不要带 `/v1`） |
 | `api_key` | `""` | 接入凭据 API Key |
-| `admin_username` / `admin_password` | `""` | 管理面只读查询凭据（仅 `/g2面板` 需要，与 API Key 互相独立） |
 | `verify_tls` | `true` | 是否校验 TLS 证书（生产环境建议开启） |
 | `client_proxy_url` | `""` | 出站代理地址（如 `http://127.0.0.1:7890`，留空为直连） |
 
-### 2. 能力与模型设置（`capability_settings`）
+管理面凭据请填写在 `panel_settings.admin_username` 与 `panel_settings.admin_password`，与 API Key 相互独立。
+
+### 2. 图片与视频（`media_settings`）
+
+| 配置项 | 默认值 | 说明 |
+|---|:---:|---|
+| `image_models` | 多行列表 | 文生图候选模型（首选 `grok-imagine-image-lite`） |
+| `image_edit_models` | 多行列表 | 改图候选模型（首选 `grok-imagine-image`） |
+| `video_models` | 多行列表 | 生视频候选模型（首选 `grok-imagine-video`） |
+| `image_response_format` | `b64_json` | 图片接口响应格式；两种格式都会落盘后发送 |
+| `send_media_progress` | `true` | 是否在媒体任务开始时发送一次进度提示 |
+
+### 3. 生图提示词处理（`prompt_settings`）
+
+- **`mode`**：`off`（原文直传）、`extract`（仅提取比例/分辨率）、`standard`（精准整理，20~45 词）、`enhance`（受控增强，45~80 词）。仅 `/g2生图` 使用。
+- **自定义风格预设与 WebUI Pages**：支持在 WebUI Pages（`生图风格预设` 面板）或配置中自定义预设（如 `-ys二次元`、`-ys电影质感`），并与内置模式互斥。
+- **命令覆盖**：`/g2生图` 可用 `-off`、`-ex`、`-st`、`-eh`、`-ys<名称>` 覆盖单次请求；参数顺序不敏感，出现多个模式时直接拒绝。
+- **未识别参数**：三个媒体命令都会在远端调用前拒绝无法识别的 `-`/`--` 英文参数（如 `-EH`、`--ar 16:9`），并回复可用参数列表，不会当作提示词发送；普通文本里的连字符不受影响。
+- **`character_research_mode`**：`off`（关闭）、`auto`（识别具名实体后搜索）、`always`（每次生图尝试搜索）；`-s` / `--search` 可在 `standard`、`enhance` 或 `-ys<名称>` 中显式触发。
+- **`extract_provider_id` / `enhance_provider_id`**：参数提取使用前者，改写模式与预设共用后者。
+- **`fallback_to_original_on_error`**：仅使用 WebUI 默认模式时允许失败后原文直传；显式指定模式或显式搜索失败时不会静默回退，直接中止报错。
+- `/g2改图` 与 `/g2视频` 不调用提示词模型，也不搜索视觉资料；若传入上述模式或 `-s` 参数会在远端调用前拒绝。
+
+### 4. 联网搜索（`search_settings`）
 
 | 配置项 | 默认值 | 说明 |
 |---|:---:|---|
@@ -125,17 +147,18 @@ python -m pip install -r requirements.txt
 | `enable_web_search` | `true` | 是否启用 Web 联网搜索 |
 | `enable_x_search` | `true` | 是否启用 X/Twitter 平台搜索（chat 模型会自动降级为纯 Web） |
 | `search_reasoning_effort` | `auto` | 搜索推理强度（`auto`/`none`/`low`/`medium`/`high`/`xhigh`） |
-| `image_models` | 多行列表 | 文生图候选模型（首选 `grok-imagine-image-lite`） |
-| `image_edit_models` | 多行列表 | 改图候选模型（首选 `grok-imagine-image`） |
-| `video_models` | 多行列表 | 生视频候选模型（首选 `grok-imagine-video`） |
 | `enable_llm_search_tool` | `true` | 是否将会话级联网 Tool（`grok2api_web_search`）注册给主模型 |
+| `show_search_sources` | `true` | 是否返回结构化来源（手动命令与 Tool 统一） |
+| `max_search_sources` | `5` | 最多显示来源数（`0` 为不显示，手动命令与 Tool 统一） |
+| `max_search_output_chars` | `6000` | 搜索正文最大字符数（超出截断，手动命令与 Tool 统一） |
 
-### 3. 提示词处理（`prompt_processing`）
+### 5. 性能、文件与访问控制
 
-- **`mode`**：`off`（原文直传）、`extract`（仅补全结构化参数）、`enhance`（调用大模型重写优化提示词）。
-- **`extract_provider_id` / `enhance_provider_id`**：指定用于整理/优化的已配置 AstrBot 文本模型。
-- **`disable_prompt_processing_with_reference_image`**：在有参考图时跳过 LLM 提示词改写，保持原样直传。
-- **`fallback_to_original_on_error`**：提示词处理失败时改用原始提示词直发（默认开启）。
+通常只需要调整 `performance_settings.timeouts.task_timeout_seconds`，它是单次任务从排队到发送完成的总预算。默认阶段超时为：普通搜索 300 秒、提示词处理 60 秒、角色资料搜索 120 秒；这些值仍可在 `performance_settings.timeouts` 的折叠专家项中调整。并发与重试位于 `performance_settings.reliability`。
+
+来源展示（`show_search_sources`）、来源上限（`max_search_sources`）和正文字符上限（`max_search_output_chars`）在手动 `/g2搜索` 命令与会话级 Tool（`grok2api_web_search`）中保持全局统一。会话级 Tool 调用同时受 AstrBot 全局 `provider_settings.tool_call_timeout`（默认 120 秒）与插件 `task_timeout_seconds` 的取最小约束；要让默认 300 秒搜索上限完整生效，应把 AstrBot 全局工具超时配置为略高于 300 秒。
+
+`storage_settings` 管理输入/下载媒体大小、发送后是否保留和临时文件清理；`access_settings` 管理用户与群聊黑白名单。
 
 ---
 
@@ -155,14 +178,14 @@ python -m pip install -r requirements.txt
 
 1. **凭据安全**：插件严禁在日志中记录 API Key、管理员密码、Base64 数据或原始响应正文；面向用户的错误提示均经过脱敏收敛。
 2. **多模态自愈**：图生视频/附图请求会自动将用户图片的实际宽高比映射到最近的合法比例（`1:1`、`16:9`、`9:16`、`4:3`、`3:4`、`2:3`、`3:2`）。
-3. **重试与回退**：仅在当前模型的重试次数耗尽后，若遇到 `model_not_found` 等稳定不可用错误，才会触发回退至下一候选模型。
+3. **重试与回退**：可在 WebUI 中选择轮询重试或依次重试；前者单次失败立即切换候选模型，后者在当前模型耗尽重试次数后再降级。不可重试错误与任务总超时都会立即终止。
 4. **QQ Official 平台限制**：单次最多发送 4 张图片，超出将在调用前拦截提示。
 
 ---
 
 ## 排错与常见问题
 
-- **面板显示“未获取”**：检查 `admin_username` 与 `admin_password` 是否正确配置，且 `api_base_url` 是否支持管理面 API。
+- **面板显示“未获取”**：检查 `panel_settings.admin_username` 与 `panel_settings.admin_password` 是否正确配置，且 `api_base_url` 是否支持管理面 API。
 - **401 / 403 鉴权错误**：确认配置项中的 `api_key` 是否有效且具有对应模型调用权限。
 - **改图返回 404**：请确认改图模型列表中未包含不支持图生图的 `lite` 轻量模型（默认使用 `grok-imagine-image`）。
 - **搜索无结果**：检查上游是否触发了 `search_not_performed`，插件会自动按配置重试或回退。

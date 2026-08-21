@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import datetime as dt
 import json
 import logging
 from dataclasses import replace
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
@@ -21,7 +23,7 @@ from core.errors import (
     SearchNotPerformedError,
 )
 from core.media import MediaWorkspace, NormalizedImage
-from core.models import SearchResult, VideoGenerationRequest
+from core.models import ImageGenerationRequest, SearchResult
 from core.platform import PlatformKind
 from core.sender import DeliveryAdapter
 from core.service import GrokService
@@ -102,7 +104,17 @@ def _make_service(ws, cfg=None, session=None, prompt_processor=None):
         model_switch_errors=cfg.model_switch_errors,
     )
     sender = DeliveryAdapter(ws)
-    return GrokService(cfg, client, ws, sender, prompt_processor=prompt_processor), session
+    return (
+        GrokService(
+            cfg,
+            client,
+            ws,
+            sender,
+            prompt_processor=prompt_processor,
+            sleep=_no_retry_sleep,
+        ),
+        session,
+    )
 
 
 # -- preflight -------------------------------------------------------------
@@ -134,11 +146,11 @@ async def test_search_preflight_checks_platform(tmp_path):
 
 
 # -- search result ---------------------------------------------------------
-def _search_response():
+def _search_response(model: str = "grok-4.5"):
     return json.dumps(
         {
             "id": "resp1",
-            "model": "grok-4.5",
+            "model": model,
             "status": "completed",
             "output": [
                 {
@@ -158,7 +170,7 @@ def _search_without_tool_response():
             "id": "resp-no-search",
             "model": "first",
             "status": "completed",
-            "output": [{"type": "message", "content": [{"type": "output_text", "text": "answer"}]}],
+            "output": [{"type": "message", "content": [{"type": "output_text", "text": ""}]}],
         }
     )
 
@@ -211,6 +223,19 @@ async def test_manual_search_format(tmp_path):
     assert "https://e.com/1" in text
 
 
+async def test_manual_search_format_for_llm(tmp_path):
+    ws = MediaWorkspace(tmp_path)
+    s = FakeSession()
+    s.push(FakeResponse(200, body=json.dumps({"data": [{"id": "grok-4.5"}]})))
+    s.push(FakeResponse(200, body=_search_response()))
+    svc, _ = _make_service(ws, session=s)
+    r = await svc.search(FakeEvent(), "q")
+    text = svc.format_search_for_llm(r)
+    assert "answer" in text
+    assert "参考来源:" in text
+    assert "https://e.com/1" in text
+
+
 async def test_deliver_images_passes_skip_prompt_processing_to_resolver(tmp_path):
     from core.models import ImageGenerationRequest
 
@@ -241,15 +266,62 @@ async def test_deliver_images_passes_skip_prompt_processing_to_resolver(tmp_path
 
     orig_resolve = svc._resolve_image_request
 
-    async def _mock_resolve(prompt: str, *, skip: bool = False):
+    async def _mock_resolve(
+        prompt: str,
+        *,
+        explicit_search: bool = False,
+        prompt_mode: str = "",
+        preset_name: str = "",
+        skip: bool = False,
+    ):
         skip_seen.append(skip)
-        return await orig_resolve(prompt, skip=skip)
+        return await orig_resolve(
+            prompt,
+            explicit_search=explicit_search,
+            prompt_mode=prompt_mode,
+            preset_name=preset_name,
+            skip=skip,
+        )
 
     svc._resolve_image_request = _mock_resolve
 
     await svc.deliver_generated_images(FakeEvent(), "猫", skip_prompt_processing=True)
 
     assert skip_seen == [True]
+
+
+async def test_skip_prompt_processing_logs_original_fallback_and_forwards_original_prompt(
+    tmp_path, monkeypatch
+):
+    ws = MediaWorkspace(tmp_path)
+    s = FakeSession()
+    image = base64.b64encode(_png_bytes()).decode()
+    s.push(FakeResponse(200, body=json.dumps({"data": [{"b64_json": image}]})))
+    cfg = _cfg(
+        capability_settings={
+            "send_media_progress": False,
+            "prompt_processing": {"mode": "enhance"},
+        }
+    )
+
+    class Processor:
+        async def resolve_image(self, prompt, *, character_reference=""):
+            raise AssertionError("fallback path must skip the processor")
+
+    events = []
+    monkeypatch.setattr(
+        "core.service.safe_task_log",
+        lambda level, title, **fields: events.append((level, title, fields)),
+    )
+    svc, _ = _make_service(ws, cfg=cfg, session=s, prompt_processor=Processor())
+
+    await svc.deliver_generated_images(FakeEvent(), "原始提示词", skip_prompt_processing=True)
+
+    started = next(fields for _level, title, fields in events if title == "请求开始")
+    assert started["prompt_mode"] == "off"
+    assert started["prompt_status"] == "回退原文（跳过处理）"
+    assert started["request_prompt"] == "原始提示词"
+    assert s.calls[0]["json"]["prompt"] == "原始提示词"
 
 
 # -- concurrency -----------------------------------------------------------
@@ -269,29 +341,89 @@ async def test_search_semaphore_limits(tmp_path):
     assert len(s.calls) == 4
 
 
-async def test_session_lock_serializes_media(tmp_path):
+async def test_user_lock_serializes_media_and_allows_other_users(tmp_path):
     ws = MediaWorkspace(tmp_path)
-    s = FakeSession()
-    # image generation responses
-    import base64
-
-    png = _png_bytes()
-    b64 = base64.b64encode(png).decode()
-    body = json.dumps({"data": [{"b64_json": b64, "mime_type": "image/png"}]})
-    for _ in range(2):
-        s.push(FakeResponse(200, body=body))
-    svc, _ = _make_service(ws, session=s)
-    ev = FakeEvent()
-    # second media task in same session should be rejected immediately
-    # first acquires lock and runs; simulate by making first hold.
-    lock = svc._session_guard(ev)
+    svc, _ = _make_service(ws)
+    ev1 = FakeEvent(sender_id="u1")
+    ev2 = FakeEvent(sender_id="u2")
+    # A second task from the same user is rejected immediately; another user
+    # in the same session gets an independent lock.
+    lock = svc._user_guard(ev1)
     await lock.acquire()
     try:
         with pytest.raises(PluginError) as ei:
-            await svc.deliver_generated_images(ev, "cat")
+            await svc.deliver_generated_images(ev1, "cat")
         assert ei.value.code == "media_job_busy"
+
+        # different user in same group/session is NOT blocked by user 1's lock
+        lock2 = svc._user_guard(ev2)
+        assert not lock2.locked()
+        await lock2.acquire()
+        svc._release_user_lock(ev2, lock2)
     finally:
-        lock.release()
+        svc._release_user_lock(ev1, lock)
+
+
+async def test_same_user_media_lock_rejects_before_waiting_for_global_slot(tmp_path):
+    ws = MediaWorkspace(tmp_path)
+    svc, _ = _make_service(
+        ws,
+        cfg=_cfg(capability_settings={"send_media_progress": False}),
+    )
+    svc._media_sem = asyncio.Semaphore(1)
+    event = FakeEvent(group_id="group-1", sender_id="same-user")
+    await svc._media_sem.acquire()
+    first = asyncio.create_task(svc.deliver_generated_images(event, "cat"))
+    try:
+        await asyncio.sleep(0)
+        with pytest.raises(PluginError) as caught:
+            await svc.deliver_generated_images(event, "dog")
+        assert caught.value.code == "media_job_busy"
+        assert not first.done()
+    finally:
+        first.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await first
+        svc._media_sem.release()
+
+
+async def test_user_media_lock_is_shared_across_groups_but_not_between_users(tmp_path):
+    ws = MediaWorkspace(tmp_path)
+    svc, _ = _make_service(ws)
+    first_group = FakeEvent(group_id="group-1", sender_id="same-user")
+    second_group = FakeEvent(group_id="group-2", sender_id="same-user")
+    other_user = FakeEvent(group_id="group-1", sender_id="other-user")
+
+    lock = svc._user_guard(first_group)
+    await lock.acquire()
+    try:
+        with pytest.raises(PluginError) as caught:
+            svc._user_guard(second_group)
+        assert caught.value.code == "media_job_busy"
+        other_lock = svc._user_guard(other_user)
+        assert not other_lock.locked()
+        await other_lock.acquire()
+        svc._release_user_lock(other_user, other_lock)
+    finally:
+        svc._release_user_lock(first_group, lock)
+
+    assert svc._user_locks == {}
+
+
+async def test_user_media_lock_cleanup_does_not_depend_on_waiters_attribute(tmp_path):
+    ws = MediaWorkspace(tmp_path)
+    svc, _ = _make_service(ws)
+    event = FakeEvent(sender_id="cleanup-user")
+
+    async with svc._user_media_slot(
+        event,
+        operation="image_generate",
+        started_at=0.0,
+        source_prompt="cat",
+    ):
+        assert svc._user_locks
+
+    assert svc._user_locks == {}
 
 
 # -- image delivery --------------------------------------------------------
@@ -455,20 +587,13 @@ async def test_deliver_images_is_always_single_result(tmp_path):
     assert s.calls[0]["json"]["n"] == 1
 
 
-async def test_service_forwards_resolved_image_and_video_parameters(tmp_path):
-    from core.models import ImageGenerationRequest, VideoGenerationRequest
+async def test_service_forwards_resolved_image_and_video_parameters(tmp_path, monkeypatch):
+    from core.models import ImageGenerationRequest
 
     class Processor:
-        async def resolve_image(self, _prompt):
+        async def resolve_image(self, _prompt, **kwargs):
             return ImageGenerationRequest(
                 prompt="enhanced image", aspect_ratio="9:16", resolution="2k"
-            )
-
-        async def resolve_video(self, _prompt, *, has_reference_image, reference_aspect_ratio):
-            assert has_reference_image is False
-            assert reference_aspect_ratio == ""
-            return VideoGenerationRequest(
-                prompt="enhanced video", duration=10, aspect_ratio="16:9", resolution="1080p"
             )
 
     ws = MediaWorkspace(tmp_path)
@@ -478,16 +603,43 @@ async def test_service_forwards_resolved_image_and_video_parameters(tmp_path):
     s.push(FakeResponse(200, body=json.dumps({"request_id": "video_abc"})))
     s.push(FakeResponse(200, body=json.dumps({"status": "done", "progress": 100})))
     s.responses.append(_StreamResp([b"fake-mp4"]))
-    cfg = _cfg(capability_settings={"send_media_progress": False})
+    cfg = _cfg(
+        capability_settings={
+            "send_media_progress": False,
+            "prompt_processing": {"mode": "standard"},
+        }
+    )
     client = Grok2APIClient(
         HTTPTransport(
             cfg.api_base_url, cfg.api_key, sleep=_no_retry_sleep, session_factory=lambda: s
         )
     )
     svc = GrokService(cfg, client, ws, DeliveryAdapter(ws), prompt_processor=Processor())
+    task_events = []
+    monkeypatch.setattr(
+        "core.service.safe_task_log",
+        lambda _level, title, **fields: task_events.append((title, fields)),
+    )
 
     await svc.deliver_generated_images(FakeEvent(), "source image")
     await svc.deliver_video(FakeEvent(sender_id="u2"), "source video")
+
+    image_started = next(
+        fields
+        for title, fields in task_events
+        if title == "请求开始" and fields.get("operation") == "image_generate"
+    )
+    video_started = next(
+        fields
+        for title, fields in task_events
+        if title == "请求开始" and fields.get("operation") == "video_generate"
+    )
+    assert image_started["prompt_mode"] == "standard"
+    assert image_started["prompt_status"] == "精准整理完成"
+    assert image_started["request_prompt"] == "enhanced image"
+    assert video_started["prompt_mode"] == "off"
+    assert video_started["prompt_status"] == "原文直传（视频不支持提示词处理）"
+    assert video_started["request_prompt"] == "source video"
 
     assert s.calls[0]["json"] == {
         "model": "grok-imagine-image",
@@ -500,21 +652,25 @@ async def test_service_forwards_resolved_image_and_video_parameters(tmp_path):
     }
     assert s.calls[1]["json"] == {
         "model": "grok-imagine-video",
-        "prompt": "enhanced video",
-        "duration": 10,
-        "aspect_ratio": "16:9",
-        "resolution": "1080p",
+        "prompt": "source video",
+        "duration": 6,
+        "resolution": "720p",
     }
 
 
 async def test_prompt_processing_error_stops_before_image_request(tmp_path):
     class Processor:
-        async def resolve_image(self, _prompt):
+        async def resolve_image(self, _prompt, **kwargs):
             raise PluginError("invalid prompt parameters", code="prompt_processing_invalid")
 
     ws = MediaWorkspace(tmp_path)
     s = FakeSession()
-    cfg = _cfg(capability_settings={"send_media_progress": False})
+    cfg = _cfg(
+        capability_settings={
+            "send_media_progress": False,
+            "prompt_processing": {"mode": "standard"},
+        }
+    )
     client = Grok2APIClient(
         HTTPTransport(
             cfg.api_base_url, cfg.api_key, sleep=_no_retry_sleep, session_factory=lambda: s
@@ -561,6 +717,100 @@ def _model_not_allowed_body() -> str:
     return json.dumps({"error": {"code": "model_not_allowed"}})
 
 
+async def test_image_fallback_round_robin_across_candidates(tmp_path, monkeypatch):
+    """验证多模型轮询序列：first (500) -> second (500) -> first (200 成功)。"""
+    ws = MediaWorkspace(tmp_path)
+    session = FakeSession()
+    image = base64.b64encode(_png_bytes()).decode()
+    session.push(
+        FakeResponse(500, body=json.dumps({"error": {"code": "internal_error"}})),
+        FakeResponse(500, body=json.dumps({"error": {"code": "internal_error"}})),
+        FakeResponse(200, body=json.dumps({"data": [{"b64_json": image}]})),
+    )
+    cfg = _cfg(
+        capability_settings={"image_models": "first\nsecond", "send_media_progress": False},
+        advanced_settings={"model_retry_count": 1},
+    )
+    svc, _ = _make_service(ws, cfg=cfg, session=session)
+
+    await svc.deliver_generated_images(FakeEvent(), "cat")
+
+    assert len(session.calls) == 3
+    assert session.calls[0]["json"]["model"] == "first"
+    assert session.calls[1]["json"]["model"] == "second"
+    assert session.calls[2]["json"]["model"] == "first"
+
+
+async def test_image_fallback_waits_between_retry_rounds(tmp_path):
+    """验证重试轮之间应用 retry_base_delay_seconds 退避，且仅在首轮之后。"""
+    sleeps: list[float] = []
+
+    async def fake_sleep(delay: float) -> None:
+        sleeps.append(delay)
+
+    ws = MediaWorkspace(tmp_path)
+    image = base64.b64encode(_png_bytes()).decode()
+    session = FakeSession()
+    session.push(
+        FakeResponse(500, body=json.dumps({"error": {"code": "internal_error"}})),
+        FakeResponse(200, body=json.dumps({"data": [{"b64_json": image}]})),
+    )
+    cfg = _cfg(
+        capability_settings={"image_models": "first", "send_media_progress": False},
+        performance_settings={
+            "reliability": {"model_retry_count": 1, "retry_base_delay_seconds": 0.5}
+        },
+    )
+    t = HTTPTransport(
+        cfg.api_base_url,
+        cfg.api_key,
+        sleep=_no_retry_sleep,
+        session_factory=lambda: session,
+    )
+    client = Grok2APIClient(
+        t,
+        model_retry_count=cfg.model_retry_count,
+        video_retry_count=cfg.video_retry_count,
+        retry_base_delay=cfg.retry_base_delay_seconds,
+        model_switch_errors=cfg.model_switch_errors,
+    )
+    sender = DeliveryAdapter(ws)
+    svc = GrokService(cfg, client, ws, sender, sleep=fake_sleep)
+    await svc.deliver_generated_images(FakeEvent(), "cat")
+    # 首次尝试不 sleep；仅第二轮（round_idx > 1）前 sleep 一次，值为配置的退避。
+    assert sleeps == [0.5]
+
+
+async def test_image_fallback_sequential_strategy_exhausts_model_before_next(tmp_path):
+    """验证依次重试策略：first (500) -> first (500) -> second (200 成功)。"""
+    ws = MediaWorkspace(tmp_path)
+    session = FakeSession()
+    image = base64.b64encode(_png_bytes()).decode()
+    session.push(
+        FakeResponse(500, body=json.dumps({"error": {"code": "internal_error"}})),
+        FakeResponse(500, body=json.dumps({"error": {"code": "internal_error"}})),
+        FakeResponse(200, body=json.dumps({"data": [{"b64_json": image}]})),
+    )
+    cfg = _cfg(
+        capability_settings={"image_models": "first\nsecond", "send_media_progress": False},
+        performance_settings={
+            "reliability": {
+                "model_retry_count": 1,
+                "model_retry_strategy": "依次重试",
+            }
+        },
+    )
+    svc, _ = _make_service(ws, cfg=cfg, session=session)
+
+    await svc.deliver_generated_images(FakeEvent(), "cat")
+
+    assert [call["json"]["model"] for call in session.calls] == [
+        "first",
+        "first",
+        "second",
+    ]
+
+
 async def test_image_fallback_exhausts_first_model_retries_before_second(tmp_path, monkeypatch):
     ws = MediaWorkspace(tmp_path)
     session = FakeSession()
@@ -586,14 +836,13 @@ async def test_image_fallback_exhausts_first_model_retries_before_second(tmp_pat
 
     assert [call["json"]["model"] for call in session.calls] == [
         "first",
-        "first",
+        "second",
         "first",
         "second",
     ]
     completed = next(fields for title, fields in task_events if title == "请求完成")
     assert completed["model"] == "second"
-    assert completed["candidate_fallbacks"] == 1
-    assert completed["retry_count"] == 2
+    assert completed["candidate_fallbacks"] == 3
 
 
 async def test_image_default_switch_error_skips_retry_but_keeps_fallback(tmp_path):
@@ -632,7 +881,7 @@ async def test_image_model_not_allowed_exhausts_retries_then_falls_back(tmp_path
 
     assert [call["json"]["model"] for call in session.calls] == [
         "first",
-        "first",
+        "second",
         "first",
         "second",
     ]
@@ -659,7 +908,7 @@ async def test_image_edit_fallback_exhausts_first_model_retries_before_second(tm
 
     assert [call["json"]["model"] for call in session.calls] == [
         "first",
-        "first",
+        "second",
         "first",
         "second",
     ]
@@ -689,7 +938,228 @@ async def test_video_fallback_exhausts_first_model_retries_before_second(tmp_pat
     ]
     assert [call["json"]["model"] for call in create_calls] == [
         "first",
+        "second",
         "first",
+        "second",
+    ]
+
+
+async def test_image_edit_fallback_round_robin_across_candidates(tmp_path):
+    """验证改图多模型轮询序列：first (500) -> second (500) -> first (200 成功)。"""
+    ws = MediaWorkspace(tmp_path)
+    session = FakeSession()
+    image = base64.b64encode(_png_bytes()).decode()
+    session.push(
+        FakeResponse(500, body=json.dumps({"error": {"code": "internal_error"}})),
+        FakeResponse(500, body=json.dumps({"error": {"code": "internal_error"}})),
+        FakeResponse(200, body=json.dumps({"data": [{"b64_json": image}]})),
+    )
+    cfg = _cfg(
+        capability_settings={"image_edit_models": "first\nsecond", "send_media_progress": False},
+        advanced_settings={"model_retry_count": 1},
+    )
+    service, _ = _make_service(ws, cfg=cfg, session=session)
+    service._find_input_image = AsyncMock(return_value="data:image/png;base64,AAAA")
+
+    await service.deliver_edited_image(FakeEvent(), "make red")
+
+    assert len(session.calls) == 3
+    assert session.calls[0]["json"]["model"] == "first"
+    assert session.calls[1]["json"]["model"] == "second"
+    assert session.calls[2]["json"]["model"] == "first"
+
+
+async def test_video_fallback_round_robin_across_candidates(tmp_path):
+    """验证生视频多模型轮询序列：first (500) -> second (500) -> first (200 成功)。"""
+    ws = MediaWorkspace(tmp_path)
+    session = FakeSession()
+    session.push(
+        FakeResponse(500, body=json.dumps({"error": {"code": "internal_error"}})),
+        FakeResponse(500, body=json.dumps({"error": {"code": "internal_error"}})),
+        FakeResponse(200, body=json.dumps({"request_id": "video_abc"})),
+        FakeResponse(200, body=json.dumps({"status": "done", "progress": 100})),
+    )
+    session.responses.append(_StreamResp([b"fake-mp4"]))
+    cfg = _cfg(
+        capability_settings={"video_models": "first\nsecond", "send_media_progress": False},
+        advanced_settings={"video_retry_count": 1},
+    )
+    service, _ = _make_service(ws, cfg=cfg, session=session)
+
+    await service.deliver_video(FakeEvent(), "make a video")
+
+    create_calls = [
+        call for call in session.calls if call["url"].endswith("/v1/videos/generations")
+    ]
+    assert len(create_calls) == 3
+    assert create_calls[0]["json"]["model"] == "first"
+    assert create_calls[1]["json"]["model"] == "second"
+    assert create_calls[2]["json"]["model"] == "first"
+
+
+async def test_image_single_candidate_retries_configured_rounds(tmp_path):
+    """验证单生图候选模型重试 1 + model_retry_count 次。"""
+    ws = MediaWorkspace(tmp_path)
+    session = FakeSession()
+    image = base64.b64encode(_png_bytes()).decode()
+    session.push(
+        FakeResponse(500, body=json.dumps({"error": {"code": "internal_error"}})),
+        FakeResponse(500, body=json.dumps({"error": {"code": "internal_error"}})),
+        FakeResponse(200, body=json.dumps({"data": [{"b64_json": image}]})),
+    )
+    cfg = _cfg(
+        capability_settings={"image_models": "single_image", "send_media_progress": False},
+        advanced_settings={"model_retry_count": 2},
+    )
+    svc, _ = _make_service(ws, cfg=cfg, session=session)
+
+    await svc.deliver_generated_images(FakeEvent(), "cat")
+
+    assert len(session.calls) == 3
+    assert [call["json"]["model"] for call in session.calls] == [
+        "single_image",
+        "single_image",
+        "single_image",
+    ]
+
+
+async def test_image_edit_single_candidate_retries_configured_rounds(tmp_path):
+    """验证单改图候选模型重试 1 + model_retry_count 次。"""
+    ws = MediaWorkspace(tmp_path)
+    session = FakeSession()
+    image = base64.b64encode(_png_bytes()).decode()
+    session.push(
+        FakeResponse(500, body=json.dumps({"error": {"code": "internal_error"}})),
+        FakeResponse(500, body=json.dumps({"error": {"code": "internal_error"}})),
+        FakeResponse(200, body=json.dumps({"data": [{"b64_json": image}]})),
+    )
+    cfg = _cfg(
+        capability_settings={"image_edit_models": "single_edit", "send_media_progress": False},
+        advanced_settings={"model_retry_count": 2},
+    )
+    service, _ = _make_service(ws, cfg=cfg, session=session)
+    service._find_input_image = AsyncMock(return_value="data:image/png;base64,AAAA")
+
+    await service.deliver_edited_image(FakeEvent(), "make red")
+
+    assert len(session.calls) == 3
+    assert [call["json"]["model"] for call in session.calls] == [
+        "single_edit",
+        "single_edit",
+        "single_edit",
+    ]
+
+
+async def test_video_single_candidate_retries_configured_rounds(tmp_path):
+    """验证单生视频候选模型重试 1 + video_retry_count 次。"""
+    ws = MediaWorkspace(tmp_path)
+    session = FakeSession()
+    session.push(
+        FakeResponse(500, body=json.dumps({"error": {"code": "internal_error"}})),
+        FakeResponse(500, body=json.dumps({"error": {"code": "internal_error"}})),
+        FakeResponse(200, body=json.dumps({"request_id": "video_abc"})),
+        FakeResponse(200, body=json.dumps({"status": "done", "progress": 100})),
+    )
+    session.responses.append(_StreamResp([b"fake-mp4"]))
+    cfg = _cfg(
+        capability_settings={"video_models": "single_vid", "send_media_progress": False},
+        advanced_settings={"video_retry_count": 2},
+    )
+    service, _ = _make_service(ws, cfg=cfg, session=session)
+
+    await service.deliver_video(FakeEvent(), "make a video")
+
+    create_calls = [
+        call for call in session.calls if call["url"].endswith("/v1/videos/generations")
+    ]
+    assert len(create_calls) == 3
+    assert [call["json"]["model"] for call in create_calls] == [
+        "single_vid",
+        "single_vid",
+        "single_vid",
+    ]
+
+
+async def test_image_fallback_exhausted_raises_media_models_exhausted(tmp_path):
+    """验证所有生图模型在所有轮次失败后抛出 media_models_exhausted。"""
+    ws = MediaWorkspace(tmp_path)
+    session = FakeSession()
+    session.push(
+        FakeResponse(500, body=json.dumps({"error": {"code": "internal_error"}})),
+        FakeResponse(500, body=json.dumps({"error": {"code": "internal_error"}})),
+        FakeResponse(500, body=json.dumps({"error": {"code": "internal_error"}})),
+        FakeResponse(500, body=json.dumps({"error": {"code": "internal_error"}})),
+    )
+    cfg = _cfg(
+        capability_settings={"image_models": "first\nsecond", "send_media_progress": False},
+        advanced_settings={"model_retry_count": 1},
+    )
+    service, _ = _make_service(ws, cfg=cfg, session=session)
+
+    with pytest.raises(PluginError) as ei:
+        await service.deliver_generated_images(FakeEvent(), "cat")
+    assert ei.value.code == "media_models_exhausted"
+    assert [call["json"]["model"] for call in session.calls] == [
+        "first",
+        "second",
+        "first",
+        "second",
+    ]
+
+
+async def test_image_edit_fallback_exhausted_raises_media_models_exhausted(tmp_path):
+    """验证所有改图模型在所有轮次失败后抛出 media_models_exhausted。"""
+    ws = MediaWorkspace(tmp_path)
+    session = FakeSession()
+    session.push(
+        FakeResponse(500, body=json.dumps({"error": {"code": "internal_error"}})),
+        FakeResponse(500, body=json.dumps({"error": {"code": "internal_error"}})),
+        FakeResponse(500, body=json.dumps({"error": {"code": "internal_error"}})),
+        FakeResponse(500, body=json.dumps({"error": {"code": "internal_error"}})),
+    )
+    cfg = _cfg(
+        capability_settings={"image_edit_models": "first\nsecond", "send_media_progress": False},
+        advanced_settings={"model_retry_count": 1},
+    )
+    service, _ = _make_service(ws, cfg=cfg, session=session)
+    service._find_input_image = AsyncMock(return_value="data:image/png;base64,AAAA")
+
+    with pytest.raises(PluginError) as ei:
+        await service.deliver_edited_image(FakeEvent(), "make red")
+    assert ei.value.code == "media_models_exhausted"
+    assert [call["json"]["model"] for call in session.calls] == [
+        "first",
+        "second",
+        "first",
+        "second",
+    ]
+
+
+async def test_video_create_fallback_exhausted_raises_media_models_exhausted(tmp_path):
+    """验证所有视频创建模型在所有轮次失败后抛出 media_models_exhausted。"""
+    ws = MediaWorkspace(tmp_path)
+    session = FakeSession()
+    session.push(
+        FakeResponse(500, body=json.dumps({"error": {"code": "internal_error"}})),
+        FakeResponse(500, body=json.dumps({"error": {"code": "internal_error"}})),
+        FakeResponse(500, body=json.dumps({"error": {"code": "internal_error"}})),
+        FakeResponse(500, body=json.dumps({"error": {"code": "internal_error"}})),
+    )
+    cfg = _cfg(
+        capability_settings={"video_models": "first\nsecond", "send_media_progress": False},
+        advanced_settings={"video_retry_count": 1},
+    )
+    service, _ = _make_service(ws, cfg=cfg, session=session)
+
+    with pytest.raises(PluginError) as ei:
+        await service.deliver_video(FakeEvent(), "make video")
+    assert ei.value.code == "media_models_exhausted"
+    create_calls = [
+        call for call in session.calls if call["url"].endswith("/v1/videos/generations")
+    ]
+    assert [call["json"]["model"] for call in create_calls] == [
+        "first",
+        "second",
         "first",
         "second",
     ]
@@ -746,14 +1216,14 @@ async def test_deliver_edited_image_requires_input(tmp_path):
         await svc.deliver_edited_image(FakeEvent(), "make red")
 
 
-async def test_deliver_edited_image_uses_reference_aware_prompt_processor(tmp_path):
+async def test_deliver_edited_image_forwards_raw_prompt_without_prompt_processor(tmp_path):
     class Processor:
         def __init__(self):
             self.calls = []
 
-        async def resolve_image_edit(self, prompt, *, has_reference_image):
-            self.calls.append((prompt, has_reference_image))
-            return "enhanced red treatment"
+        async def resolve_image(self, prompt, *, mode="", character_reference=""):
+            self.calls.append(prompt)
+            return ImageGenerationRequest(prompt=prompt)
 
     ws = MediaWorkspace(tmp_path)
     s = FakeSession()
@@ -773,19 +1243,13 @@ async def test_deliver_edited_image_uses_reference_aware_prompt_processor(tmp_pa
     svc = GrokService(cfg, client, ws, DeliveryAdapter(ws), prompt_processor=processor)
     svc._find_input_image = AsyncMock(return_value="data:image/png;base64,AAAA")
 
-    await svc.deliver_edited_image(FakeEvent(), "变红")
+    await svc.deliver_edited_image(FakeEvent(), "变红 保持细节")
 
-    assert processor.calls == [("变红", True)]
-    assert s.calls[0]["json"]["prompt"] == "enhanced red treatment"
+    assert processor.calls == []
+    assert s.calls[0]["json"]["prompt"] == "变红 保持细节"
 
 
 async def test_reference_image_progress_message_has_no_prompt_processing_notice(tmp_path):
-    class Processor:
-        async def resolve_image_edit(self, prompt, *, has_reference_image):
-            assert prompt == "变红"
-            assert has_reference_image is True
-            return "enhanced red treatment"
-
     ws = MediaWorkspace(tmp_path)
     s = FakeSession()
     image = base64.b64encode(_png_bytes()).decode()
@@ -796,7 +1260,7 @@ async def test_reference_image_progress_message_has_no_prompt_processing_notice(
             cfg.api_base_url, cfg.api_key, sleep=_no_retry_sleep, session_factory=lambda: s
         )
     )
-    svc = GrokService(cfg, client, ws, DeliveryAdapter(ws), prompt_processor=Processor())
+    svc = GrokService(cfg, client, ws, DeliveryAdapter(ws))
     svc._find_input_image = AsyncMock(return_value="data:image/png;base64,AAAA")
     event = FakeEvent()
 
@@ -846,14 +1310,6 @@ async def test_deliver_video_local_reference_image_fills_nearest_aspect_ratio(tm
 
 
 async def test_deliver_video_prefers_explicit_url_and_hides_it_from_logs(tmp_path, monkeypatch):
-    class Processor:
-        def __init__(self):
-            self.calls = []
-
-        async def resolve_video(self, prompt, *, has_reference_image, reference_aspect_ratio):
-            self.calls.append((prompt, has_reference_image, reference_aspect_ratio))
-            return VideoGenerationRequest(prompt="enhanced dance", duration=6)
-
     ws = MediaWorkspace(tmp_path)
     s = FakeSession()
     s.push(FakeResponse(200, body=json.dumps({"request_id": "video_abc"})))
@@ -865,8 +1321,7 @@ async def test_deliver_video_prefers_explicit_url_and_hides_it_from_logs(tmp_pat
             cfg.api_base_url, cfg.api_key, sleep=_no_retry_sleep, session_factory=lambda: s
         )
     )
-    processor = Processor()
-    svc = GrokService(cfg, client, ws, DeliveryAdapter(ws), prompt_processor=processor)
+    svc = GrokService(cfg, client, ws, DeliveryAdapter(ws))
     svc._find_input_normalized_image = AsyncMock(
         side_effect=AssertionError("must not read attached image")
     )
@@ -878,21 +1333,13 @@ async def test_deliver_video_prefers_explicit_url_and_hides_it_from_logs(tmp_pat
 
     await svc.deliver_video(FakeEvent(), "让他跳舞", reference_image_url=url)
 
-    assert processor.calls == [("让他跳舞", True, "")]
+    assert s.calls[0]["json"]["prompt"] == "让他跳舞"
     assert s.calls[0]["json"]["image"] == {"url": url}
     assert "aspect_ratio" not in s.calls[0]["json"]
     assert all(url not in repr(fields) for _name, fields in events)
 
 
 async def test_deliver_video_without_reference_uses_global_path_and_omits_image(tmp_path):
-    class Processor:
-        def __init__(self):
-            self.calls = []
-
-        async def resolve_video(self, prompt, *, has_reference_image, reference_aspect_ratio):
-            self.calls.append((prompt, has_reference_image, reference_aspect_ratio))
-            return VideoGenerationRequest(prompt=prompt, duration=6)
-
     ws = MediaWorkspace(tmp_path)
     s = FakeSession()
     s.push(FakeResponse(200, body=json.dumps({"request_id": "video_abc"})))
@@ -904,12 +1351,11 @@ async def test_deliver_video_without_reference_uses_global_path_and_omits_image(
             cfg.api_base_url, cfg.api_key, sleep=_no_retry_sleep, session_factory=lambda: s
         )
     )
-    processor = Processor()
-    svc = GrokService(cfg, client, ws, DeliveryAdapter(ws), prompt_processor=processor)
+    svc = GrokService(cfg, client, ws, DeliveryAdapter(ws))
 
     await svc.deliver_video(FakeEvent(), "让他跳舞")
 
-    assert processor.calls == [("让他跳舞", False, "")]
+    assert s.calls[0]["json"]["prompt"] == "让他跳舞"
     assert "image" not in s.calls[0]["json"]
 
 
@@ -1016,7 +1462,7 @@ async def test_task_timeout_terminates_video_polling(tmp_path):
         assert ei.value.code == "task_timeout"
 
 
-async def test_task_timeout_cancels_running_search(tmp_path):
+async def test_task_timeout_cancels_running_search(tmp_path, monkeypatch):
     class SlowSearchClient(ScriptedSearchClient):
         def __init__(self):
             super().__init__(models=("first", "second"))
@@ -1032,6 +1478,11 @@ async def test_task_timeout_cancels_running_search(tmp_path):
                 raise
 
     client = SlowSearchClient()
+    diagnostics = []
+    monkeypatch.setattr(
+        "core.service.safe_log",
+        lambda level, name, **fields: diagnostics.append((level, name, fields)),
+    )
     cfg = replace(
         _cfg(capability_settings={"search_models": "first\nsecond"}),
         task_timeout_seconds=0.01,
@@ -1050,6 +1501,12 @@ async def test_task_timeout_cancels_running_search(tmp_path):
     assert caught.value.code == "task_timeout"
     assert client.cancelled is True
     assert client.search_calls == ["first"]
+    cancelled = next(
+        fields for _level, name, fields in diagnostics if name == "search_model_cancelled"
+    )
+    assert cancelled["model"] == "first"
+    assert cancelled["attempt"] == 1
+    assert cancelled["elapsed_ms"] >= 0
 
 
 # -- close ----------------------------------------------------------------
@@ -1122,11 +1579,12 @@ def _search_result(model: str) -> SearchResult:
 
 
 def _make_scripted_service(tmp_path, client, search_models, **capability_overrides):
+    advanced_settings = capability_overrides.pop("advanced_settings", {})
     capability_settings = {
         "search_models": "\n".join(search_models),
         **capability_overrides,
     }
-    cfg = _cfg(capability_settings=capability_settings)
+    cfg = _cfg(capability_settings=capability_settings, advanced_settings=advanced_settings)
     workspace = MediaWorkspace(tmp_path)
     return GrokService(cfg, client, workspace, DeliveryAdapter(workspace))
 
@@ -1273,6 +1731,66 @@ async def test_explicit_model_failure_advances_to_next(tmp_path, first_error):
     assert client.search_calls == ["first", "second"]
 
 
+async def test_search_model_attempt_and_switch_logs_include_wait_time(tmp_path, monkeypatch):
+    diagnostics = []
+    monkeypatch.setattr(
+        "core.service.safe_log",
+        lambda level, name, **fields: diagnostics.append((level, name, fields)),
+    )
+    client = ScriptedSearchClient(
+        models=("first", "second"),
+        search_results=[
+            APIError(500, "upstream_server_error", "server error"),
+            _search_result("second"),
+        ],
+    )
+    service = _make_scripted_service(tmp_path, client, ("first", "second"))
+
+    result = await service.search(FakeEvent(), "question")
+
+    assert result.model == "second"
+    events = {name: fields for _level, name, fields in diagnostics}
+    assert events["search_model_attempt"] == {
+        "operation": "search",
+        "model": "first",
+        "model_index": 0,
+        "round": 1,
+        "attempt": 1,
+        "reason": "initial",
+        "search_budget": "",
+    }
+    assert events["search_model_skipped"]["model"] == "first"
+    assert events["search_model_skipped"]["reason"] == "upstream_server_error"
+    assert events["search_model_skipped"]["attempt"] == 1
+    assert events["search_model_skipped"]["elapsed_ms"] >= 0
+    assert events["search_model_switch"]["model"] == "second"
+    assert events["search_model_switch"]["reason"] == "upstream_server_error"
+    assert events["search_model_switch"]["attempt"] == 2
+    assert events["search_model_selected"]["model"] == "second"
+    assert events["search_model_selected"]["attempt"] == 2
+    assert events["search_model_selected"]["elapsed_ms"] >= 0
+    assert all(
+        level == logging.DEBUG
+        for level, name, _fields in diagnostics
+        if name.startswith("search_model_")
+    )
+
+
+async def test_success_stops_current_search_and_next_search_restarts_first_model(tmp_path):
+    client = ScriptedSearchClient(
+        models=("first", "second"),
+        search_results=[_search_result("first"), _search_result("first")],
+    )
+    service = _make_scripted_service(tmp_path, client, ("first", "second"))
+
+    first_result = await service.search(FakeEvent(), "first question")
+    second_result = await service.search(FakeEvent(), "second question")
+
+    assert first_result.model == "first"
+    assert second_result.model == "first"
+    assert client.search_calls == ["first", "first"]
+
+
 async def test_search_fallback_exhausts_first_model_retries_before_second(tmp_path):
     ws = MediaWorkspace(tmp_path)
     session = FakeSession()
@@ -1294,7 +1812,7 @@ async def test_search_fallback_exhausts_first_model_retries_before_second(tmp_pa
     calls = [call for call in session.calls if call["url"].endswith("/v1/responses")]
     assert [call["json"]["model"] for call in calls] == [
         "first",
-        "first",
+        "second",
         "first",
         "second",
     ]
@@ -1310,7 +1828,9 @@ async def test_search_not_performed_exhausts_retries_before_next_model(tmp_path)
         FakeResponse(200, body=_search_without_tool_response()),
         FakeResponse(200, body=_search_response()),
     )
-    cfg = _cfg(capability_settings={"search_models": "first\nsecond"})
+    cfg = _cfg(
+        capability_settings={"search_models": "first\nsecond"},
+    )
     service, _ = _make_service(ws, cfg=cfg, session=session)
 
     await service.search(FakeEvent(), "question")
@@ -1318,8 +1838,150 @@ async def test_search_not_performed_exhausts_retries_before_next_model(tmp_path)
     calls = [call for call in session.calls if call["url"].endswith("/v1/responses")]
     assert [call["json"]["model"] for call in calls] == [
         "first",
+        "second",
         "first",
+        "second",
+    ]
+
+
+async def test_search_fallback_round_robin_across_candidates(tmp_path):
+    """验证搜索多模型轮询序列：first (500) -> second (500) -> first (200 成功)。"""
+    ws = MediaWorkspace(tmp_path)
+    session = FakeSession()
+    session.push(
+        FakeResponse(200, body=json.dumps({"data": [{"id": "first"}, {"id": "second"}]})),
+        FakeResponse(500, body=json.dumps({"error": {"code": "internal_error"}})),
+        FakeResponse(500, body=json.dumps({"error": {"code": "internal_error"}})),
+        FakeResponse(200, body=_search_response(model="first")),
+    )
+    cfg = _cfg(
+        capability_settings={"search_models": "first\nsecond"},
+        advanced_settings={"model_retry_count": 1},
+    )
+    service, _ = _make_service(ws, cfg=cfg, session=session)
+
+    result = await service.search(FakeEvent(), "question")
+
+    assert result.model == "first"
+    calls = [call for call in session.calls if call["url"].endswith("/v1/responses")]
+    assert len(calls) == 3
+    assert calls[0]["json"]["model"] == "first"
+    assert calls[1]["json"]["model"] == "second"
+    assert calls[2]["json"]["model"] == "first"
+
+
+async def test_search_fallback_sequential_strategy(tmp_path):
+    """验证搜索依次重试策略：first (500) -> first (500) -> second (200 成功)。"""
+    ws = MediaWorkspace(tmp_path)
+    session = FakeSession()
+    session.push(
+        FakeResponse(200, body=json.dumps({"data": [{"id": "first"}, {"id": "second"}]})),
+        FakeResponse(500, body=json.dumps({"error": {"code": "internal_error"}})),
+        FakeResponse(500, body=json.dumps({"error": {"code": "internal_error"}})),
+        FakeResponse(200, body=_search_response(model="second")),
+    )
+    cfg = _cfg(
+        capability_settings={"search_models": "first\nsecond"},
+        performance_settings={
+            "reliability": {
+                "model_retry_count": 1,
+                "model_retry_strategy": "依次重试",
+            }
+        },
+    )
+    service, _ = _make_service(ws, cfg=cfg, session=session)
+
+    result = await service.search(FakeEvent(), "question")
+
+    assert result.model == "second"
+    calls = [call for call in session.calls if call["url"].endswith("/v1/responses")]
+    assert len(calls) == 3
+    assert calls[0]["json"]["model"] == "first"
+    assert calls[1]["json"]["model"] == "first"
+    assert calls[2]["json"]["model"] == "second"
+
+
+async def test_search_single_candidate_retries_configured_rounds(tmp_path):
+    """验证单搜索候选模型重试 1 + model_retry_count 次。"""
+    ws = MediaWorkspace(tmp_path)
+    session = FakeSession()
+    session.push(
+        FakeResponse(200, body=json.dumps({"data": [{"id": "single_search"}]})),
+        FakeResponse(500, body=json.dumps({"error": {"code": "internal_error"}})),
+        FakeResponse(500, body=json.dumps({"error": {"code": "internal_error"}})),
+        FakeResponse(200, body=_search_response(model="single_search")),
+    )
+    cfg = _cfg(
+        capability_settings={"search_models": "single_search"},
+        advanced_settings={"model_retry_count": 2},
+    )
+    service, _ = _make_service(ws, cfg=cfg, session=session)
+
+    result = await service.search(FakeEvent(), "question")
+
+    assert result.model == "single_search"
+    calls = [call for call in session.calls if call["url"].endswith("/v1/responses")]
+    assert len(calls) == 3
+    assert [call["json"]["model"] for call in calls] == [
+        "single_search",
+        "single_search",
+        "single_search",
+    ]
+
+
+async def test_search_fallback_exhausted_across_all_rounds_raises_search_models_exhausted(tmp_path):
+    """验证所有搜索模型在所有轮次失败后抛出 search_models_exhausted。"""
+    ws = MediaWorkspace(tmp_path)
+    session = FakeSession()
+    session.push(
+        FakeResponse(200, body=json.dumps({"data": [{"id": "first"}, {"id": "second"}]})),
+        FakeResponse(500, body=json.dumps({"error": {"code": "internal_error"}})),
+        FakeResponse(500, body=json.dumps({"error": {"code": "internal_error"}})),
+        FakeResponse(500, body=json.dumps({"error": {"code": "internal_error"}})),
+        FakeResponse(500, body=json.dumps({"error": {"code": "internal_error"}})),
+    )
+    cfg = _cfg(
+        capability_settings={"search_models": "first\nsecond"},
+        advanced_settings={"model_retry_count": 1},
+    )
+    service, _ = _make_service(ws, cfg=cfg, session=session)
+
+    with pytest.raises(PluginError) as ei:
+        await service.search(FakeEvent(), "question")
+    assert ei.value.code == "search_models_exhausted"
+    calls = [call for call in session.calls if call["url"].endswith("/v1/responses")]
+    assert [call["json"]["model"] for call in calls] == [
         "first",
+        "second",
+        "first",
+        "second",
+    ]
+
+
+async def test_search_fallback_poison_on_429_skips_in_next_round(tmp_path):
+    """验证 429 命中 model_switch_errors 时将该模型加入 poison 并在后续轮次跳过。"""
+    ws = MediaWorkspace(tmp_path)
+    session = FakeSession()
+    session.push(
+        FakeResponse(200, body=json.dumps({"data": [{"id": "first"}, {"id": "second"}]})),
+        FakeResponse(429, body=json.dumps({"error": {"code": "rate_limited"}})),
+        FakeResponse(500, body=json.dumps({"error": {"code": "internal_error"}})),
+        FakeResponse(200, body=_search_response(model="second")),
+    )
+    cfg = _cfg(
+        capability_settings={"search_models": "first\nsecond"},
+        advanced_settings={"model_retry_count": 1},
+    )
+    service, _ = _make_service(ws, cfg=cfg, session=session)
+
+    result = await service.search(FakeEvent(), "question")
+
+    assert result.model == "second"
+    calls = [call for call in session.calls if call["url"].endswith("/v1/responses")]
+    assert len(calls) == 3
+    assert [call["json"]["model"] for call in calls] == [
+        "first",
+        "second",
         "second",
     ]
 
@@ -1363,7 +2025,9 @@ async def test_exhausted_after_all_visible_models_fail(tmp_path):
             APIError(404, "model_not_found", "missing"),
         ],
     )
-    service = _make_scripted_service(tmp_path, client, ("first", "second"))
+    service = _make_scripted_service(
+        tmp_path, client, ("first", "second"), advanced_settings={"model_retry_count": 0}
+    )
     with pytest.raises(PluginError) as caught:
         await service.search(FakeEvent(), "question")
     assert caught.value.code == "search_models_exhausted"
@@ -1481,11 +2145,12 @@ async def test_panel_builds_all_selected_blocks_and_no_api_key_required(tmp_path
             ),
         )
     )
+    now_iso = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     s.push(
         FakeResponse(
             200,
             body=_panel_data(
-                '{"items":[{"createdAt":"2026-08-12T00:00:00Z","statusCode":200,"errorCode":"","durationMs":5,"totalTokens":10,"modelPublicId":"m1"}],"hasMore":false}'
+                f'{{"items":[{{"createdAt":"{now_iso}","statusCode":200,"errorCode":"","durationMs":5,"totalTokens":10,"modelPublicId":"m1"}}],"hasMore":false}}'
             ),
         )
     )
@@ -1591,3 +2256,715 @@ async def test_panel_block_failure_does_not_block_other_blocks(tmp_path):
     calls_a = len(s.calls)
     await svc.build_panel(FakeEvent())
     assert len(s.calls) > calls_a
+
+
+# -- Character research orchestration and soft fallback tests --------------
+class RecordingPromptProcessor:
+    def __init__(self):
+        self.image_calls: list[dict[str, object]] = []
+
+    async def resolve_image(
+        self,
+        prompt: str,
+        *,
+        mode: str = "",
+        preset_name: str = "",
+        character_reference: str = "",
+    ):
+        self.image_calls.append(
+            {
+                "prompt": prompt,
+                "mode": mode,
+                "preset_name": preset_name,
+                "character_reference": character_reference,
+            }
+        )
+        from core.models import ImageGenerationRequest
+
+        return ImageGenerationRequest(prompt=prompt)
+
+
+def _character_search_response(
+    text: str = "Character: Furina\nHair: White\nClothing: Blue suit",
+) -> str:
+    return json.dumps(
+        {
+            "id": "resp-char",
+            "model": "grok-4.5",
+            "status": "completed",
+            "output": [
+                {
+                    "type": "web_search_call",
+                    "status": "completed",
+                    "action": {"sources": [{"url": "https://example.com/furina"}]},
+                },
+                {"type": "message", "content": [{"type": "output_text", "text": text}]},
+            ],
+        }
+    )
+
+
+async def test_character_research_propagates_hard_task_timeout(tmp_path):
+    svc, _ = _make_service(MediaWorkspace(tmp_path))
+    svc._search_with_fallback = AsyncMock(
+        side_effect=PluginError("任务执行超时", code="task_timeout", retryable=False)
+    )
+
+    with pytest.raises(PluginError) as caught:
+        await svc._research_character_visuals("画芙宁娜")
+
+    assert caught.value.code == "task_timeout"
+
+
+async def test_character_research_uses_search_concurrency_limit(tmp_path):
+    cfg = _cfg(advanced_settings={"max_concurrent_searches": 1})
+    svc, _ = _make_service(MediaWorkspace(tmp_path), cfg=cfg)
+    active = 0
+    peak = 0
+
+    async def fake_search(*args, **kwargs):
+        nonlocal active, peak
+        active += 1
+        peak = max(peak, active)
+        await asyncio.sleep(0.01)
+        active -= 1
+        return SimpleNamespace(
+            value=SearchResult(
+                response_id="r",
+                model="m",
+                status="completed",
+                text="Furina visual facts",
+                sources=(),
+                search_performed=True,
+            )
+        )
+
+    svc._search_with_fallback = fake_search
+    await asyncio.gather(
+        svc._research_character_visuals("画芙宁娜"),
+        svc._research_character_visuals("画雷电将军"),
+    )
+
+    assert peak == 1
+
+
+async def test_character_research_discards_incomplete_results(tmp_path):
+    svc, _ = _make_service(MediaWorkspace(tmp_path))
+    svc._search_with_fallback = AsyncMock(
+        return_value=SimpleNamespace(
+            value=SearchResult(
+                response_id="r",
+                model="m",
+                status="incomplete",
+                text="partial facts",
+                sources=(),
+                search_performed=True,
+                incomplete=True,
+            )
+        )
+    )
+
+    assert await svc._research_character_visuals("画芙宁娜") == ""
+
+
+async def test_character_research_triggered_on_named_character_in_auto_mode(tmp_path, monkeypatch):
+    ws = MediaWorkspace(tmp_path)
+    s = FakeSession()
+    s.push(FakeResponse(200, body=json.dumps({"data": [{"id": "grok-4.5"}]})))
+    s.push(FakeResponse(200, body=_character_search_response("Character: Furina\nHair: White")))
+    image_b64 = base64.b64encode(_png_bytes()).decode()
+    s.push(FakeResponse(200, body=json.dumps({"data": [{"b64_json": image_b64}]})))
+
+    cfg = _cfg(
+        capability_settings={
+            "send_media_progress": False,
+            "prompt_processing": {
+                "mode": "enhance",
+                "character_research_mode": "auto",
+            },
+        }
+    )
+    processor = RecordingPromptProcessor()
+    svc, _ = _make_service(ws, cfg, session=s, prompt_processor=processor)
+    task_events = []
+    monkeypatch.setattr(
+        "core.service.safe_task_log",
+        lambda _level, title, **fields: task_events.append((title, fields)),
+    )
+
+    await svc.deliver_generated_images(FakeEvent(), "画《原神》里的芙宁娜")
+
+    assert len(processor.image_calls) == 1
+    assert processor.image_calls[0]["prompt"] == "画《原神》里的芙宁娜"
+    assert "Furina" in processor.image_calls[0]["character_reference"]
+    assert "White" in processor.image_calls[0]["character_reference"]
+    # Check that search call was made with the user prompt
+    search_call = next(c for c in s.calls if c["url"].endswith("/v1/responses"))
+    assert "<USER_PROMPT>" in search_call["json"]["input"]
+    assert "芙宁娜" in search_call["json"]["input"]
+    research_events = [fields for title, fields in task_events if title == "角色资料搜索"]
+    assert research_events[0]["result"] == "已触发"
+    assert any(fields["result"] == "已获得可用资料" for fields in research_events)
+
+
+async def test_character_research_triggered_in_always_mode(tmp_path):
+    ws = MediaWorkspace(tmp_path)
+    s = FakeSession()
+    s.push(FakeResponse(200, body=json.dumps({"data": [{"id": "grok-4.5"}]})))
+    s.push(FakeResponse(200, body=_character_search_response("Visuals: Red Apple")))
+    image_b64 = base64.b64encode(_png_bytes()).decode()
+    s.push(FakeResponse(200, body=json.dumps({"data": [{"b64_json": image_b64}]})))
+
+    cfg = _cfg(
+        capability_settings={
+            "send_media_progress": False,
+            "prompt_processing": {
+                "mode": "enhance",
+                "character_research_mode": "always",
+            },
+        }
+    )
+    processor = RecordingPromptProcessor()
+    svc, _ = _make_service(ws, cfg, session=s, prompt_processor=processor)
+
+    await svc.deliver_generated_images(FakeEvent(), "一个红苹果")
+
+    assert len(processor.image_calls) == 1
+    assert processor.image_calls[0]["character_reference"] == "Visuals: Red Apple"
+
+
+async def test_character_research_skipped_in_off_mode(tmp_path):
+    ws = MediaWorkspace(tmp_path)
+    s = FakeSession()
+    image_b64 = base64.b64encode(_png_bytes()).decode()
+    s.push(FakeResponse(200, body=json.dumps({"data": [{"b64_json": image_b64}]})))
+
+    cfg = _cfg(
+        capability_settings={
+            "send_media_progress": False,
+            "prompt_processing": {
+                "mode": "enhance",
+                "character_research_mode": "off",
+            },
+        }
+    )
+    processor = RecordingPromptProcessor()
+    svc, _ = _make_service(ws, cfg, session=s, prompt_processor=processor)
+
+    await svc.deliver_generated_images(FakeEvent(), "画《原神》里的芙宁娜")
+
+    assert len(processor.image_calls) == 1
+    assert processor.image_calls[0]["character_reference"] == ""
+    assert not any(c["url"].endswith("/v1/responses") for c in s.calls)
+
+
+async def test_character_research_skipped_for_generic_prompt_in_auto_mode(tmp_path):
+    ws = MediaWorkspace(tmp_path)
+    s = FakeSession()
+    image_b64 = base64.b64encode(_png_bytes()).decode()
+    s.push(FakeResponse(200, body=json.dumps({"data": [{"b64_json": image_b64}]})))
+
+    cfg = _cfg(
+        capability_settings={
+            "send_media_progress": False,
+            "prompt_processing": {
+                "mode": "enhance",
+                "character_research_mode": "auto",
+            },
+        }
+    )
+    processor = RecordingPromptProcessor()
+    svc, _ = _make_service(ws, cfg, session=s, prompt_processor=processor)
+
+    await svc.deliver_generated_images(FakeEvent(), "一个女孩在雨中散步")
+
+    assert len(processor.image_calls) == 1
+    assert processor.image_calls[0]["character_reference"] == ""
+    assert not any(c["url"].endswith("/v1/responses") for c in s.calls)
+
+
+async def test_character_research_skipped_in_extract_mode(tmp_path):
+    ws = MediaWorkspace(tmp_path)
+    s = FakeSession()
+    image_b64 = base64.b64encode(_png_bytes()).decode()
+    s.push(FakeResponse(200, body=json.dumps({"data": [{"b64_json": image_b64}]})))
+
+    cfg = _cfg(
+        capability_settings={
+            "send_media_progress": False,
+            "prompt_processing": {
+                "mode": "extract",
+                "character_research_mode": "always",
+            },
+        }
+    )
+    processor = RecordingPromptProcessor()
+    svc, _ = _make_service(ws, cfg, session=s, prompt_processor=processor)
+
+    await svc.deliver_generated_images(FakeEvent(), "画《原神》里的芙宁娜 16:9")
+
+    assert len(processor.image_calls) == 1
+    assert processor.image_calls[0]["character_reference"] == ""
+    assert not any(c["url"].endswith("/v1/responses") for c in s.calls)
+
+
+async def test_character_research_error_soft_fallback(tmp_path):
+    ws = MediaWorkspace(tmp_path)
+    s = FakeSession()
+    s.push(FakeResponse(200, body=json.dumps({"data": [{"id": "grok-4.5"}]})))
+    # Search returns 500 error (3 attempts: initial + 2 retries)
+    err_body = json.dumps({"error": {"code": "internal_error", "message": "fail"}})
+    s.push(FakeResponse(500, body=err_body))
+    s.push(FakeResponse(500, body=err_body))
+    s.push(FakeResponse(500, body=err_body))
+    image_b64 = base64.b64encode(_png_bytes()).decode()
+    s.push(FakeResponse(200, body=json.dumps({"data": [{"b64_json": image_b64}]})))
+
+    cfg = _cfg(
+        capability_settings={
+            "send_media_progress": False,
+            "prompt_processing": {
+                "mode": "enhance",
+                "character_research_mode": "auto",
+            },
+        }
+    )
+    processor = RecordingPromptProcessor()
+    svc, _ = _make_service(ws, cfg, session=s, prompt_processor=processor)
+
+    # Must NOT raise exception; should complete image delivery with empty reference
+    await svc.deliver_generated_images(FakeEvent(), "画《原神》里的芙宁娜")
+
+    assert len(processor.image_calls) == 1
+    assert processor.image_calls[0]["character_reference"] == ""
+
+
+async def test_character_research_no_named_character_drops_reference(tmp_path):
+    ws = MediaWorkspace(tmp_path)
+    s = FakeSession()
+    s.push(FakeResponse(200, body=json.dumps({"data": [{"id": "grok-4.5"}]})))
+    s.push(FakeResponse(200, body=_character_search_response("NO_NAMED_CHARACTER")))
+    image_b64 = base64.b64encode(_png_bytes()).decode()
+    s.push(FakeResponse(200, body=json.dumps({"data": [{"b64_json": image_b64}]})))
+
+    cfg = _cfg(
+        capability_settings={
+            "send_media_progress": False,
+            "prompt_processing": {
+                "mode": "enhance",
+                "character_research_mode": "auto",
+            },
+        }
+    )
+    processor = RecordingPromptProcessor()
+    svc, _ = _make_service(ws, cfg, session=s, prompt_processor=processor)
+
+    await svc.deliver_generated_images(FakeEvent(), "画《某个未知名角色》")
+
+    assert len(processor.image_calls) == 1
+    assert processor.image_calls[0]["character_reference"] == ""
+
+
+async def test_character_research_low_budget_skips_immediately(tmp_path, monkeypatch):
+    ws = MediaWorkspace(tmp_path)
+    s = FakeSession()
+    image_b64 = base64.b64encode(_png_bytes()).decode()
+    s.push(FakeResponse(200, body=json.dumps({"data": [{"b64_json": image_b64}]})))
+
+    cfg = _cfg(
+        capability_settings={
+            "send_media_progress": False,
+            "prompt_processing": {
+                "mode": "enhance",
+                "character_research_mode": "auto",
+            },
+        },
+        advanced_settings={
+            "character_research_timeout_seconds": 5,
+        },
+    )
+    processor = RecordingPromptProcessor()
+    svc, _ = _make_service(ws, cfg, session=s, prompt_processor=processor)
+
+    # Mock remaining_task_timeout to return 0.2s (< 0.5s)
+    monkeypatch.setattr("core.service.remaining_task_timeout", lambda *_args: 0.2)
+
+    await svc.deliver_generated_images(FakeEvent(), "画《原神》里的芙宁娜")
+
+    assert len(processor.image_calls) == 1
+    assert processor.image_calls[0]["character_reference"] == ""
+    assert not any(c["url"].endswith("/v1/responses") for c in s.calls)
+
+
+async def test_explicit_search_triggers_research_in_image_generate(tmp_path):
+    ws = MediaWorkspace(tmp_path)
+    s = FakeSession()
+    s.push(FakeResponse(200, body=json.dumps({"data": [{"id": "grok-4.5"}]})))
+    s.push(
+        FakeResponse(
+            200,
+            body=_character_search_response("Sony Walkman details: metal case, orange foam pads"),
+        )
+    )
+    image_b64 = base64.b64encode(_png_bytes()).decode()
+    s.push(FakeResponse(200, body=json.dumps({"data": [{"b64_json": image_b64}]})))
+
+    cfg = _cfg(
+        capability_settings={
+            "send_media_progress": False,
+            "prompt_processing": {
+                "mode": "enhance",
+                "character_research_mode": "auto",
+            },
+        }
+    )
+    processor = RecordingPromptProcessor()
+    svc, _ = _make_service(ws, cfg, session=s, prompt_processor=processor)
+
+    await svc.deliver_generated_images(FakeEvent(), "复古随身听", explicit_search=True)
+
+    assert len(processor.image_calls) == 1
+    assert "Sony Walkman details" in processor.image_calls[0]["character_reference"]
+    assert any(c["url"].endswith("/v1/responses") for c in s.calls)
+
+
+async def test_explicit_search_failure_stops_generation_on_search_error(tmp_path):
+    ws = MediaWorkspace(tmp_path)
+    s = FakeSession()
+    s.push(FakeResponse(200, body=json.dumps({"data": [{"id": "grok-4.5"}]})))
+    err_body = json.dumps({"error": {"code": "internal_error", "message": "fail"}})
+    s.push(FakeResponse(500, body=err_body))
+    s.push(FakeResponse(500, body=err_body))
+    s.push(FakeResponse(500, body=err_body))
+
+    cfg = _cfg(
+        capability_settings={
+            "send_media_progress": False,
+            "prompt_processing": {
+                "mode": "standard",
+                "character_research_mode": "auto",
+            },
+        }
+    )
+    processor = RecordingPromptProcessor()
+    svc, _ = _make_service(ws, cfg, session=s, prompt_processor=processor)
+
+    with pytest.raises(PluginError) as caught:
+        await svc.deliver_generated_images(FakeEvent(), "复古随身听", explicit_search=True)
+
+    assert caught.value.code == "prompt_search_failed"
+    assert len(processor.image_calls) == 0
+
+
+async def test_explicit_search_failure_stops_generation_on_timeout(tmp_path):
+    ws = MediaWorkspace(tmp_path)
+    s = FakeSession()
+    cfg = _cfg(
+        capability_settings={
+            "send_media_progress": False,
+            "prompt_processing": {
+                "mode": "standard",
+                "character_research_mode": "auto",
+            },
+        }
+    )
+    processor = RecordingPromptProcessor()
+    svc, _ = _make_service(ws, cfg, session=s, prompt_processor=processor)
+
+    async def fake_search(*args, **kwargs):
+        raise asyncio.TimeoutError()
+
+    svc._search_with_fallback = fake_search
+
+    with pytest.raises(PluginError) as caught:
+        await svc.deliver_generated_images(FakeEvent(), "复古随身听", explicit_search=True)
+
+    assert caught.value.code == "prompt_search_timeout"
+    assert len(processor.image_calls) == 0
+
+
+async def test_explicit_search_failure_stops_generation_when_no_reference(tmp_path):
+    ws = MediaWorkspace(tmp_path)
+    s = FakeSession()
+    s.push(FakeResponse(200, body=json.dumps({"data": [{"id": "grok-4.5"}]})))
+    s.push(FakeResponse(200, body=_character_search_response("NO_SPECIFIC_ENTITY")))
+
+    cfg = _cfg(
+        capability_settings={
+            "send_media_progress": False,
+            "prompt_processing": {
+                "mode": "standard",
+                "character_research_mode": "auto",
+            },
+        }
+    )
+    processor = RecordingPromptProcessor()
+    svc, _ = _make_service(ws, cfg, session=s, prompt_processor=processor)
+
+    with pytest.raises(PluginError) as caught:
+        await svc.deliver_generated_images(FakeEvent(), "复古随身听", explicit_search=True)
+
+    assert caught.value.code == "prompt_search_no_reference"
+    assert len(processor.image_calls) == 0
+
+
+async def test_explicit_search_rejected_when_research_mode_is_off(tmp_path):
+    ws = MediaWorkspace(tmp_path)
+    s = FakeSession()
+
+    cfg = _cfg(
+        capability_settings={
+            "send_media_progress": False,
+            "prompt_processing": {
+                "mode": "enhance",
+                "character_research_mode": "off",
+            },
+        }
+    )
+    processor = RecordingPromptProcessor()
+    svc, _ = _make_service(ws, cfg, session=s, prompt_processor=processor)
+
+    with pytest.raises(PluginError) as caught:
+        await svc.deliver_generated_images(FakeEvent(), "画洛茜", explicit_search=True)
+
+    assert caught.value.code == "prompt_search_disabled"
+    assert len(processor.image_calls) == 0
+    assert not any(c["url"].endswith("/v1/responses") for c in s.calls)
+
+
+async def test_explicit_search_rejected_when_prompt_mode_is_not_rewrite(tmp_path):
+    ws = MediaWorkspace(tmp_path)
+    s = FakeSession()
+
+    cfg = _cfg(
+        capability_settings={
+            "send_media_progress": False,
+            "prompt_processing": {
+                "mode": "off",
+                "character_research_mode": "always",
+            },
+        }
+    )
+    processor = RecordingPromptProcessor()
+    svc, _ = _make_service(ws, cfg, session=s, prompt_processor=processor)
+
+    with pytest.raises(PluginError) as caught_off:
+        await svc.deliver_generated_images(FakeEvent(), "画洛茜", explicit_search=True)
+
+    assert caught_off.value.code == "prompt_search_mode_invalid"
+    assert len(processor.image_calls) == 0
+    assert not any(c["url"].endswith("/v1/responses") for c in s.calls)
+
+    with pytest.raises(PluginError) as caught_extract:
+        await svc.deliver_generated_images(
+            FakeEvent(), "画洛茜", explicit_search=True, prompt_mode="extract"
+        )
+
+    assert caught_extract.value.code == "prompt_search_mode_invalid"
+
+
+async def test_character_research_no_specific_entity_drops_reference(tmp_path):
+    ws = MediaWorkspace(tmp_path)
+    s = FakeSession()
+    s.push(FakeResponse(200, body=json.dumps({"data": [{"id": "grok-4.5"}]})))
+    s.push(FakeResponse(200, body=_character_search_response("NO_SPECIFIC_ENTITY")))
+    image_b64 = base64.b64encode(_png_bytes()).decode()
+    s.push(FakeResponse(200, body=json.dumps({"data": [{"b64_json": image_b64}]})))
+
+    cfg = _cfg(
+        capability_settings={
+            "send_media_progress": False,
+            "prompt_processing": {
+                "mode": "enhance",
+                "character_research_mode": "auto",
+            },
+        }
+    )
+    processor = RecordingPromptProcessor()
+    svc, _ = _make_service(ws, cfg, session=s, prompt_processor=processor)
+
+    await svc.deliver_generated_images(FakeEvent(), "画《某个普通物体》")
+
+    assert len(processor.image_calls) == 1
+    assert processor.image_calls[0]["character_reference"] == ""
+
+
+async def test_preset_with_explicit_search_triggers_character_research(tmp_path):
+    ws = MediaWorkspace(tmp_path)
+    s = FakeSession()
+    s.push(FakeResponse(200, body=json.dumps({"data": [{"id": "grok-4.5"}]})))
+    s.push(FakeResponse(200, body=_character_search_response("Character: Roxy\nHair: Blue")))
+    image_b64 = base64.b64encode(_png_bytes()).decode()
+    s.push(FakeResponse(200, body=json.dumps({"data": [{"b64_json": image_b64}]})))
+
+    cfg = _cfg(
+        capability_settings={
+            "send_media_progress": False,
+            "prompt_processing": {
+                "mode": "off",
+                "character_research_mode": "auto",
+            },
+        }
+    )
+    processor = RecordingPromptProcessor()
+    svc, _ = _make_service(ws, cfg, session=s, prompt_processor=processor)
+
+    await svc.deliver_generated_images(
+        FakeEvent(),
+        "画洛茜吃草莓",
+        explicit_search=True,
+        preset_name="二次元",
+    )
+
+    assert len(processor.image_calls) == 1
+    assert processor.image_calls[0]["preset_name"] == "二次元"
+    assert "Roxy" in processor.image_calls[0]["character_reference"]
+
+
+async def test_sequential_strategy_skips_remaining_retries_on_switch_error_search(tmp_path):
+    ws = MediaWorkspace(tmp_path)
+    session = FakeSession()
+    session.push(
+        FakeResponse(200, body=json.dumps({"data": [{"id": "model_a"}, {"id": "model_b"}]})),
+        FakeResponse(404, body=_model_not_found_body()),
+        FakeResponse(200, body=_search_response(model="model_b")),
+    )
+    cfg = _cfg(
+        capability_settings={
+            "search_models": "model_a\nmodel_b",
+        },
+        performance_settings={
+            "reliability": {
+                "model_retry_count": 2,
+                "model_retry_strategy": "依次重试",
+            }
+        },
+    )
+    service, _ = _make_service(ws, cfg=cfg, session=session)
+
+    result = await service.search(FakeEvent(), "question")
+
+    assert result.model == "model_b"
+    calls = [call for call in session.calls if call["url"].endswith("/v1/responses")]
+    assert len(calls) == 2
+    assert calls[0]["json"]["model"] == "model_a"
+    assert calls[1]["json"]["model"] == "model_b"
+
+
+async def test_sequential_strategy_skips_remaining_retries_on_switch_error_image_generate(tmp_path):
+    ws = MediaWorkspace(tmp_path)
+    session = FakeSession()
+    image = base64.b64encode(_png_bytes()).decode()
+    session.push(
+        FakeResponse(404, body=_model_not_found_body()),
+        FakeResponse(200, body=json.dumps({"data": [{"b64_json": image}]})),
+    )
+    cfg = _cfg(
+        capability_settings={"image_models": "first\nsecond", "send_media_progress": False},
+        performance_settings={
+            "reliability": {
+                "model_retry_count": 2,
+                "model_retry_strategy": "依次重试",
+            }
+        },
+    )
+    svc, _ = _make_service(ws, cfg=cfg, session=session)
+
+    await svc.deliver_generated_images(FakeEvent(), "cat")
+
+    assert [call["json"]["model"] for call in session.calls] == [
+        "first",
+        "second",
+    ]
+
+
+async def test_sequential_strategy_skips_remaining_retries_on_switch_error_image_edit(tmp_path):
+    ws = MediaWorkspace(tmp_path)
+    session = FakeSession()
+    image = base64.b64encode(_png_bytes()).decode()
+    session.push(
+        FakeResponse(401, body=json.dumps({"error": {"code": "invalid_api_key"}})),
+        FakeResponse(200, body=json.dumps({"data": [{"b64_json": image}]})),
+    )
+    cfg = _cfg(
+        capability_settings={"image_edit_models": "edit_a\nedit_b", "send_media_progress": False},
+        performance_settings={
+            "reliability": {
+                "model_retry_count": 2,
+                "model_retry_strategy": "依次重试",
+            }
+        },
+    )
+    svc, _ = _make_service(ws, cfg=cfg, session=session)
+    svc._find_input_image = AsyncMock(return_value=f"data:image/png;base64,{image}")
+
+    await svc.deliver_edited_image(FakeEvent(), "cat")
+
+    assert [call["json"]["model"] for call in session.calls] == [
+        "edit_a",
+        "edit_b",
+    ]
+
+
+async def test_sequential_strategy_skips_remaining_retries_on_switch_error_video_create(tmp_path):
+    ws = MediaWorkspace(tmp_path)
+    session = FakeSession()
+    session.push(FakeResponse(200, body=json.dumps({"request_id": "video_1"})))
+    failed_body = json.dumps(
+        {"status": "failed", "error": {"code": "invalid_prompt", "message": "bad prompt"}}
+    )
+    session.push(FakeResponse(200, body=failed_body))
+    session.push(FakeResponse(200, body=json.dumps({"request_id": "video_2"})))
+    session.push(FakeResponse(200, body=json.dumps({"status": "done", "progress": 100})))
+    session.push(FakeResponse(200, body=b"fake_mp4_content"))
+
+    cfg = _cfg(
+        capability_settings={"video_models": "first\nsecond"},
+        performance_settings={
+            "reliability": {
+                "video_retry_count": 2,
+                "model_retry_strategy": "依次重试",
+            }
+        },
+        advanced_settings={"model_switch_errors": "invalid_prompt"},
+    )
+    svc, _ = _make_service(ws, cfg=cfg, session=session)
+    ev = FakeEvent()
+    await svc.deliver_video(ev, "cat")
+    assert len(ev.sent) == 2
+    post_calls = [call for call in session.calls if call["method"] == "POST"]
+    assert len(post_calls) == 2
+    assert post_calls[0]["json"]["model"] == "first"
+    assert post_calls[1]["json"]["model"] == "second"
+
+
+async def test_round_robin_strategy_skips_poisoned_model_in_later_rounds(tmp_path):
+    ws = MediaWorkspace(tmp_path)
+    session = FakeSession()
+    image = base64.b64encode(_png_bytes()).decode()
+    session.push(
+        # first in round 1 fails with switch error
+        FakeResponse(404, body=_model_not_found_body()),
+        # second in round 1 fails with transient 500
+        FakeResponse(500, body=json.dumps({"error": {"code": "internal_error"}})),
+        # Round 2: first must be skipped! Only second is attempted.
+        FakeResponse(200, body=json.dumps({"data": [{"b64_json": image}]})),
+    )
+    cfg = _cfg(
+        capability_settings={"image_models": "first\nsecond", "send_media_progress": False},
+        performance_settings={
+            "reliability": {
+                "model_retry_count": 2,
+                "model_retry_strategy": "轮询重试",
+            }
+        },
+    )
+    svc, _ = _make_service(ws, cfg=cfg, session=session)
+
+    await svc.deliver_generated_images(FakeEvent(), "cat")
+
+    assert [call["json"]["model"] for call in session.calls] == [
+        "first",
+        "second",
+        "second",
+    ]

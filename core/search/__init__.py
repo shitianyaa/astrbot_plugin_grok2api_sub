@@ -8,6 +8,7 @@ from .models import (
 )
 from .parsers import (
     build_search_payload,
+    format_search_for_llm,
     format_search_result,
     parse_search_response,
 )
@@ -24,6 +25,7 @@ __all__ = [
     "build_search_payload",
     "build_search_tool",
     "catalog_model_id",
+    "format_search_for_llm",
     "format_search_result",
     "parse_search_response",
     "partition_visible_models",

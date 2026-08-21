@@ -45,7 +45,7 @@ def _default_raw() -> dict:
         "advanced_settings": {
             "connect_timeout_seconds": 10,
             "task_timeout_seconds": 1800,
-            "search_timeout_seconds": 180,
+            "search_timeout_seconds": 300,
             "image_timeout_seconds": 300,
             "video_create_timeout_seconds": 120,
             "video_poll_timeout_seconds": 30,
@@ -65,7 +65,7 @@ def _default_raw() -> dict:
             ),
             "save_media": False,
             "temp_retention_hours": 24,
-            "prompt_processing_timeout_seconds": 15,
+            "prompt_processing_timeout_seconds": 60,
         },
     }
 
@@ -92,6 +92,92 @@ def _cfg(**over) -> PluginConfig:
 def _raises(**over) -> None:
     with pytest.raises(ConfigurationError):
         PluginConfig.from_astrbot(_raw(**over))
+
+
+def test_legacy_layout_migrates_custom_values_into_new_groups():
+    raw = _raw(
+        connection_settings={
+            "admin_username": " legacy-admin ",
+            "admin_password": " legacy-pass ",
+        },
+        capability_settings={
+            "search_models": "legacy-search",
+            "prompt_processing": {"mode": "enhance"},
+        },
+        advanced_settings={
+            "task_timeout_seconds": 900,
+            "panel_period": "30d",
+            "model_retry_strategy": "sequential",
+        },
+    )
+
+    cfg = PluginConfig.from_astrbot(raw)
+
+    assert cfg.search_models == ("legacy-search",)
+    assert cfg.prompt_processing_mode == "standard"
+    assert cfg.task_timeout_seconds == 900
+    assert cfg.panel_period == "30d"
+    assert cfg.model_retry_strategy == "sequential"
+    assert cfg.admin_username == "legacy-admin"
+    assert cfg.admin_password == "legacy-pass"
+    assert raw["connection_settings"]["config_layout_version"] == 3
+    assert raw["search_settings"]["search_models"] == "legacy-search"
+    assert raw["prompt_settings"]["mode"] == "standard"
+    assert raw["performance_settings"]["timeouts"]["task_timeout_seconds"] == 900
+    assert raw["performance_settings"]["reliability"]["model_retry_strategy"] == "sequential"
+    assert raw["panel_settings"]["admin_username"] == " legacy-admin "
+
+
+def test_migration_save_config_runs_once_and_new_values_win_afterward():
+    class ConfigMapping(dict):
+        save_calls = 0
+
+        def save_config(self):
+            self.save_calls += 1
+
+    raw = ConfigMapping(_raw(capability_settings={"search_models": "legacy-search"}))
+    first = PluginConfig.from_astrbot(raw)
+    assert first.search_models == ("legacy-search",)
+    assert raw.save_calls == 1
+
+    raw["capability_settings"]["search_models"] = "stale-legacy-value"
+    raw["search_settings"]["search_models"] = "new-search"
+    second = PluginConfig.from_astrbot(raw)
+    assert second.search_models == ("new-search",)
+    assert raw.save_calls == 1
+
+    raw["search_settings"]["search_models"] = "\n".join(DEFAULT_SEARCH_MODELS)
+    third = PluginConfig.from_astrbot(raw)
+    assert third.search_models == DEFAULT_SEARCH_MODELS
+
+
+def test_v1_saved_defaults_migrate_to_longer_timeouts_and_search_budget():
+    raw = _raw(
+        connection_settings={"config_layout_version": 1},
+        search_settings={"search_models": "grok-chat-fast"},
+        performance_settings={
+            "timeouts": {
+                "search_timeout_seconds": 180,
+                "prompt_processing_timeout_seconds": 15,
+                "character_research_timeout_seconds": 20,
+            }
+        },
+    )
+
+    cfg = PluginConfig.from_astrbot(raw)
+
+    assert cfg.search_timeout_seconds == 300
+    assert cfg.prompt_processing_timeout_seconds == 60
+    assert cfg.prompt_character_research_timeout_seconds == 120
+    assert raw["connection_settings"]["config_layout_version"] == 3
+
+
+def test_immutable_legacy_mapping_still_uses_compatibility_fallback():
+    from types import MappingProxyType
+
+    raw = MappingProxyType(_raw(advanced_settings={"task_timeout_seconds": 600}))
+    cfg = PluginConfig.from_astrbot(raw)
+    assert cfg.task_timeout_seconds == 600
 
 
 # -- search_models parsing -------------------------------------------------
@@ -170,8 +256,11 @@ def test_defaults():
     assert c.video_poll_timeout_seconds == 30
     assert c.image_response_format == "b64_json"
     assert c.prompt_processing_mode == "off"
+    assert c.prompt_character_research_mode == "off"
+    assert c.prompt_character_research_timeout_seconds == 120
     assert c.prompt_disable_processing_with_reference_image is False
-    assert c.prompt_processing_timeout_seconds == 15
+    assert c.prompt_processing_timeout_seconds == 60
+    assert c.search_timeout_seconds == 300
     assert c.save_media is False
     assert c.enable_web_search is True
     assert c.enable_x_search is True
@@ -259,19 +348,145 @@ def test_reject_non_http_scheme():
     _raises(connection_settings={"client_proxy_url": "socks5://h.com"})
 
 
-def test_prompt_processing_config_accepts_independent_providers():
-    c = _cfg(
-        capability_settings={
-            "prompt_processing": {
-                "mode": "enhance",
-                "extract_provider_id": "small-model",
-                "enhance_provider_id": "large-model",
+def test_prompt_processing_modes_are_four_tiers():
+    from core.common.config import _PROMPT_PROCESSING_MODES
+
+    assert _PROMPT_PROCESSING_MODES == ("off", "extract", "standard", "enhance")
+
+
+def test_prompt_presets_load_defaults_when_empty():
+    cfg = PluginConfig.from_dict({"connection_settings": {"api_key": "k"}})
+    assert "二次元" in cfg.prompt_presets
+    assert "电影质感" in cfg.prompt_presets
+    assert "Mode: anime illustration preset." in cfg.prompt_presets["二次元"]
+    assert "Mode: cinematic photograph preset." in cfg.prompt_presets["电影质感"]
+
+
+def test_prompt_presets_custom_loaded():
+    raw = _raw(
+        prompt_settings={
+            "presets": {
+                "赛博朋克": "Mode: cyberpunk preset.",
+                "水墨": "Mode: ink painting preset.",
             }
         }
     )
-    assert c.prompt_processing_mode == "enhance"
+    cfg = PluginConfig.from_astrbot(raw)
+    assert cfg.prompt_presets == {
+        "赛博朋克": "Mode: cyberpunk preset.",
+        "水墨": "Mode: ink painting preset.",
+    }
+
+
+def test_prompt_presets_template_list_loaded():
+    raw = _raw(
+        prompt_settings={
+            "presets": [
+                {
+                    "__template_key": "preset",
+                    "name": "赛博朋克",
+                    "prompt": "Mode: cyberpunk preset.",
+                },
+                {
+                    "__template_key": "preset",
+                    "name": "水墨",
+                    "prompt": "Mode: ink painting preset.",
+                },
+            ]
+        }
+    )
+    cfg = PluginConfig.from_astrbot(raw)
+    assert cfg.prompt_presets == {
+        "赛博朋克": "Mode: cyberpunk preset.",
+        "水墨": "Mode: ink painting preset.",
+    }
+
+
+def test_enhance_pro_migrates_to_enhance_in_v3():
+    raw = {
+        "connection_settings": {"api_key": "k", "config_layout_version": 3},
+        "prompt_settings": {"mode": "enhance_pro"},
+    }
+    cfg = PluginConfig.from_dict(raw)
+    assert cfg.prompt_processing_mode == "enhance"
+    assert raw["prompt_settings"]["mode"] == "enhance"
+
+
+@pytest.mark.parametrize("mode", ["off", "extract", "standard", "enhance"])
+def test_prompt_processing_config_accepts_independent_providers(mode):
+    raw = {
+        "connection_settings": {
+            "enabled": True,
+            "api_base_url": "https://grok.example.com",
+            "api_key": "key-1",
+            "config_layout_version": 3,
+        },
+        "prompt_settings": {
+            "mode": mode,
+            "extract_provider_id": "small-model",
+            "enhance_provider_id": "large-model",
+        },
+    }
+    c = PluginConfig.from_astrbot(raw)
+    assert c.prompt_processing_mode == mode
     assert c.prompt_extract_provider_id == "small-model"
     assert c.prompt_enhance_provider_id == "large-model"
+
+
+@pytest.mark.parametrize("initial_version", [0, 1, 2])
+def test_v3_migration_converts_legacy_enhance_to_standard(initial_version):
+    if initial_version == 0:
+        raw = _raw(
+            capability_settings={"prompt_processing": {"mode": "enhance"}},
+        )
+    else:
+        raw = _raw(
+            connection_settings={"config_layout_version": initial_version},
+            prompt_settings={"mode": "enhance"},
+        )
+
+    cfg = PluginConfig.from_astrbot(raw)
+
+    assert cfg.prompt_processing_mode == "standard"
+    assert raw["connection_settings"]["config_layout_version"] == 3
+    assert raw["prompt_settings"]["mode"] == "standard"
+
+
+@pytest.mark.parametrize("mode", ["off", "extract", "standard"])
+@pytest.mark.parametrize("initial_version", [1, 2])
+def test_v3_migration_preserves_other_modes(mode, initial_version):
+    raw = _raw(
+        connection_settings={"config_layout_version": initial_version},
+        prompt_settings={"mode": mode},
+    )
+
+    cfg = PluginConfig.from_astrbot(raw)
+
+    assert cfg.prompt_processing_mode == mode
+    assert raw["connection_settings"]["config_layout_version"] == 3
+    assert raw["prompt_settings"]["mode"] == mode
+
+
+@pytest.mark.parametrize("mode", ["off", "extract", "standard", "enhance"])
+def test_v3_layout_preserves_all_modes_without_modification(mode):
+    raw = _raw(
+        connection_settings={"config_layout_version": 3},
+        prompt_settings={"mode": mode},
+    )
+
+    cfg = PluginConfig.from_astrbot(raw)
+
+    assert cfg.prompt_processing_mode == mode
+    assert raw["connection_settings"]["config_layout_version"] == 3
+    assert raw["prompt_settings"]["mode"] == mode
+
+
+def test_immutable_legacy_mapping_migrates_enhance_to_standard():
+    from types import MappingProxyType
+
+    raw = MappingProxyType(_raw(capability_settings={"prompt_processing": {"mode": "enhance"}}))
+    cfg = PluginConfig.from_astrbot(raw)
+    assert cfg.prompt_processing_mode == "standard"
 
 
 def test_prompt_processing_reference_image_disable_is_configurable_without_legacy_migration():
@@ -302,7 +517,7 @@ def test_reject_bool_as_int():
 def test_reject_out_of_range():
     _raises(capability_settings={"max_search_output_chars": 100})
     _raises(capability_settings={"max_search_output_chars": 90000})
-    _raises(advanced_settings={"prompt_processing_timeout_seconds": 61})
+    _raises(advanced_settings={"prompt_processing_timeout_seconds": 301})
     _raises(advanced_settings={"prompt_processing_timeout_seconds": 0})
     _raises(advanced_settings={"model_retry_count": -1})
     _raises(advanced_settings={"model_retry_count": 6})
@@ -527,3 +742,98 @@ def test_task_timeout_seconds_accepts_valid_range(value):
 @pytest.mark.parametrize("value", [0, 59, 7201, "fast", None])
 def test_task_timeout_seconds_rejects_invalid_values(value):
     _raises(advanced_settings={"task_timeout_seconds": value})
+
+
+def test_character_research_config_defaults_and_overrides():
+    c = _cfg()
+    assert c.prompt_character_research_mode == "off"
+    assert c.prompt_character_research_timeout_seconds == 120
+
+    c_custom = _cfg(
+        capability_settings={"prompt_processing": {"character_research_mode": "auto"}},
+        advanced_settings={"character_research_timeout_seconds": 30},
+    )
+    assert c_custom.prompt_character_research_mode == "auto"
+    assert c_custom.prompt_character_research_timeout_seconds == 30
+
+    c_always = _cfg(
+        capability_settings={"prompt_processing": {"character_research_mode": "always"}},
+    )
+    assert c_always.prompt_character_research_mode == "always"
+
+
+def test_character_research_mode_rejects_invalid():
+    _raises(capability_settings={"prompt_processing": {"character_research_mode": "invalid"}})
+    _raises(capability_settings={"prompt_processing": {"character_research_mode": 123}})
+    _raises(capability_settings={"prompt_processing": {"character_research_mode": True}})
+
+
+@pytest.mark.parametrize("timeout", [4, 601, "20", True, None])
+def test_character_research_timeout_rejects_out_of_range(timeout):
+    _raises(advanced_settings={"character_research_timeout_seconds": timeout})
+
+
+def test_character_research_redacted_summary():
+    c = _cfg(
+        capability_settings={"prompt_processing": {"character_research_mode": "auto"}},
+        advanced_settings={"character_research_timeout_seconds": 25},
+    )
+    summary = c.redacted_summary()
+    assert summary["prompt_character_research_mode"] == "auto"
+    assert summary["prompt_character_research_timeout_seconds"] == 25
+
+
+@pytest.mark.parametrize(
+    ("raw_val", "expected"),
+    [
+        ("轮询重试", "round_robin"),
+        ("依次重试", "sequential"),
+        ("round_robin", "round_robin"),
+        ("sequential", "sequential"),
+        ("  轮询重试  ", "round_robin"),
+        ("  依次重试  ", "sequential"),
+    ],
+)
+def test_model_retry_strategy_parsing(raw_val, expected):
+    raw = {
+        "connection_settings": {"api_key": "k", "config_layout_version": 3},
+        "performance_settings": {
+            "reliability": {"model_retry_strategy": raw_val},
+        },
+    }
+    cfg = PluginConfig.from_dict(raw)
+    assert cfg.model_retry_strategy == expected
+
+
+def test_model_retry_strategy_default():
+    raw = {
+        "connection_settings": {"api_key": "k", "config_layout_version": 3},
+    }
+    cfg = PluginConfig.from_dict(raw)
+    assert cfg.model_retry_strategy == "round_robin"
+
+
+def test_model_retry_strategy_rejects_invalid():
+    raw = {
+        "connection_settings": {"api_key": "k", "config_layout_version": 3},
+        "performance_settings": {
+            "reliability": {"model_retry_strategy": "invalid_mode"},
+        },
+    }
+    with pytest.raises(ConfigurationError) as ei:
+        PluginConfig.from_dict(raw)
+    assert ei.value.code == "invalid_config"
+    assert "选项只能为 轮询重试 或 依次重试" in str(ei.value)
+
+
+def test_model_retry_strategy_rejects_non_string():
+    raw = {
+        "connection_settings": {"api_key": "k", "config_layout_version": 3},
+        "performance_settings": {
+            "reliability": {"model_retry_strategy": 1},
+        },
+    }
+    with pytest.raises(ConfigurationError) as ei:
+        PluginConfig.from_dict(raw)
+    assert ei.value.code == "invalid_config"
+    assert "必须是字符串" in str(ei.value)

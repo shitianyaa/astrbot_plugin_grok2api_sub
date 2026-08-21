@@ -156,17 +156,18 @@ def _pyproject_version(root: Path, result: CheckResult) -> str | None:
     return version
 
 
-def _config_version(root: Path, result: CheckResult) -> str | None:
-    text = _read_text(root, "core/config.py", result)
+def _config_version(root: Path, result: CheckResult) -> tuple[str, str | None]:
+    config_path = (
+        "core/common/config.py" if (root / "core/common/config.py").exists() else "core/config.py"
+    )
+    text = _read_text(root, config_path, result)
     if text is None:
-        return None
+        return config_path, None
     match = CONFIG_VERSION_RE.search(text)
     version = _normalise_version(match.group("version") if match else None)
     if version is None:
-        result.errors.append(
-            Error("invalid_version", "core/config.py", "version() must return vX.Y.Z")
-        )
-    return version
+        result.errors.append(Error("invalid_version", config_path, "version() must return vX.Y.Z"))
+    return config_path, version
 
 
 def _readme_version(root: Path, result: CheckResult) -> str | None:
@@ -304,11 +305,12 @@ def check_release(root: Path, tag: str, *, inputs: Iterable[str] | None = None) 
         result.errors.append(Error("invalid_tag", "--tag", "tag must use vX.Y.Z"))
         return result
 
+    config_path, config_version = _config_version(root, result)
     result.versions = {
         "tag": tag_version,
         "metadata.yaml": _metadata_version(root, result),
         "pyproject.toml": _pyproject_version(root, result),
-        "core/config.py": _config_version(root, result),
+        config_path: config_version,
         "README.md": _readme_version(root, result),
     }
     for path, version in result.versions.items():
