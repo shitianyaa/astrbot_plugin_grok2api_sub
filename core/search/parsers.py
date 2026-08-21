@@ -215,7 +215,9 @@ def parse_search_response(payload: Mapping[str, Any]) -> SearchResult:
         status=status,
         text=text,
         sources=tuple(merged),
-        search_performed=True,
+        # 只有真正观察到完成的 web_search_call 才标记为“已执行搜索”。
+        # 纯文本回答可直出（通用搜索），但不能作为字符研究的视觉资料。
+        search_performed=search_done,
     )
 
 
