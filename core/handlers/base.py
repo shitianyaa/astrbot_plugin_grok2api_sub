@@ -28,7 +28,6 @@ _ERROR_HINTS: dict[str, str] = {
     "prompt_processing_timeout": "智能改写提示词超时，请重试",
     "prompt_processing_provider_failed": "智能改写提示词失败，请检查提示词改写模型的配置",
     "prompt_processing_provider_missing": "请先配置提示词改写模型，或关闭智能改写",
-    "prompt_mode_conflict": "提示词处理模式只能指定一个，请移除多余的模式参数",
     "prompt_options_unsupported": "提示词处理和资料搜索参数仅支持 /g2生图",
     "prompt_search_mode_invalid": "-s/--search 只能与 -st、-eh 或 -ys 预设配合使用",
     "prompt_search_disabled": "资料搜索已在插件配置中关闭，无法使用 -s/--search",

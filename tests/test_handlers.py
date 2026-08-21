@@ -343,3 +343,18 @@ async def test_help_command_returns_updated_syntax_and_modes():
     assert "-ehp" not in help_text
     assert "深度增强" not in help_text
     assert "风格预设(-ys<名称>)" in help_text
+
+
+async def test_prompt_mode_conflict_preserves_dynamic_tokens():
+    from core.errors import ConfigurationError
+
+    mixin = _mixin(_fallback_cfg())
+
+    exc = ConfigurationError(
+        "提示词处理模式只能指定一个，检测到：-st -eh",
+        code="prompt_mode_conflict",
+    )
+    await mixin._send_error(StubEvent(), exc, operation="image_generate")
+
+    # 不再有 _ERROR_HINTS 条目，_send_error 回退到异常携带的动态消息（含冲突 token）。
+    assert mixin.sent == ["提示词处理模式只能指定一个，检测到：-st -eh"]
