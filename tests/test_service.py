@@ -160,7 +160,7 @@ def _search_without_tool_response():
             "id": "resp-no-search",
             "model": "first",
             "status": "completed",
-            "output": [{"type": "message", "content": [{"type": "output_text", "text": "answer"}]}],
+            "output": [{"type": "message", "content": [{"type": "output_text", "text": ""}]}],
         }
     )
 

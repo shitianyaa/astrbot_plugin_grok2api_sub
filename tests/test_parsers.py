@@ -269,3 +269,28 @@ def test_format_search_for_llm_empty_text_and_no_sources():
         search_performed=True,
     )
     assert format_search_for_llm(res) == ""
+
+
+def test_parse_search_response_accepts_non_empty_text_without_explicit_tool_call():
+    payload = {
+        "id": "r_build_46",
+        "model": "grok-4.6",
+        "status": "completed",
+        "output": [
+            {
+                "type": "message",
+                "content": [
+                    {
+                        "type": "output_text",
+                        "text": "这是 Grok 4.6 生成的最新科技动态分析，参考来源详见 https://example.com/tech",
+                    }
+                ],
+            }
+        ],
+    }
+    result = parse_search_response(payload)
+    assert result.status == "completed"
+    assert result.search_performed is True
+    assert "最新科技动态分析" in result.text
+    assert len(result.sources) == 1
+    assert result.sources[0].url == "https://example.com/tech"

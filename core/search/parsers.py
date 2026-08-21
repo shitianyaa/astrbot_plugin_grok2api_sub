@@ -206,7 +206,7 @@ def parse_search_response(payload: Mapping[str, Any]) -> SearchResult:
             retryable=True,
         )
 
-    if not search_done:
+    if not search_done and not text:
         raise SearchNotPerformedError()
 
     return SearchResult(

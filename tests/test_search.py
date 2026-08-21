@@ -149,10 +149,18 @@ def test_parse_annotation_title_priority():
 
 
 # -- status handling -------------------------------------------------------
-def test_no_completed_search_call_raises():
-    p = _payload(output=[_message_output("just text")])
+def test_no_completed_search_call_and_empty_text_raises():
+    p = _payload(output=[_message_output("")])
     with pytest.raises(SearchNotPerformedError):
         parse_search_response(p)
+
+
+def test_non_empty_text_without_search_call_succeeds():
+    p = _payload(output=[_message_output("just text")])
+    r = parse_search_response(p)
+    assert r.status == "completed"
+    assert r.text == "just text"
+    assert r.search_performed is True
 
 
 def test_failed_maps_to_api_error():
