@@ -79,6 +79,24 @@ def test_prompt_json_keeps_resolved_fields_and_redacts_sensitive_fragments():
         assert secret not in encoded
 
 
+def test_prompt_json_recurses_into_nested_payloads():
+    encoded = sanitize_prompt_json(
+        {
+            "prompt": "a cat",
+            "params": {
+                "ref_url": "https://example.com/media/g2a_AbC123secret.png",
+                "auth": {"token": "g2a_Str0ngT0ken"},
+                "tags": ["keep", "https://u.com/x/g2a_Secret"],
+            },
+        }
+    )
+
+    assert '"prompt":"a cat"' in encoded
+    assert '"keep"' in encoded
+    for secret in ("g2a_AbC123secret", "g2a_Str0ngT0ken", "g2a_Secret"):
+        assert secret not in encoded
+
+
 def test_safe_log_ignores_unknown_fields():
     # must not raise and must not crash on unknown/sensitive fields
     safe_log(logging.INFO, "probe", fake_secret="g2a_zzz_secret", operation="x")

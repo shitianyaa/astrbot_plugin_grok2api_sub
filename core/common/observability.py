@@ -212,14 +212,25 @@ def _sanitize_sensitive_text(text: str) -> str:
     return _SENSITIVE_ASSIGNMENT_RE.sub(r"\1\2***", text)
 
 
+def _sanitize_value(value: object) -> object:
+    """Recursively redact sensitive fragments in strings, lists, and dicts."""
+    if isinstance(value, str):
+        return _sanitize_sensitive_text(value)
+    if isinstance(value, list):
+        return [_sanitize_value(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_sanitize_value(item) for item in value)
+    if isinstance(value, dict):
+        return {str(key): _sanitize_value(item) for key, item in value.items()}
+    return value
+
+
 def sanitize_prompt_json(value: object) -> str:
     """Serialize the approved prompt payload while retaining readable text."""
     if not isinstance(value, Mapping):
         return json.dumps({"prompt": "<invalid_payload>"}, ensure_ascii=False)
 
-    payload: dict[str, object] = {}
-    for key, item in value.items():
-        payload[str(key)] = _sanitize_sensitive_text(item) if isinstance(item, str) else item
+    payload: dict[str, object] = {str(key): _sanitize_value(item) for key, item in value.items()}
     encoded = json.dumps(payload, ensure_ascii=False, separators=(",", ":"), default=str)
     if len(encoded) <= _MAX_PROMPT_LOG_CHARS:
         return encoded
