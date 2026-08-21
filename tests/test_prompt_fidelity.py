@@ -1,10 +1,9 @@
-"""Tests for character research heuristics, reference cleaning, and prompt fidelity checks."""
+"""Tests for character research heuristics and search-reference cleaning."""
 
 from __future__ import annotations
 
 from core.common.prompt_fidelity import (
     clean_and_truncate_reference,
-    fidelity_check,
     should_research_character,
 )
 
@@ -171,150 +170,6 @@ class TestCleanAndTruncateReference:
         assert "Furina" in cleaned
         assert "Genshin Impact" in cleaned
         assert "heterochromia eyes" in cleaned
-
-
-class TestFidelityCheck:
-    """Tests for prompt fidelity validation."""
-
-    def test_empty_enhanced_prompt_fails(self):
-        """Empty or blank enhanced prompt fails fidelity check."""
-        assert not fidelity_check("Draw a cat", "")
-        assert not fidelity_check("Draw a cat", "   \n\t")
-
-    def test_plain_prompt_passes(self):
-        """Basic prompt without quotes or negation passes with normal enhancement."""
-        source = "画一个可爱的女孩在草地上看书"
-        enhanced = (
-            "A cute young girl with brown hair sitting on a sunny green lawn, "
-            "reading an open book, soft lighting."
-        )
-        assert fidelity_check(source, enhanced, "image")
-
-    def test_quoted_text_preserved(self):
-        """Quoted text in source must be present in enhanced prompt."""
-        source = "画一个女孩，衣服上写着 'KEEPOUT'，胸前带有“VIP”徽章"
-        valid_enhanced = (
-            "A girl in a black hoodie with 'KEEPOUT' printed on it and a 'VIP' badge on her chest."
-        )
-        assert fidelity_check(source, valid_enhanced, "image")
-
-    def test_quoted_text_missing_fails(self):
-        """Fails if quoted text from source is omitted in enhanced prompt."""
-        source = "画一个女孩，衣服上写着 'KEEPOUT'，胸前带有“VIP”徽章"
-        invalid_enhanced = (
-            "A girl in a black hoodie with text on it and a special badge on her chest."
-        )
-        assert not fidelity_check(source, invalid_enhanced, "image")
-
-    def test_book_title_quotes_preserved(self):
-        """Book titles in 《...》 or 〈...〉 must be preserved."""
-        source = "绘制《原神》雷电将军插画"
-        valid_enhanced = (
-            "An illustration of Raiden Shogun from 《原神》 (Genshin Impact), electro effects."
-        )
-        assert fidelity_check(source, valid_enhanced, "image")
-
-        invalid_enhanced = (
-            "An illustration of a purple-haired warrior woman with a katana and lightning."
-        )
-        assert not fidelity_check(source, invalid_enhanced, "image")
-
-    def test_negation_keywords_preserved(self):
-        """Negative constraints in source must be reflected in enhanced prompt."""
-        source = "画一个男孩，不要戴眼镜，无背景"
-        valid_enhanced = "A handsome boy looking forward, no glasses, without a background."
-        assert fidelity_check(source, valid_enhanced, "image")
-
-        # Completely dropping negation clauses fails
-        invalid_enhanced = "A handsome boy looking forward with detailed background."
-        assert not fidelity_check(source, invalid_enhanced, "image")
-
-    def test_english_negation_preserved(self):
-        """English negation keywords (no, without, do not, don't) in source must be preserved."""
-        source = "a city street, without cars, no pedestrians"
-        valid_enhanced = "A serene cyberpunk city street at dusk, no cars, without any pedestrians."
-        assert fidelity_check(source, valid_enhanced, "image")
-
-        invalid_enhanced = (
-            "A serene cyberpunk city street at dusk with bustling crowds and vehicles."
-        )
-        assert not fidelity_check(source, invalid_enhanced, "image")
-
-    def test_complex_source_with_quotes_and_negation(self):
-        """Both quotes and negation constraints must pass."""
-        source = "画一个女孩，衣服上写着 'KEEPOUT'，不要出现猫"
-        valid_enhanced = "A girl in a jacket with text 'KEEPOUT'. No cats in the scene."
-        assert fidelity_check(source, valid_enhanced, "image")
-
-        # Lost quote
-        missing_quote = "A girl in a jacket. No cats in the scene."
-        assert not fidelity_check(source, missing_quote, "image")
-
-        # Lost negation
-        missing_negation = "A girl in a jacket with text 'KEEPOUT', walking with a dog."
-        assert not fidelity_check(source, missing_negation, "image")
-
-    def test_explicit_visual_details_cannot_be_dropped(self):
-        source = "红发女孩左手持黑伞，右手抱白狗"
-        valid = (
-            "A red-haired girl holds a black umbrella in her left hand and carries "
-            "a white dog with her right hand."
-        )
-        assert fidelity_check(source, valid, "image")
-        assert not fidelity_check(source, "一个女孩站在雨中", "image")
-
-    def test_each_negated_target_must_be_preserved(self):
-        source = "不要狗，也不要爆炸"
-        assert fidelity_check(source, "No dogs and no explosions.", "image")
-        assert not fidelity_check(source, "No dogs.", "image")
-
-        count_source = "画两个女孩，不要出现三只猫"
-        assert fidelity_check(count_source, "Two girls, no three cats.", "image")
-        assert not fidelity_check(count_source, "A girl, no cats.", "image")
-
-    def test_count_marker_above_ten_does_not_crash(self):
-        # 25 不在 _NUMBER_ALIASES (0-10)，不能抛 KeyError。
-        assert fidelity_check("画25个人", "画25个人, 详细光照")
-        # 原文 25 被改写消失 -> 不保真，仍应正常返回 False 而非崩溃。
-        assert not fidelity_check("画25个人", "画一群人")
-
-    def test_video_action_order_must_be_preserved(self):
-        source = "机器人先奔跑，然后停止，最后举起右手"
-        valid = "The robot runs, then stops, and finally raises its right hand."
-        invalid = "The robot raises its right hand, then runs and stops."
-        assert fidelity_check(source, valid, "video")
-        assert not fidelity_check(source, invalid, "video")
-
-    def test_fidelity_check_edge_cases(self):
-        """Edge cases for invalid types and empty inputs."""
-        assert not fidelity_check("Draw a cat", None)  # type: ignore[arg-type]
-        assert not fidelity_check("Draw a cat", "")
-        assert fidelity_check("", "A cat on a mat")
-        assert fidelity_check(None, "A cat on a mat")  # type: ignore[arg-type]
-
-    def test_fidelity_check_other_negations(self):
-        """Test various Chinese and English negation patterns."""
-        # Chinese: 禁止, 不能, 排除, 不包含, 别
-        assert fidelity_check(
-            "画一个未来城市，禁止出现汽车",
-            "A futuristic city with flying vehicles, no cars allowed.",
-        )
-        assert not fidelity_check(
-            "画一个未来城市，禁止出现汽车",
-            "A futuristic city with flying vehicles and ground traffic.",
-        )
-        assert fidelity_check(
-            "画一个战士，不包含任何血腥元素",
-            "A brave warrior standing victorious, without blood or gore.",
-        )
-        assert not fidelity_check(
-            "画一个战士，不包含任何血腥元素",
-            "A brave warrior standing victorious in a battlefield.",
-        )
-        assert fidelity_check(
-            "画一个人物，别画胡子",
-            "A young clean-shaven character, no beard.",
-        )
 
     def test_clean_and_truncate_reference_edge_cases(self):
         """Edge cases for clean_and_truncate_reference."""

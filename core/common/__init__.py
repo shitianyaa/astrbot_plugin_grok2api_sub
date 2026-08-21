@@ -46,7 +46,6 @@ from .observability import (
 from .platform import PlatformKind, resolve_platform
 from .prompt_fidelity import (
     clean_and_truncate_reference,
-    fidelity_check,
     should_research_character,
 )
 from .prompt_processor import PromptProcessor
@@ -87,7 +86,6 @@ __all__ = [
     "check_access",
     "check_task_deadline",
     "clean_and_truncate_reference",
-    "fidelity_check",
     "get_task_deadline",
     "operation_scope",
     "record_task_attempt",
