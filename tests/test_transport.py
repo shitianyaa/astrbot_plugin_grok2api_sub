@@ -218,22 +218,21 @@ async def test_generation_post_retries_network_and_invalid_json():
     assert len(s.calls) == 3
 
 
-async def test_search_retry_consumes_budget_before_second_upstream_request():
+async def test_search_request_not_limited_by_transport_budget():
     t, s = _make()
     s.push(FakeResponse(503, body="{}"), FakeResponse(200, body='{"ok":1}'))
     with search_budget_scope(1) as budget:
-        with pytest.raises(PluginError) as ei:
-            await t.request_json(
-                "POST",
-                "/v1/responses",
-                json_body={},
-                timeout_seconds=5,
-                retry_policy=_policy(),
-                operation="search",
-            )
-    assert ei.value.code == "search_budget_exhausted"
-    assert budget.used == 1
-    assert len(s.calls) == 1
+        result = await t.request_json(
+            "POST",
+            "/v1/responses",
+            json_body={},
+            timeout_seconds=5,
+            retry_policy=_policy(),
+            operation="search",
+        )
+    assert result == {"ok": 1}
+    assert len(s.calls) == 2
+    assert budget.used == 0
 
 
 async def test_excluded_status_stops_generation_post_retry():

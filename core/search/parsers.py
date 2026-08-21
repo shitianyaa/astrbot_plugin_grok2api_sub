@@ -24,6 +24,8 @@ from ..common.models import ImageResult, SearchResult, SearchSource, VideoJob
 
 _REQUEST_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,128}\Z")
 _URL_RE = re.compile(r"^https?://[^\s]+\Z")
+_EXTRACT_URL_RE = re.compile(r"https?://[^\s)\]}>\"']+")
+_TRAILING_PUNCTUATION = ".,;:!?，。！？）】”’'\""
 
 
 # ---------------------------------------------------------------------------
@@ -130,6 +132,24 @@ def _message_text_and_annotations(
     return "".join(text_parts), sources
 
 
+def _extract_urls_from_text(text: str) -> list[SearchSource]:
+    if not text:
+        return []
+    sources: list[SearchSource] = []
+    seen: set[str] = set()
+    for raw_url in _EXTRACT_URL_RE.findall(text):
+        url = raw_url.rstrip(_TRAILING_PUNCTUATION)
+        if not url:
+            continue
+        if not (url.startswith("http://") or url.startswith("https://")):
+            continue
+        if url in seen:
+            continue
+        seen.add(url)
+        sources.append(SearchSource(url=url))
+    return sources
+
+
 def parse_search_response(payload: Mapping[str, Any]) -> SearchResult:
     response_id = str(payload.get("id") or "")
     model = str(payload.get("model") or "")
@@ -159,6 +179,8 @@ def parse_search_response(payload: Mapping[str, Any]) -> SearchResult:
         merged.append(src)
 
     text = "".join(text_parts)
+    if not merged and text:
+        merged = _extract_urls_from_text(text)
 
     if status in ("failed", "error"):
         err = payload.get("error") or {}
@@ -217,6 +239,38 @@ def format_search_result(
             label = f"{src.title} - {src.url}" if src.title else src.url
             lines.append(f"- {label}")
     return "\n".join(lines)
+
+
+def format_search_for_llm(
+    result: SearchResult,
+    *,
+    max_chars: int = 6000,
+    max_sources: int = 5,
+    show_sources: bool = True,
+) -> str:
+    text = result.text
+    if len(text) > max_chars:
+        text = text[:max_chars] + "\n[内容已截断]"
+
+    if not show_sources or max_sources <= 0 or not result.sources:
+        return text
+
+    source_lines = ["\n参考来源:"]
+    for idx, src in enumerate(result.sources[:max_sources], start=1):
+        title = src.title.strip() if src.title else ""
+        url = src.url.strip() if src.url else ""
+        snippet = src.snippet.strip() if src.snippet else ""
+        if title:
+            source_lines.append(f"  {idx}. {title}")
+            if url:
+                source_lines.append(f"     {url}")
+        else:
+            source_lines.append(f"  {idx}. {url}")
+        if snippet:
+            source_lines.append(f"     {snippet}")
+
+    sources_text = "\n".join(source_lines)
+    return f"{text}{sources_text}" if text else sources_text.lstrip("\n")
 
 
 # ---------------------------------------------------------------------------

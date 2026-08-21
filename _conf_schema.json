@@ -213,7 +213,7 @@
         "description": "显示搜索来源",
         "type": "bool",
         "default": true,
-        "hint": "控制手动搜索和会话级搜索 Tool 的来源展示。"
+        "hint": "同时控制手动 /g2搜索 与会话级 grok2api_web_search Tool 结果中是否附带来源列表。"
       },
       "max_search_sources": {
         "description": "最多显示来源数",
@@ -221,7 +221,7 @@
         "default": 5,
         "slider": { "min": 0, "max": 10, "step": 1 },
         "collapsed": true,
-        "hint": "设为 0 时不显示来源。"
+        "hint": "同时控制手动 /g2搜索 与会话级 grok2api_web_search Tool 单次最多返回的来源数；设为 0 时不显示来源。"
       },
       "max_search_output_chars": {
         "description": "搜索结果最大长度",
@@ -229,15 +229,7 @@
         "default": 6000,
         "slider": { "min": 500, "max": 20000, "step": 100 },
         "collapsed": true,
-        "hint": "超出后会截断正文。"
-      },
-      "max_search_requests_per_task": {
-        "description": "单次任务最大搜索请求数",
-        "type": "int",
-        "default": 3,
-        "slider": { "min": 1, "max": 10, "step": 1 },
-        "collapsed": true,
-        "hint": "限制 /g2搜索、LLM 搜索 Tool 和生图资料搜索实际发出的上游搜索请求（含重试与回退）；Tool 达上限后返回本轮已有结果并引导主模型回答。"
+        "hint": "同时控制手动 /g2搜索 与会话级 grok2api_web_search Tool 结果正文字符上限，超出后截断正文。"
       }
     }
   },
@@ -299,28 +291,21 @@
         "description": "搜索结果是否展示结构化来源。",
         "type": "bool",
         "default": true,
-        "hint": "手动命令输出与 Tool 返回内容均遵守此开关。"
+        "hint": "同时控制手动 /g2搜索 与会话级 grok2api_web_search Tool 结果中是否附带来源列表。"
       },
       "max_search_sources": {
         "description": "单个搜索结果最多展示的来源数。",
         "type": "int",
         "default": 5,
         "slider": { "min": 0, "max": 10, "step": 1 },
-        "hint": "0 表示不展示来源。"
+        "hint": "同时控制手动 /g2搜索 与会话级 grok2api_web_search Tool 单次最多返回的来源数；设为 0 时不显示来源。"
       },
       "max_search_output_chars": {
         "description": "搜索结果正文按 Unicode 字符截断的上限。",
         "type": "int",
         "default": 6000,
         "slider": { "min": 500, "max": 20000, "step": 100 },
-        "hint": "超出后追加 [内容已截断] 标记。"
-      },
-      "max_search_requests_per_task": {
-        "description": "单次任务最大搜索请求数。",
-        "type": "int",
-        "default": 3,
-        "slider": { "min": 1, "max": 10, "step": 1 },
-        "hint": "限制 /g2搜索、LLM 搜索 Tool 和生图资料搜索实际上游请求数（含重试与回退）；Tool 达上限后返回本轮已有结果并引导主模型回答。"
+        "hint": "同时控制手动 /g2搜索 与会话级 grok2api_web_search Tool 结果正文字符上限，超出后追加 [内容已截断] 标记。"
       },
       "image_response_format": {
         "description": "生图/改图响应格式。",

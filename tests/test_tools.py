@@ -1,13 +1,10 @@
-"""Grok2API search FunctionTool tests: policy, JSON output, no direct send."""
+"""Grok2API search FunctionTool tests: policy, formatted string output, no direct send."""
 
 from __future__ import annotations
 
-import json
-
 import pytest
 
-from core.common.search_budget import consume_search_request
-from core.errors import SearchNotPerformedError
+from core.errors import PluginError, SearchNotPerformedError
 from core.platform import PlatformKind
 from core.service import GrokService
 from core.tools import Grok2APISearchTool, SearchToolPolicy
@@ -26,36 +23,17 @@ class _Ctx:
 
 
 class _FakeService:
-    def __init__(self, result=None, error=None, *, consume_request=False):
+    def __init__(self, result=None, error=None):
         self._result = result
         self._error = error
-        self._consume_request = consume_request
         self.calls = 0
 
     async def search(self, event, query, *, required=True):
         self.calls += 1
         assert required is True
-        if self._consume_request:
-            consume_search_request()
         if self._error:
             raise self._error
         return self._result
-
-
-class _BudgetSequenceService:
-    def __init__(self, results):
-        self._results = list(results)
-        self.calls = 0
-
-    async def search(self, event, query, *, required=True):
-        assert required is True
-        consume_search_request()
-        index = self.calls
-        self.calls += 1
-        result = self._results[index]
-        if isinstance(result, Exception):
-            raise result
-        return result
 
 
 def _service_result(*, text="answer", sources=None):
@@ -83,21 +61,14 @@ def _tool(policy=None, service=None, event=_MISSING):
     return tool, _Ctx(event)
 
 
-def _parse(value):
-    return json.loads(value)
-
-
 # -- extraction / contract -------------------------------------------------
-async def test_tool_extracts_event_and_returns_json():
+async def test_tool_extracts_event_and_returns_formatted_string():
     ev = FakeEvent()
     tool, ctx = _tool(event=ev)
-    out = _parse(await tool.call(ctx, query="q"))
-    assert out["ok"] is True
-    assert out["answer"] == "answer"
-    assert out["sources"][0]["url"] == "https://e.com/1"
-    assert out["incomplete"] is False
-    assert out["error_code"] == ""
-    assert out["should_stop_search"] is False
+    out = await tool.call(ctx, query="q")
+    assert "answer" in out
+    assert "参考来源:" in out
+    assert "https://e.com/1" in out
 
 
 async def test_tool_does_not_call_event_send():
@@ -108,10 +79,10 @@ async def test_tool_does_not_call_event_send():
 
 
 @pytest.mark.parametrize(
-    ("show_sources", "max_sources", "expected_count"),
-    [(False, 5, 0), (True, 0, 0), (True, 1, 1)],
+    ("show_sources", "max_sources", "expect_sources"),
+    [(False, 5, False), (True, 0, False), (True, 1, True)],
 )
-async def test_tool_sources_follow_display_configuration(show_sources, max_sources, expected_count):
+async def test_tool_sources_follow_display_configuration(show_sources, max_sources, expect_sources):
     from core.models import SearchSource
 
     result = _service_result(
@@ -124,8 +95,13 @@ async def test_tool_sources_follow_display_configuration(show_sources, max_sourc
         policy=_policy(show_sources=show_sources, max_sources=max_sources),
         service=_FakeService(result=result),
     )
-    out = _parse(await tool.call(ctx, query="q"))
-    assert len(out["sources"]) == expected_count
+    out = await tool.call(ctx, query="q")
+    if expect_sources:
+        assert "参考来源:" in out
+        assert "https://e.com/1" in out
+        assert "https://e.com/2" not in out
+    else:
+        assert "参考来源" not in out
 
 
 async def test_tool_name_and_description():
@@ -138,52 +114,57 @@ async def test_tool_name_and_description():
 async def test_disabled_policy_no_client_call():
     svc = _FakeService(result=_service_result())
     tool, ctx = _tool(policy=_policy(enabled=False), service=svc)
-    out = _parse(await tool.call(ctx, query="q"))
-    assert out["ok"] is False
+    out = await tool.call(ctx, query="q")
+    assert out == "搜索失败: 搜索能力不可用"
     assert svc.calls == 0
 
 
 async def test_empty_query_no_client_call():
     svc = _FakeService(result=_service_result())
     tool, ctx = _tool(service=svc)
-    out = _parse(await tool.call(ctx))
-    assert out["ok"] is False
+    out = await tool.call(ctx)
+    assert out == "搜索失败: 查询内容不能为空"
     assert svc.calls == 0
 
 
 async def test_no_key_no_client_call():
     svc = _FakeService(result=_service_result())
     tool, ctx = _tool(policy=_policy(has_key=False), service=svc)
-    out = _parse(await tool.call(ctx, query="q"))
-    assert out["ok"] is False
+    out = await tool.call(ctx, query="q")
+    assert out == "搜索失败: 搜索能力不可用"
     assert svc.calls == 0
 
 
 async def test_no_model_no_client_call():
     svc = _FakeService(result=_service_result())
     tool, ctx = _tool(policy=_policy(has_model=False), service=svc)
-    out = _parse(await tool.call(ctx, query="q"))
-    assert out["ok"] is False
+    out = await tool.call(ctx, query="q")
+    assert out == "搜索失败: 搜索能力不可用"
     assert svc.calls == 0
 
 
-async def test_missing_event_returns_structured_failure():
+async def test_missing_event_returns_failure():
     tool, ctx = _tool(event=None)
-    out = _parse(await tool.call(ctx, query="q"))
-    assert out["ok"] is False
-    assert out["error_code"] == "no_event_context"
+    out = await tool.call(ctx, query="q")
+    assert out == "搜索失败: 缺少会话上下文事件"
 
 
-async def test_plugin_error_maps_to_error_code():
-    svc = _FakeService(error=SearchNotPerformedError())
+async def test_plugin_error_maps_to_user_message():
+    err = SearchNotPerformedError()
+    svc = _FakeService(error=err)
     tool, ctx = _tool(service=svc)
-    out = _parse(await tool.call(ctx, query="q"))
-    assert out["ok"] is False
-    assert out["error_code"] == "search_not_performed"
+    out = await tool.call(ctx, query="q")
+    assert out == f"搜索失败: {err.user_message}"
+
+
+async def test_generic_exception_maps_to_upstream_error():
+    svc = _FakeService(error=RuntimeError("something bad"))
+    tool, ctx = _tool(service=svc)
+    out = await tool.call(ctx, query="q")
+    assert out == "搜索失败: 上游服务请求异常"
 
 
 async def test_unsupported_platform_blocked_via_service():
-    # Unsupported platform: the tool's service preflight rejects before HTTP.
     from core.platform import resolve_platform
 
     kind = resolve_platform(FakeEvent(kind=PlatformKind.UNSUPPORTED))
@@ -192,17 +173,15 @@ async def test_unsupported_platform_blocked_via_service():
 
 
 async def test_blacklisted_user_blocked_via_service():
-    from core.errors import PluginError as PE
     from tests.test_service import _cfg
 
     cfg = _cfg(access_settings={"user_blacklist": ["u1"]})
     svc = GrokService(config=cfg, client=None, workspace=None, sender=None)
-    with pytest.raises(PE) as ei:
+    with pytest.raises(PluginError) as ei:
         await svc.search(FakeEvent(sender_id="u1"), "q")
     assert ei.value.code == "user_blacklisted"
 
 
-# -- Task 5: has_model derives from search_models tuple ---------------------
 def test_policy_has_model_from_empty_search_models_disables():
     from tests.test_service import _cfg
 
@@ -243,145 +222,22 @@ def test_policy_disables_when_all_remote_search_tools_are_off():
 
 
 async def test_tool_calls_service_once_with_tuple_models():
-    # the tool must delegate a single search call; it never loops models itself
     svc = _FakeService(result=_service_result())
     tool, ctx = _tool(service=svc)
     await tool.call(ctx, query="q")
     assert svc.calls == 1
 
 
-async def test_tool_shares_actual_search_budget_across_one_agent_turn():
-    svc = _BudgetSequenceService(
-        [
-            _service_result(text="first answer"),
-            _service_result(text="second answer"),
-        ]
-    )
-    tool, ctx = _tool(policy=_policy(max_search_requests=2), service=svc)
-
-    first = _parse(await tool.call(ctx, query="one"))
-    exhausted = _parse(await tool.call(ctx, query="two"))
-    repeated = _parse(await tool.call(ctx, query="three"))
-
-    assert first["should_stop_search"] is False
-    assert exhausted["ok"] is True
-    assert exhausted["error_code"] == "search_budget_exhausted"
-    assert exhausted["incomplete"] is True
-    assert exhausted["should_stop_search"] is True
-    assert "已达到单次任务最大搜索配额上限（2次）" in exhausted["answer"]
-    assert "请停止调用搜索工具" in exhausted["answer"]
-    assert "first answer" in exhausted["answer"]
-    assert "second answer" in exhausted["answer"]
-    assert exhausted["sources"] == [{"url": "https://e.com/1", "title": "T"}]
-    assert repeated == exhausted
-    assert svc.calls == 2
-    assert ctx.context.extra["grok2api_search_requests"] == "2"
-
-
-async def test_tool_returns_cached_result_when_budget_exhausts_inside_service_call():
-    class _ExhaustingService:
-        def __init__(self):
-            self.calls = 0
-
-        async def search(self, event, query, *, required=True):
-            assert required is True
-            self.calls += 1
-            consume_search_request()
-            if self.calls == 1:
-                return _service_result(text="usable first result")
-            consume_search_request()
-            raise AssertionError("unreachable")
-
-    svc = _ExhaustingService()
-    tool, ctx = _tool(policy=_policy(max_search_requests=2), service=svc)
-
-    assert _parse(await tool.call(ctx, query="one"))["ok"] is True
-    exhausted = _parse(await tool.call(ctx, query="two"))
-
-    assert exhausted["ok"] is True
-    assert exhausted["error_code"] == "search_budget_exhausted"
-    assert exhausted["should_stop_search"] is True
-    assert "usable first result" in exhausted["answer"]
-    assert ctx.context.extra["grok2api_search_requests"] == "2"
-
-
-async def test_tool_returns_cached_result_when_last_allowed_request_fails():
-    svc = _BudgetSequenceService(
-        [
-            _service_result(text="usable first result"),
-            SearchNotPerformedError(),
-        ]
-    )
-    tool, ctx = _tool(policy=_policy(max_search_requests=2), service=svc)
-
-    assert _parse(await tool.call(ctx, query="one"))["ok"] is True
-    exhausted = _parse(await tool.call(ctx, query="two"))
-
-    assert exhausted["ok"] is True
-    assert exhausted["error_code"] == "search_budget_exhausted"
-    assert exhausted["should_stop_search"] is True
-    assert "usable first result" in exhausted["answer"]
-    assert ctx.context.extra["grok2api_search_requests"] == "2"
-
-
-async def test_tool_budget_exhaustion_without_cached_result_returns_nonempty_guidance():
-    class _AlwaysExhaustingService:
-        async def search(self, event, query, *, required=True):
-            assert required is True
-            consume_search_request()
-            consume_search_request()
-
-    tool, ctx = _tool(
-        policy=_policy(max_search_requests=1),
-        service=_AlwaysExhaustingService(),
-    )
-
-    exhausted = _parse(await tool.call(ctx, query="one"))
-
-    assert exhausted["ok"] is False
-    assert exhausted["error_code"] == "search_budget_exhausted"
-    assert exhausted["should_stop_search"] is True
-    assert exhausted["answer"]
-    assert "当前没有可用的成功搜索结果" in exhausted["answer"]
-    assert exhausted["sources"] == []
-
-
-async def test_tool_cached_exhaustion_respects_output_and_source_limits():
-    from core.models import SearchSource
-
-    svc = _BudgetSequenceService(
-        [
-            _service_result(
-                text="a" * 600,
-                sources=(SearchSource(url="https://e.com/1", title="One"),),
-            ),
-            _service_result(
-                text="b" * 600,
-                sources=(SearchSource(url="https://e.com/2", title="Two"),),
-            ),
-        ]
-    )
-    tool, ctx = _tool(
-        policy=_policy(max_search_requests=2, max_sources=1, max_output_chars=500),
-        service=svc,
-    )
-
-    await tool.call(ctx, query="one")
-    exhausted = _parse(await tool.call(ctx, query="two"))
-
-    assert len(exhausted["answer"]) <= 500
-    assert exhausted["answer"].endswith("[缓存结果已截断]")
-    assert exhausted["sources"] == [{"url": "https://e.com/1", "title": "One"}]
-
-
 async def test_tool_logs_lengths_and_outcome_without_logging_query(monkeypatch):
     events = []
     monkeypatch.setattr(
-        "core.tools.safe_log", lambda _level, name, **fields: events.append((name, fields))
+        "core.search.tools.safe_log", lambda _level, name, **fields: events.append((name, fields))
     )
     tool, ctx = _tool()
     await tool.call(ctx, query="private search phrase")
 
     assert [name for name, _fields in events] == ["search_tool_started", "search_tool_completed"]
     assert events[0][1]["query_chars"] == len("private search phrase")
+    assert events[1][1]["source_count"] == 1
+    assert events[1][1]["text_chars"] == len("answer")
     assert "private search phrase" not in str(events)

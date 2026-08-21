@@ -28,7 +28,6 @@ def _default_raw() -> dict:
             "show_search_sources": True,
             "max_search_sources": 5,
             "max_search_output_chars": 6000,
-            "max_search_requests_per_task": 3,
             "image_response_format": "b64_json",
             "prompt_processing": {
                 "mode": "off",
@@ -170,7 +169,6 @@ def test_v1_saved_defaults_migrate_to_longer_timeouts_and_search_budget():
     assert cfg.search_timeout_seconds == 300
     assert cfg.prompt_processing_timeout_seconds == 60
     assert cfg.prompt_character_research_timeout_seconds == 120
-    assert cfg.max_search_requests_per_task == 3
     assert raw["connection_settings"]["config_layout_version"] == 3
 
 
@@ -263,7 +261,6 @@ def test_defaults():
     assert c.prompt_disable_processing_with_reference_image is False
     assert c.prompt_processing_timeout_seconds == 60
     assert c.search_timeout_seconds == 300
-    assert c.max_search_requests_per_task == 3
     assert c.save_media is False
     assert c.enable_web_search is True
     assert c.enable_x_search is True
@@ -774,11 +771,6 @@ def test_character_research_mode_rejects_invalid():
 @pytest.mark.parametrize("timeout", [4, 601, "20", True, None])
 def test_character_research_timeout_rejects_out_of_range(timeout):
     _raises(advanced_settings={"character_research_timeout_seconds": timeout})
-
-
-@pytest.mark.parametrize("value", [0, 11, "3", True, None])
-def test_search_request_budget_rejects_invalid_values(value):
-    _raises(capability_settings={"max_search_requests_per_task": value})
 
 
 def test_character_research_redacted_summary():

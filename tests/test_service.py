@@ -213,6 +213,19 @@ async def test_manual_search_format(tmp_path):
     assert "https://e.com/1" in text
 
 
+async def test_manual_search_format_for_llm(tmp_path):
+    ws = MediaWorkspace(tmp_path)
+    s = FakeSession()
+    s.push(FakeResponse(200, body=json.dumps({"data": [{"id": "grok-4.5"}]})))
+    s.push(FakeResponse(200, body=_search_response()))
+    svc, _ = _make_service(ws, session=s)
+    r = await svc.search(FakeEvent(), "q")
+    text = svc.format_search_for_llm(r)
+    assert "answer" in text
+    assert "参考来源:" in text
+    assert "https://e.com/1" in text
+
+
 async def test_deliver_images_passes_skip_prompt_processing_to_resolver(tmp_path):
     from core.models import ImageGenerationRequest
 
@@ -1555,7 +1568,6 @@ async def test_search_skips_catalog_missing_models_and_uses_first_visible(tmp_pa
         "web_search": True,
         "x_search": True,
         "reasoning_effort": "auto",
-        "max_search_requests": 3,
     }
     assert task_events[1][2]["model"] == "grok-4.5"
     assert task_events[1][2]["result_status"] == "completed"
@@ -1695,7 +1707,7 @@ async def test_search_model_attempt_and_switch_logs_include_wait_time(tmp_path, 
         "round": 1,
         "attempt": 1,
         "reason": "initial",
-        "search_budget": "0/3",
+        "search_budget": "",
     }
     assert events["search_model_skipped"]["model"] == "first"
     assert events["search_model_skipped"]["reason"] == "upstream_server_error"
@@ -1740,7 +1752,7 @@ async def test_search_fallback_exhausts_first_model_retries_before_second(tmp_pa
         FakeResponse(200, body=_search_response()),
     )
     cfg = _cfg(
-        capability_settings={"search_models": "first\nsecond", "max_search_requests_per_task": 5},
+        capability_settings={"search_models": "first\nsecond"},
         advanced_settings={"model_switch_errors": ""},
     )
     service, _ = _make_service(ws, cfg=cfg, session=session)
@@ -1767,7 +1779,7 @@ async def test_search_not_performed_exhausts_retries_before_next_model(tmp_path)
         FakeResponse(200, body=_search_response()),
     )
     cfg = _cfg(
-        capability_settings={"search_models": "first\nsecond", "max_search_requests_per_task": 5},
+        capability_settings={"search_models": "first\nsecond"},
     )
     service, _ = _make_service(ws, cfg=cfg, session=session)
 
@@ -1793,7 +1805,7 @@ async def test_search_fallback_round_robin_across_candidates(tmp_path):
         FakeResponse(200, body=_search_response(model="first")),
     )
     cfg = _cfg(
-        capability_settings={"search_models": "first\nsecond", "max_search_requests_per_task": 5},
+        capability_settings={"search_models": "first\nsecond"},
         advanced_settings={"model_retry_count": 1},
     )
     service, _ = _make_service(ws, cfg=cfg, session=session)
@@ -1819,7 +1831,7 @@ async def test_search_fallback_sequential_strategy(tmp_path):
         FakeResponse(200, body=_search_response(model="second")),
     )
     cfg = _cfg(
-        capability_settings={"search_models": "first\nsecond", "max_search_requests_per_task": 5},
+        capability_settings={"search_models": "first\nsecond"},
         performance_settings={
             "reliability": {
                 "model_retry_count": 1,
@@ -1850,7 +1862,7 @@ async def test_search_single_candidate_retries_configured_rounds(tmp_path):
         FakeResponse(200, body=_search_response(model="single_search")),
     )
     cfg = _cfg(
-        capability_settings={"search_models": "single_search", "max_search_requests_per_task": 5},
+        capability_settings={"search_models": "single_search"},
         advanced_settings={"model_retry_count": 2},
     )
     service, _ = _make_service(ws, cfg=cfg, session=session)
@@ -1879,7 +1891,7 @@ async def test_search_fallback_exhausted_across_all_rounds_raises_search_models_
         FakeResponse(500, body=json.dumps({"error": {"code": "internal_error"}})),
     )
     cfg = _cfg(
-        capability_settings={"search_models": "first\nsecond", "max_search_requests_per_task": 5},
+        capability_settings={"search_models": "first\nsecond"},
         advanced_settings={"model_retry_count": 1},
     )
     service, _ = _make_service(ws, cfg=cfg, session=session)
@@ -1892,6 +1904,34 @@ async def test_search_fallback_exhausted_across_all_rounds_raises_search_models_
         "first",
         "second",
         "first",
+        "second",
+    ]
+
+
+async def test_search_fallback_poison_on_429_skips_in_next_round(tmp_path):
+    """验证 429 命中 model_switch_errors 时将该模型加入 poison 并在后续轮次跳过。"""
+    ws = MediaWorkspace(tmp_path)
+    session = FakeSession()
+    session.push(
+        FakeResponse(200, body=json.dumps({"data": [{"id": "first"}, {"id": "second"}]})),
+        FakeResponse(429, body=json.dumps({"error": {"code": "rate_limited"}})),
+        FakeResponse(500, body=json.dumps({"error": {"code": "internal_error"}})),
+        FakeResponse(200, body=_search_response(model="second")),
+    )
+    cfg = _cfg(
+        capability_settings={"search_models": "first\nsecond"},
+        advanced_settings={"model_retry_count": 1},
+    )
+    service, _ = _make_service(ws, cfg=cfg, session=session)
+
+    result = await service.search(FakeEvent(), "question")
+
+    assert result.model == "second"
+    calls = [call for call in session.calls if call["url"].endswith("/v1/responses")]
+    assert len(calls) == 3
+    assert [call["json"]["model"] for call in calls] == [
+        "first",
+        "second",
         "second",
     ]
 
@@ -2742,7 +2782,6 @@ async def test_sequential_strategy_skips_remaining_retries_on_switch_error_searc
     cfg = _cfg(
         capability_settings={
             "search_models": "model_a\nmodel_b",
-            "max_search_requests_per_task": 5,
         },
         performance_settings={
             "reliability": {

@@ -108,7 +108,6 @@ def test_search_group_items(schema):
         "show_search_sources",
         "max_search_sources",
         "max_search_output_chars",
-        "max_search_requests_per_task",
     }
 
 
@@ -258,13 +257,11 @@ def test_character_research_timeout_seconds_schema(schema):
     assert item["collapsed"] is True
 
 
-def test_search_request_budget_schema(schema):
-    item = schema["search_settings"]["items"]["max_search_requests_per_task"]
-    assert item["type"] == "int"
-    assert item["default"] == 3
-    assert item["slider"] == {"min": 1, "max": 10, "step": 1}
-    assert "重试" in item["hint"]
-    assert "引导主模型" in item["hint"]
+def test_search_settings_hints(schema):
+    search_items = schema["search_settings"]["items"]
+    assert "grok2api_web_search" in search_items["show_search_sources"]["hint"]
+    assert "grok2api_web_search" in search_items["max_search_sources"]["hint"]
+    assert "grok2api_web_search" in search_items["max_search_output_chars"]["hint"]
 
 
 def test_search_timeout_seconds_schema_hint(schema):

@@ -72,17 +72,13 @@
 | `enable_web_search` | `true` | 启用 Web 搜索工具 |
 | `enable_x_search` | `true` | 启用 X 搜索工具；chat 模型不支持时自动降级 |
 | `search_reasoning_effort` | `auto` | `auto`、`none`、`low`、`medium`、`high`、`xhigh`；默认 `auto` |
-| `enable_llm_search_tool` | `true` | 向 AstrBot 主模型注册会话级搜索 Tool |
-| `show_search_sources` | `true` | 手动命令和 Tool 是否返回结构化来源 |
-| `max_search_sources` | `5` | 来源数量上限，`0` 表示不显示来源 |
-| `max_search_output_chars` | `6000` | 搜索正文 Unicode 字符上限，超出后截断 |
-| `max_search_requests_per_task` | `3` | 单次任务最多发出的实际上游搜索请求数；重试、候选模型回退和生图资料搜索均计入 |
+| `enable_llm_search_tool` | `true` | 向 AstrBot 主模型注册会话级搜索 Tool（`grok2api_web_search`） |
+| `show_search_sources` | `true` | 控制手动 `/g2搜索` 与会话级 Tool 是否返回来源列表 |
+| `max_search_sources` | `5` | 最多返回来源数（`0` 表示不显示来源），指令与 Tool 全局统一生效 |
+| `max_search_output_chars` | `6000` | 搜索正文 Unicode 字符上限（超出后截断），指令与 Tool 全局统一生效 |
 
-### 搜索配额与引导收敛机制
-
-- `max_search_requests_per_task` 限制单次任务（覆盖 `/g2搜索`、会话级 Tool `grok2api_web_search` 与 `/g2生图` 视觉事实资料搜索）实际向上游发出的最大搜索请求数；多候选模型回退与轮次重试均计入配额消耗。
-- 搜索配额按单次命令任务或单轮 LLM Agent 会话独立计算，不跨会话或跨用户累计，读取 `/v1/models` 模型目录不占用配额。
-- **Tool 配额耗尽收敛**：插件在当前 Agent 回合的 `AstrAgentContext.extra` 中缓存有界的成功搜索正文与来源。最后一次可用请求成功完成时会立即聚合返回；配额在下一次 Tool 调用前或单次搜索的候选回退期间耗尽时也走同一结果。返回值包含 `search_budget_exhausted`、`should_stop_search=true` 和已有结果，要求主模型停止搜索并直接组织回答；若此前没有成功结果，则明确返回搜索未完成说明。
+- `show_search_sources`、`max_search_sources` 和 `max_search_output_chars` 在手动 `/g2搜索` 命令与会话级 `grok2api_web_search` Tool 中全局统一生效。
+- 会话级 Tool 调用同时受 AstrBot 全局 `provider_settings.tool_call_timeout`（默认 120 秒）与单次任务总超时（`task_timeout_seconds`）的取最小约束；若要使插件默认的 300 秒搜索超时完整生效，可将 AstrBot 的全局工具超时调整为略高于 300 秒。
 
 ## 性能与可靠性（`performance_settings`）
 

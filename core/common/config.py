@@ -228,7 +228,6 @@ def _prepare_config_layout(cmapping: Mapping[str, object]) -> tuple[int, bool]:
         ("show_search_sources", True),
         ("max_search_sources", 5),
         ("max_search_output_chars", 6000),
-        ("max_search_requests_per_task", 3),
     ):
         copy_customized(search, key, legacy_cap, default)
 
@@ -256,7 +255,6 @@ def _prepare_config_layout(cmapping: Mapping[str, object]) -> tuple[int, bool]:
         ):
             if timeouts.get(key, old_default) == old_default:
                 timeouts[key] = new_default
-        search.setdefault("max_search_requests_per_task", 3)
 
     reliability = mutable_section(performance, "reliability")
     for key, default in (
@@ -593,7 +591,6 @@ class PluginConfig:
     show_search_sources: bool
     max_search_sources: int
     max_search_output_chars: int
-    max_search_requests_per_task: int
 
     connect_timeout_seconds: int
     task_timeout_seconds: int
@@ -736,7 +733,6 @@ class PluginConfig:
             "enable_web_search": self.enable_web_search,
             "enable_x_search": self.enable_x_search,
             "search_reasoning_effort": self.search_reasoning_effort,
-            "max_search_requests_per_task": self.max_search_requests_per_task,
             "image_models": self.image_models,
             "image_edit_models": self.image_edit_models,
             "video_models": self.video_models,
@@ -940,12 +936,6 @@ class PluginConfig:
                 compat(search, "max_search_output_chars", legacy_cap, 6000),
                 500,
                 20000,
-            ),
-            max_search_requests_per_task=_to_int(
-                "search_settings.max_search_requests_per_task",
-                compat(search, "max_search_requests_per_task", legacy_cap, 3),
-                1,
-                10,
             ),
             connect_timeout_seconds=_to_int(
                 "performance_settings.timeouts.connect_timeout_seconds",

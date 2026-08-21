@@ -141,7 +141,6 @@ class Grok2APISubPlugin(HelpMixin, SearchMixin, MediaMixin, PanelMixin, Star):
                 result="初始化成功",
                 capability="、".join(capabilities) or "无可用能力",
                 tool_status=tool_status,
-                search_budget=f"{cfg.max_search_requests_per_task} 次/任务",
                 job_count=len(self._panel_job_ids),
             )
             if removed:
@@ -214,9 +213,6 @@ class Grok2APISubPlugin(HelpMixin, SearchMixin, MediaMixin, PanelMixin, Star):
             ),
             show_sources=self._plugin_config.show_search_sources if self._plugin_config else True,
             max_sources=self._plugin_config.max_search_sources if self._plugin_config else 5,
-            max_search_requests=(
-                self._plugin_config.max_search_requests_per_task if self._plugin_config else 3
-            ),
             max_output_chars=(
                 self._plugin_config.max_search_output_chars if self._plugin_config else 6000
             ),
@@ -319,6 +315,5 @@ class Grok2APISubPlugin(HelpMixin, SearchMixin, MediaMixin, PanelMixin, Star):
             enable_tool=cfg.enable_llm_search_tool,
             has_key=cfg.has_api_key,
             has_model=cfg.capability_enabled("search"),
-            max_search_requests=cfg.max_search_requests_per_task,
         )
         return tool_allowed_for_event(event, policy, cfg)

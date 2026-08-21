@@ -44,7 +44,7 @@ from .common.prompt_fidelity import (
     clean_and_truncate_reference,
     should_research_character,
 )
-from .common.search_budget import search_budget_scope, search_budget_usage
+from .common.search_budget import search_budget_usage
 from .media.workspace import MediaWorkspace, closest_aspect_ratio
 from .panel.client import AdminClient
 from .panel.models import (
@@ -64,7 +64,10 @@ from .search.models import (
     reasoning_effort_for_model,
     search_tools_for_model,
 )
-from .search.parsers import format_search_result
+from .search.parsers import (
+    format_search_for_llm,
+    format_search_result,
+)
 
 if TYPE_CHECKING:
     from .client import Grok2APIClient
@@ -156,32 +159,31 @@ def _enforce_task_timeout(operation: str):
                 timeout = remaining_task_timeout(configured_timeout)
                 if timeout <= 0:
                     raise PluginError("任务执行超时", code="task_timeout", retryable=False)
-                with search_budget_scope(self._config.max_search_requests_per_task):
-                    with operation_scope(operation):
-                        try:
-                            return await asyncio.wait_for(
-                                func(self, *args, **kwargs),
-                                timeout=timeout,
-                            )
-                        except asyncio.CancelledError:
-                            raise
-                        except asyncio.TimeoutError as exc:
-                            safe_task_log(
-                                logging.WARNING,
-                                "请求失败",
-                                operation=operation,
-                                model=task_model(operation),
-                                candidate_fallbacks=max(task_candidate_attempts(operation) - 1, 0),
-                                retry_count=task_retry_count(),
-                                stage="task_timeout",
-                                error_code="task_timeout",
-                                elapsed_ms=int((time.monotonic() - started_at) * 1000),
-                            )
-                            raise PluginError(
-                                "任务执行超时",
-                                code="task_timeout",
-                                retryable=False,
-                            ) from exc
+                with operation_scope(operation):
+                    try:
+                        return await asyncio.wait_for(
+                            func(self, *args, **kwargs),
+                            timeout=timeout,
+                        )
+                    except asyncio.CancelledError:
+                        raise
+                    except asyncio.TimeoutError as exc:
+                        safe_task_log(
+                            logging.WARNING,
+                            "请求失败",
+                            operation=operation,
+                            model=task_model(operation),
+                            candidate_fallbacks=max(task_candidate_attempts(operation) - 1, 0),
+                            retry_count=task_retry_count(),
+                            stage="task_timeout",
+                            error_code="task_timeout",
+                            elapsed_ms=int((time.monotonic() - started_at) * 1000),
+                        )
+                        raise PluginError(
+                            "任务执行超时",
+                            code="task_timeout",
+                            retryable=False,
+                        ) from exc
 
         return wrapped
 
@@ -451,7 +453,6 @@ class GrokService:
                     "web_search": self._config.enable_web_search,
                     "x_search": self._config.enable_x_search,
                     "reasoning_effort": self._config.search_reasoning_effort,
-                    "max_search_requests": self._config.max_search_requests_per_task,
                 }
                 try:
                     self._preflight(event, "search")
@@ -747,6 +748,14 @@ class GrokService:
 
     def format_search(self, result: SearchResult) -> str:
         return format_search_result(
+            result,
+            max_chars=self._config.max_search_output_chars,
+            max_sources=self._config.max_search_sources,
+            show_sources=self._config.show_search_sources,
+        )
+
+    def format_search_for_llm(self, result: SearchResult) -> str:
+        return format_search_for_llm(
             result,
             max_chars=self._config.max_search_output_chars,
             max_sources=self._config.max_search_sources,

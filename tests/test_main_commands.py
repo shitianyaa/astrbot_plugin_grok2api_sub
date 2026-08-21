@@ -90,7 +90,6 @@ def test_register_search_tool_passes_search_limits(monkeypatch, plugin_module):
         has_api_key=True,
         show_search_sources=True,
         max_search_sources=4,
-        max_search_requests_per_task=2,
         max_search_output_chars=4321,
         capability_enabled=lambda name: name == "search",
     )
@@ -104,7 +103,6 @@ def test_register_search_tool_passes_search_limits(monkeypatch, plugin_module):
     plugin._register_search_tool()
 
     policy = captured["tool"]
-    assert policy.max_search_requests == 2
     assert policy.max_output_chars == 4321
     assert policy.max_sources == 4
 
