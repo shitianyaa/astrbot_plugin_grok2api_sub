@@ -344,7 +344,7 @@
             "type": "string",
             "default": "off",
             "options": ["off", "auto", "always"],
-            "hint": "off=禁用；auto=自动识别具名角色检索；always=生图/视频均检索；失败软回退普通增强。"
+            "hint": "off=禁用；auto=自动识别具名角色检索；always=每次生图尝试检索；仅 /g2生图 生效，失败软回退普通增强。"
           },
           "disable_prompt_processing_with_reference_image": {
             "description": "检测到参考图时禁用提示词处理。",
