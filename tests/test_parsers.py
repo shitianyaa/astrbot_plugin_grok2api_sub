@@ -213,6 +213,25 @@ def test_format_search_for_llm_zero_max_sources():
     assert "参考来源" not in formatted
 
 
+def test_format_search_for_llm_budget_covers_source_metadata():
+    res = SearchResult(
+        response_id="r1",
+        model="m",
+        status="completed",
+        text="正文",
+        sources=(
+            SearchSource(
+                url="https://example.com/" + "x" * 4000,
+                title="天" * 2000,
+                snippet="片段" * 500,
+            ),
+        ),
+        search_performed=True,
+    )
+    out = format_search_for_llm(res, max_chars=2000)
+    assert len(out) <= 2000
+
+
 def test_format_search_for_llm_max_sources_limits_output():
     res = SearchResult(
         response_id="r1",
@@ -242,8 +261,10 @@ def test_format_search_for_llm_truncates_text():
         search_performed=True,
     )
     formatted = format_search_for_llm(res, max_chars=5)
-    assert formatted.startswith("12345\n[内容已截断]\n参考来源:\n")
-    assert "https://example.com/1" in formatted
+    # 正文本身已截断(=13 chars)超出预算，来源不再追加；整体仍受 max_chars 约束。
+    assert formatted.startswith("12345\n[内容已截断]")
+    assert len(formatted) <= 18
+    assert "参考来源" not in formatted
 
 
 def test_format_search_for_llm_empty_text():
