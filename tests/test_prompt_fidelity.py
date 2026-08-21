@@ -88,6 +88,22 @@ class TestShouldResearchCharacter:
         assert should_research_character("画阿尔海森站在书架旁", mode="auto")
         assert should_research_character("draw Alhaitham standing beside a bookshelf", mode="auto")
 
+    def test_mode_auto_ignores_counted_common_nouns(self):
+        """量词计数的普通名词不是具名角色，不应触发上游资料搜索。
+
+        修复前 ``一只/一朵/两只`` 等量词会泄入姓名捕获窗口，让“画一只可爱的小狗”
+        误判为具名角色并白跑一次联网搜索。
+        """
+        assert not should_research_character("画一只可爱的小狗在草地上奔跑", mode="auto")
+        assert not should_research_character("绘制一朵玫瑰的特写", mode="auto")
+        assert not should_research_character("画两只小鸟在树上", mode="auto")
+        assert not should_research_character("画几只蝴蝶在飞", mode="auto")
+        assert not should_research_character("画一些花朵在窗台", mode="auto")
+        assert not should_research_character("画五只小黄鸭在池塘", mode="auto")
+        assert not should_research_character("画三个孩子在玩", mode="auto")
+        # 单数人称量词仍保留识别路径，具名角色不受影响。
+        assert should_research_character("画一个芙宁娜站在雨中", mode="auto")
+
 
 class TestCleanAndTruncateReference:
     """Tests for reference document cleaning and truncation."""

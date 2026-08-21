@@ -19,9 +19,18 @@ _STRONG_IDENTITY_CONTEXT_RE = re.compile(
 _WEAK_WORK_CONTEXT_RE = re.compile(r"(?:动漫|动画|游戏|电影|电视剧)")
 _WEAK_WORK_TAIL_RE = re.compile(r"(?:风格|场景|画面|截图|背景|特效|效果|构图|素材|剪辑)")
 _CJK_NAME_CONTEXT_RE = re.compile(
-    r"(?:画|绘制|生成|制作|创作|描绘|让|给我|请画)\s*(?:一个|一位|一名)?"
+    r"(?:画|绘制|生成|制作|创作|描绘|让|给我|请画)\s*"
+    # 量词整体捕获，交给 _has_cjk_name_signal 判定：否则“一只/一朵”会
+    # 泄入 name 窗口，把“画一只可爱的小狗”误当成具名角色触发搜索。
+    r"(?P<quantifier>[一两二三四五六七八九十几数]+"
+    r"[个位名只朵群条头辆匹张幅束枚顶双对片棵座]|一些)?"
     r"(?P<name>[\u4e00-\u9fff]{2,6})(?=(?:站|坐|穿|戴|拿|抱|持|挥|跳|跑|在|的|，|,|$))"
 )
+# 被量词计数的名词几乎不可能是具名角色（没人说“画两只芺宁娜”），因此只有
+# 单数人称量词保留识别路径。通用名词（小鸟、花朵、蝴蝶……）是开放词汇，
+# 靠 _GENERIC_CJK_NAME_PARTS 黑名单枚举不完，量词才是可靠信号。
+_SINGULAR_PERSON_QUANTIFIERS = frozenset({"一个", "一位", "一名"})
+
 _ENGLISH_NAME_CONTEXT_RE = re.compile(
     r"(?i:\b(?:draw|create|generate|paint|portrait\s+of|cosplay|as)\s+(?:an?\s+|the\s+)?)"
     r"(?P<name>[A-Z][a-z]{2,}(?:\s+[A-Z][a-z]{2,})?)"
@@ -515,6 +524,10 @@ def _is_text_requirement_quote(prompt: str, start: int, end: int) -> bool:
 def _has_cjk_name_signal(prompt: str) -> bool:
     for match in _CJK_NAME_CONTEXT_RE.finditer(prompt):
         candidate = match.group("name")
+        quantifier = match.group("quantifier")
+        if quantifier and quantifier not in _SINGULAR_PERSON_QUANTIFIERS:
+            # “画两只小鸟”“画一朵玫瑰”：被计数的是普通物体，不是具名角色。
+            continue
         if not any(part in candidate for part in _GENERIC_CJK_NAME_PARTS):
             return True
     for match in _WEAK_WORK_CONTEXT_RE.finditer(prompt):
