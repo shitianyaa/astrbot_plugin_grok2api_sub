@@ -110,9 +110,9 @@ __all__ = [
     "IMAGE_ENHANCEMENT_SYSTEM_PROMPT",
     "IMAGE_PARAMETER_SYSTEM_PROMPT",
     "IMAGE_STANDARD_SYSTEM_PROMPT",
-    "PromptProcessor",
     "REFERENCE_RULES",
     "SHARED_LOSSLESS_RULES",
+    "PromptProcessor",
 ]
 
 
