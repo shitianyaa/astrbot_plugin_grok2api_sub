@@ -565,6 +565,8 @@ class GrokService:
                 search_query = f"{system_prompt}\n\n{query}"
 
         poisoned: set[str] = set()
+        previous_model = ""
+        previous_error_code = ""
         for round_idx, index, model in _iter_model_attempts(
             visible_candidates,
             self._config.model_retry_count,
@@ -586,6 +588,16 @@ class GrokService:
             try:
                 check_task_deadline()
                 record_task_model("search", model)
+                attempt = task_candidate_attempts("search")
+                attempt_started_at = time.monotonic()
+                self._log_model_attempt(
+                    model,
+                    index,
+                    attempt=attempt,
+                    round_idx=round_idx,
+                    previous_model=previous_model,
+                    previous_error_code=previous_error_code,
+                )
                 result = await self._client.search(
                     search_query,
                     model=model,
@@ -597,18 +609,45 @@ class GrokService:
                     ),
                     required=required,
                 )
-                self._log_model_selected(model, index, round_idx=round_idx)
+                self._log_model_selected(
+                    model,
+                    index,
+                    round_idx=round_idx,
+                    attempt=attempt,
+                    elapsed_ms=self._elapsed_ms(attempt_started_at),
+                )
                 return _ModelFallbackOutcome(
                     value=result,
                     model=model,
                     candidate_attempts=task_candidate_attempts("search"),
                 )
+            except asyncio.CancelledError:
+                safe_log(
+                    logging.DEBUG,
+                    "search_model_cancelled",
+                    operation="search",
+                    model=model,
+                    model_index=index,
+                    round=round_idx,
+                    attempt=task_candidate_attempts("search"),
+                    elapsed_ms=self._elapsed_ms(attempt_started_at),
+                )
+                raise
             except PluginError as exc:
                 if not exc.retryable or exc.code == "task_timeout":
                     raise
                 if self._is_switch_error(exc):
                     poisoned.add(model)
-                self._log_model_skipped(model, index, exc.code, round_idx=round_idx)
+                self._log_model_skipped(
+                    model,
+                    index,
+                    exc.code,
+                    round_idx=round_idx,
+                    attempt=task_candidate_attempts("search"),
+                    elapsed_ms=self._elapsed_ms(attempt_started_at),
+                )
+                previous_model = model
+                previous_error_code = exc.code
                 continue
 
         safe_log(
@@ -629,7 +668,14 @@ class GrokService:
         return f"所有搜索模型均不可用（{shown}{tail}）"
 
     def _log_model_skipped(
-        self, model: str, index: int, reason: str, round_idx: int | None = None
+        self,
+        model: str,
+        index: int,
+        reason: str,
+        round_idx: int | None = None,
+        *,
+        attempt: int | None = None,
+        elapsed_ms: int | None = None,
     ) -> None:
         fields: dict[str, object] = {
             "model": model,
@@ -639,13 +685,49 @@ class GrokService:
         }
         if round_idx is not None:
             fields["round"] = round_idx
+        if attempt is not None:
+            fields["attempt"] = attempt
+        if elapsed_ms is not None:
+            fields["elapsed_ms"] = elapsed_ms
         safe_log(
             logging.DEBUG,
             "search_model_skipped",
             **fields,
         )
 
-    def _log_model_selected(self, model: str, index: int, round_idx: int | None = None) -> None:
+    def _log_model_attempt(
+        self,
+        model: str,
+        index: int,
+        *,
+        attempt: int,
+        round_idx: int,
+        previous_model: str,
+        previous_error_code: str,
+    ) -> None:
+        switched = bool(previous_model and previous_model != model)
+        reason = previous_error_code if switched else ("retry" if previous_model else "initial")
+        safe_log(
+            logging.DEBUG,
+            "search_model_switch" if switched else "search_model_attempt",
+            operation="search",
+            model=model,
+            model_index=index,
+            round=round_idx,
+            attempt=attempt,
+            reason=reason,
+            search_budget=self._search_budget_label(),
+        )
+
+    def _log_model_selected(
+        self,
+        model: str,
+        index: int,
+        round_idx: int | None = None,
+        *,
+        attempt: int | None = None,
+        elapsed_ms: int | None = None,
+    ) -> None:
         fields: dict[str, object] = {
             "model": model,
             "model_index": index,
@@ -653,6 +735,10 @@ class GrokService:
         }
         if round_idx is not None:
             fields["round"] = round_idx
+        if attempt is not None:
+            fields["attempt"] = attempt
+        if elapsed_ms is not None:
+            fields["elapsed_ms"] = elapsed_ms
         safe_log(
             logging.DEBUG,
             "search_model_selected",

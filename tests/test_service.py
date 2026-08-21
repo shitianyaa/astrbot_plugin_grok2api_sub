@@ -1399,7 +1399,7 @@ async def test_task_timeout_terminates_video_polling(tmp_path):
         assert ei.value.code == "task_timeout"
 
 
-async def test_task_timeout_cancels_running_search(tmp_path):
+async def test_task_timeout_cancels_running_search(tmp_path, monkeypatch):
     class SlowSearchClient(ScriptedSearchClient):
         def __init__(self):
             super().__init__(models=("first", "second"))
@@ -1415,6 +1415,11 @@ async def test_task_timeout_cancels_running_search(tmp_path):
                 raise
 
     client = SlowSearchClient()
+    diagnostics = []
+    monkeypatch.setattr(
+        "core.service.safe_log",
+        lambda level, name, **fields: diagnostics.append((level, name, fields)),
+    )
     cfg = replace(
         _cfg(capability_settings={"search_models": "first\nsecond"}),
         task_timeout_seconds=0.01,
@@ -1433,6 +1438,12 @@ async def test_task_timeout_cancels_running_search(tmp_path):
     assert caught.value.code == "task_timeout"
     assert client.cancelled is True
     assert client.search_calls == ["first"]
+    cancelled = next(
+        fields for _level, name, fields in diagnostics if name == "search_model_cancelled"
+    )
+    assert cancelled["model"] == "first"
+    assert cancelled["attempt"] == 1
+    assert cancelled["elapsed_ms"] >= 0
 
 
 # -- close ----------------------------------------------------------------
@@ -1656,6 +1667,66 @@ async def test_explicit_model_failure_advances_to_next(tmp_path, first_error):
     result = await service.search(FakeEvent(), "question")
     assert result.model == "second"
     assert client.search_calls == ["first", "second"]
+
+
+async def test_search_model_attempt_and_switch_logs_include_wait_time(tmp_path, monkeypatch):
+    diagnostics = []
+    monkeypatch.setattr(
+        "core.service.safe_log",
+        lambda level, name, **fields: diagnostics.append((level, name, fields)),
+    )
+    client = ScriptedSearchClient(
+        models=("first", "second"),
+        search_results=[
+            APIError(500, "upstream_server_error", "server error"),
+            _search_result("second"),
+        ],
+    )
+    service = _make_scripted_service(tmp_path, client, ("first", "second"))
+
+    result = await service.search(FakeEvent(), "question")
+
+    assert result.model == "second"
+    events = {name: fields for _level, name, fields in diagnostics}
+    assert events["search_model_attempt"] == {
+        "operation": "search",
+        "model": "first",
+        "model_index": 0,
+        "round": 1,
+        "attempt": 1,
+        "reason": "initial",
+        "search_budget": "0/3",
+    }
+    assert events["search_model_skipped"]["model"] == "first"
+    assert events["search_model_skipped"]["reason"] == "upstream_server_error"
+    assert events["search_model_skipped"]["attempt"] == 1
+    assert events["search_model_skipped"]["elapsed_ms"] >= 0
+    assert events["search_model_switch"]["model"] == "second"
+    assert events["search_model_switch"]["reason"] == "upstream_server_error"
+    assert events["search_model_switch"]["attempt"] == 2
+    assert events["search_model_selected"]["model"] == "second"
+    assert events["search_model_selected"]["attempt"] == 2
+    assert events["search_model_selected"]["elapsed_ms"] >= 0
+    assert all(
+        level == logging.DEBUG
+        for level, name, _fields in diagnostics
+        if name.startswith("search_model_")
+    )
+
+
+async def test_success_stops_current_search_and_next_search_restarts_first_model(tmp_path):
+    client = ScriptedSearchClient(
+        models=("first", "second"),
+        search_results=[_search_result("first"), _search_result("first")],
+    )
+    service = _make_scripted_service(tmp_path, client, ("first", "second"))
+
+    first_result = await service.search(FakeEvent(), "first question")
+    second_result = await service.search(FakeEvent(), "second question")
+
+    assert first_result.model == "first"
+    assert second_result.model == "first"
+    assert client.search_calls == ["first", "first"]
 
 
 async def test_search_fallback_exhausts_first_model_retries_before_second(tmp_path):
