@@ -311,7 +311,8 @@ def test_parse_search_response_accepts_non_empty_text_without_explicit_tool_call
     }
     result = parse_search_response(payload)
     assert result.status == "completed"
-    assert result.search_performed is True
+    # 无完成的 web_search_call，仅纯文本直出：可接受，但不标记“已执行搜索”。
+    assert result.search_performed is False
     assert "最新科技动态分析" in result.text
     assert len(result.sources) == 1
     assert result.sources[0].url == "https://example.com/tech"
